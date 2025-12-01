@@ -13,15 +13,10 @@ import type { Tables } from "@/types/supabase";
 import { toast } from "sonner";
 
 // ----------------------------------
-// KIOSK CONFIG
+// SIMPLE KIOSK CONFIG (NO URL PARAMS)
 // ----------------------------------
-const KIOSK_ID =
-  new URLSearchParams(window.location.search).get("kiosk") ||
-  import.meta.env.VITE_KIOSK_ID ||
-  "KIOSK-DEFAULT";
-
-const KIOSK_SESSION_MINUTES = 10;
-
+const KIOSK_ID = "KIOSK"; // only used to fill the NOT NULL column in DB
+const KIOSK_SESSION_MINUTES = 10; // how long a session stays active
 
 export type VoterRow = Tables<"voters">;
 
@@ -64,7 +59,7 @@ const VotingKiosk = () => {
   const [expiredElections, setExpiredElections] = useState<any[]>([]);
 
   // -------------------------------------------------
-  // HEARTBEAT — keep user "locked" to this kiosk
+  // HEARTBEAT — keep session alive while voting
   // -------------------------------------------------
   useEffect(() => {
     if (!voterData) return;
@@ -73,10 +68,11 @@ const VotingKiosk = () => {
       supabase
         .from("voter_sessions")
         .update({
-          expires_at: new Date(Date.now() + KIOSK_SESSION_MINUTES * 60 * 1000).toISOString(),
+          expires_at: new Date(
+            Date.now() + KIOSK_SESSION_MINUTES * 60 * 1000
+          ).toISOString(),
         })
         .eq("voter_id", voterData.id)
-        .eq("kiosk_id", KIOSK_ID)
         .then(({ error }) => {
           if (error) console.error("Heartbeat error:", error.message);
         });
@@ -127,11 +123,12 @@ const VotingKiosk = () => {
       .single();
 
     if (error || !voterRow) {
+      console.error("Voter lookup error:", error?.message);
       toast.error("Authentication failed. Voter not found.");
       return;
     }
 
-    // Check for active session
+    // 1) Check for ANY active session (no kiosk_id logic)
     const nowIso = new Date().toISOString();
 
     const { data: existingSessions, error: sessionError } = await supabase
@@ -141,35 +138,38 @@ const VotingKiosk = () => {
       .gt("expires_at", nowIso);
 
     if (sessionError) {
-      toast.error("Cannot verify your session. Please contact support.");
+      console.error("Session check error:", sessionError.message);
+      toast.error("Cannot verify your session. Please contact election staff.");
       return;
     }
 
-    const existing = existingSessions?.[0];
-
-    if (existing && existing.kiosk_id !== KIOSK_ID) {
+    if (existingSessions && existingSessions.length > 0) {
+      // There is already an active session for this voter
       toast.error(
-        "You are already logged in on another voting kiosk.\nPlease finish that session before continuing."
+        "There is already an active voting session for this voter.\n" +
+          "Please finish the existing session or wait a few minutes before trying again."
       );
       return;
     }
 
-    // Create / extend the session for this kiosk
+    // 2) Create a new session for this voter
     const newExpiresAt = new Date(
       Date.now() + KIOSK_SESSION_MINUTES * 60 * 1000
     ).toISOString();
 
     const { error: upsertError } = await supabase.from("voter_sessions").upsert({
       voter_id: voterRow.id,
-      kiosk_id: KIOSK_ID,
+      kiosk_id: KIOSK_ID, // just to satisfy NOT NULL; not used in logic
       expires_at: newExpiresAt,
     });
 
     if (upsertError) {
-      toast.error("Unable to create a secure voter session.");
+      console.error("Error creating voter session:", upsertError.message);
+      toast.error("Unable to create a secure voter session. Please try again.");
       return;
     }
 
+    // 3) Hydrate voter into state
     const enrichedVoter: VoterData = {
       ...voterRow,
       rfidVerified: true,
@@ -178,12 +178,13 @@ const VotingKiosk = () => {
 
     setVoterData(enrichedVoter);
 
-    // Load elections
+    // 4) Load elections
     const { data: elections = [], error: electionsError } = await supabase
       .from("elections")
       .select("*");
 
     if (electionsError) {
+      console.error("Error loading elections:", electionsError.message);
       toast.error("Unable to load elections.");
       return;
     }

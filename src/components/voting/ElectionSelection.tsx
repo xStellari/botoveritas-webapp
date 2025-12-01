@@ -49,7 +49,7 @@ const ElectionSelection = ({
           <p className="text-muted-foreground">
             Welcome{" "}
             <span className="font-semibold">
-              {voterData.first_name} {voterData.middle_name} {voterData.last_name}
+              {voterData.first_name} {voterData.middle_name}. {voterData.last_name}
             </span>
             . Choose which election you'd like to vote in.
           </p>
