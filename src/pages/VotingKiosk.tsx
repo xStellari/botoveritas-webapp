@@ -12,11 +12,12 @@ import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/types/supabase";
 import { toast } from "sonner";
 
-// ----------------------------------
-// SIMPLE KIOSK CONFIG (NO URL PARAMS)
-// ----------------------------------
-const KIOSK_ID = "KIOSK"; // only used to fill the NOT NULL column in DB
-const KIOSK_SESSION_MINUTES = 10; // how long a session stays active
+import { logSessionEvent } from "@/utils/logSessionEvent";
+
+// -------------------------------------------------
+// SIMPLE KIOSK CONFIG (NO kiosk_id ANYWHERE ANYMORE)
+// -------------------------------------------------
+const KIOSK_SESSION_MINUTES = 5; // how long a session stays active
 
 export type VoterRow = Tables<"voters">;
 
@@ -60,22 +61,24 @@ const VotingKiosk = () => {
 
   // -------------------------------------------------
   // HEARTBEAT — keep session alive while voting
+  // LOG: "extend"
   // -------------------------------------------------
   useEffect(() => {
     if (!voterData) return;
 
-    const interval = setInterval(() => {
-      supabase
+    const interval = setInterval(async () => {
+      const newExpiry = new Date(
+        Date.now() + KIOSK_SESSION_MINUTES * 60 * 1000
+      ).toISOString();
+
+      const { error } = await supabase
         .from("voter_sessions")
-        .update({
-          expires_at: new Date(
-            Date.now() + KIOSK_SESSION_MINUTES * 60 * 1000
-          ).toISOString(),
-        })
-        .eq("voter_id", voterData.id)
-        .then(({ error }) => {
-          if (error) console.error("Heartbeat error:", error.message);
-        });
+        .update({ expires_at: newExpiry })
+        .eq("voter_id", voterData.id);
+
+      if (!error) {
+        await logSessionEvent({ voterId: voterData.id, action: "session_extend" });
+      }
     }, 5000);
 
     return () => clearInterval(interval);
@@ -111,6 +114,7 @@ const VotingKiosk = () => {
 
   // -------------------------------------------------
   // AUTH SUCCESS + ANTI-SIMULTANEOUS LOGIN
+  // WITH LOGGING
   // -------------------------------------------------
   const handleAuthSuccess = async (auth: { rfidTag: string; faceHash: string }) => {
     console.log("LOOKING UP VOTER:", auth.rfidTag, auth.faceHash);
@@ -128,9 +132,9 @@ const VotingKiosk = () => {
       return;
     }
 
-    // 1) Check for ANY active session (no kiosk_id logic)
     const nowIso = new Date().toISOString();
 
+    // Check if voter already has an active session
     const { data: existingSessions, error: sessionError } = await supabase
       .from("voter_sessions")
       .select("*")
@@ -144,7 +148,9 @@ const VotingKiosk = () => {
     }
 
     if (existingSessions && existingSessions.length > 0) {
-      // There is already an active session for this voter
+      // LOG BLOCKED
+      await logSessionEvent({ voterId: voterRow.id, action: "simultaneous_block" });
+
       toast.error(
         "There is already an active voting session for this voter.\n" +
           "Please finish the existing session or wait a few minutes before trying again."
@@ -152,14 +158,13 @@ const VotingKiosk = () => {
       return;
     }
 
-    // 2) Create a new session for this voter
+    // Create a new session (NO kiosk_id)
     const newExpiresAt = new Date(
       Date.now() + KIOSK_SESSION_MINUTES * 60 * 1000
     ).toISOString();
 
     const { error: upsertError } = await supabase.from("voter_sessions").upsert({
       voter_id: voterRow.id,
-      kiosk_id: KIOSK_ID, // just to satisfy NOT NULL; not used in logic
       expires_at: newExpiresAt,
     });
 
@@ -169,7 +174,9 @@ const VotingKiosk = () => {
       return;
     }
 
-    // 3) Hydrate voter into state
+    // LOG START
+    await logSessionEvent({ voterId: voterRow.id, action: "session_start" });
+
     const enrichedVoter: VoterData = {
       ...voterRow,
       rfidVerified: true,
@@ -178,7 +185,7 @@ const VotingKiosk = () => {
 
     setVoterData(enrichedVoter);
 
-    // 4) Load elections
+    // Load elections
     const { data: elections = [], error: electionsError } = await supabase
       .from("elections")
       .select("*");
@@ -274,10 +281,14 @@ const VotingKiosk = () => {
 
   // -------------------------------------------------
   // RESET KIOSK
+  // LOG: "end"
   // -------------------------------------------------
   const handleReset = async () => {
     if (voterData?.id) {
       await supabase.from("voter_sessions").delete().eq("voter_id", voterData.id);
+
+      // LOG END
+      await logSessionEvent({ voterId: voterData.id, action: "session_end" });
     }
 
     setCurrentStep("auth");
