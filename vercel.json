@@ -1,0 +1,7 @@
+{
+  "rewrites": [
+    { "source": "/kiosk", "destination": "/" },
+    { "source": "/kiosk/(.*)", "destination": "/" },
+    { "source": "/(.*)", "destination": "/" }
+  ]
+}
