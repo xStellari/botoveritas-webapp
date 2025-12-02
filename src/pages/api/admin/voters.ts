@@ -17,7 +17,7 @@ export async function votersHandler(req: any, res: any) {
       last_name,
       org_affiliations,
       rfid_tag,
-      face_id_hash,
+      face_descriptor,
       year_level,
     } = req.body;
 
@@ -31,7 +31,7 @@ export async function votersHandler(req: any, res: any) {
           last_name,
           org_affiliations,
           rfid_tag,
-          face_id_hash,
+          face_descriptor,
           year_level,
         },
       ]);

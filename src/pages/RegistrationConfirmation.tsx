@@ -12,7 +12,7 @@ import { sortElections } from "@/utils/sortElections";
 const RegistrationConfirmation = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { firstName, lastName, orgAffiliations } = location.state || {};
+  const { firstName, middleName, lastName, orgAffiliations } = location.state || {};
 
   const [elections, setElections] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,7 +28,9 @@ const RegistrationConfirmation = () => {
         console.error("Error loading elections:", error.message);
       } else {
         const eligible = (data || []).filter((election) =>
-          orgAffiliations?.includes(election.title)
+          orgAffiliations?.some(org => 
+            election.title.toLowerCase().includes(org.toLowerCase())
+          )
         );
         setElections(sortElections(eligible));
       }
@@ -81,10 +83,10 @@ const RegistrationConfirmation = () => {
           Registration Successful
         </h1>
 
-        <p className="text-muted-foreground mb-6">
+        <p className="text-muted-foreground mb-7">
           Welcome,{" "}
           <span className="font-semibold">
-            {firstName} {lastName}
+            {firstName} {middleName}. {lastName}
           </span>
           ! You’ve successfully registered as a voter.
         </p>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
@@ -7,133 +7,137 @@ import {
   Camera,
   CheckCircle2,
   AlertCircle,
-  Loader2,
 } from "lucide-react";
 import feuLogo from "@/assets/feu-logo.png";
 import { supabase } from "@/integrations/supabase/client";
 
+import RFIDScanner from "./RFIDScanner";
+import FacialRecognition from "./FacialRecognition";
+import { compareDescriptors } from "@/utils/faceMatching";
+
 interface AuthenticationScreenProps {
-  onAuthSuccess: (data: { rfidTag: string; faceHash: string }) => void;
+  onAuthSuccess: (data: { rfidTag: string }) => void;
 }
 
-type AuthStep =
-  | "idle"
-  | "rfid-scan"
-  | "face-scan"
-  | "verifying"
-  | "success"
-  | "error";
+type Step = "rfid" | "face" | "done" | "error";
 
 const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   const { toast } = useToast();
 
-  const [authStep, setAuthStep] = useState<AuthStep>("idle");
+  const MASTER_RFID_TAG = "1226512821";
+
+  const [step, setStep] = useState<Step>("rfid");
   const [statusMessage, setStatusMessage] = useState("");
+  const [rfidTag, setRfidTag] = useState("");
   const [rfidVerified, setRfidVerified] = useState(false);
   const [faceVerified, setFaceVerified] = useState(false);
 
-  const [voters, setVoters] = useState<any[]>([]);
-  const [selectedVoter, setSelectedVoter] = useState<any | null>(null);
+  const [storedDescriptor, setStoredDescriptor] = useState<Float32Array | null>(
+    null
+  );
 
-  // ⭐ Always fetch ALL voters when screen mounts OR regains focus
-  useEffect(() => {
-    async function loadVoters() {
-      const { data, error } = await supabase
-        .from("voters")
-        .select("*")
-        .order("created_at", { ascending: false });
+  // ---------------------------------------------------------------------
+  // 1️⃣ HANDLE RFID TAP
+  // ---------------------------------------------------------------------
+  const handleRFID = async (uid: string) => {
+    console.log("RFID scanned:", uid);
+    setRfidTag(uid);
 
-      if (error) {
-        console.error("Error loading voters:", error.message);
-      } else {
-        setVoters(data || []);
-      }
-    }
-
-    loadVoters(); // Initial load
-
-    // 👇 Reload voters every time the user returns to this tab/page
-    const handleFocus = () => loadVoters();
-    window.addEventListener("focus", handleFocus);
-
-    return () => {
-      window.removeEventListener("focus", handleFocus);
-    };
-  }, []);
-
-  // -----------------------------
-  // SIMULATION — RFID Scan
-  // -----------------------------
-  const simulateRfidScan = () => {
-    if (!selectedVoter) {
-      toast({
-        title: "No Voter Selected",
-        description: "Please choose a voter before starting authentication.",
-        variant: "destructive",
-      });
+    // ⚡ MASTER OVERRIDE CARD
+    if (uid === MASTER_RFID_TAG) {
+      setStatusMessage("Admin override activated → Proceeding to face scan.");
+      setRfidVerified(true);
+      setStep("face");
       return;
     }
 
-    setAuthStep("rfid-scan");
-    setStatusMessage("Please tap the student ID on the RFID reader...");
+    // ⚡ NORMAL RFID LOOKUP
+    setStatusMessage("Checking RFID in database...");
+    const { data, error } = await supabase
+      .from("voters")
+      .select("face_descriptor")
+      .eq("rfid_tag", uid)
+      .single();
 
-    setTimeout(() => {
-      setRfidVerified(true);
-      setStatusMessage("RFID verified successfully! ✓");
-      setAuthStep("face-scan");
+    if (error || !data) {
+      console.error("RFID not found:", error?.message);
+      setStatusMessage("RFID not registered. Please contact election staff.");
+      setStep("error");
+      return;
+    }
 
-      setTimeout(() => {
-        setStatusMessage("Position your face in the camera frame...");
-        simulateFaceScan();
-      }, 1500);
-    }, 2000);
+    if (!data.face_descriptor) {
+      setStatusMessage(
+        "No facial data found for this RFID. Please re-register."
+      );
+      setStep("error");
+      return;
+    }
+
+    // Convert array back into Float32 descriptor
+    setStoredDescriptor(new Float32Array(data.face_descriptor));
+
+    setRfidVerified(true);
+    setStatusMessage("RFID verified! Proceed to face recognition.");
+    setStep("face");
   };
 
-  // -----------------------------
-  // SIMULATION — Face Scan
-  // -----------------------------
-  const simulateFaceScan = () => {
-    setTimeout(() => {
-      setAuthStep("verifying");
-      setStatusMessage("Analyzing facial features...");
+  // ---------------------------------------------------------------------
+  // 2️⃣ HANDLE FACE CAPTURE → MATCH AGAINST STORED DESCRIPTOR
+  // ---------------------------------------------------------------------
+  const handleFaceCaptured = (liveDescriptor: Float32Array) => {
+    if (!storedDescriptor) {
+      setStatusMessage("No stored face data found.");
+      setStep("error");
+      return;
+    }
+
+    const { match, distance } = compareDescriptors(
+      storedDescriptor,
+      liveDescriptor
+    );
+
+    console.log("Face match distance:", distance);
+
+    if (match) {
+      setFaceVerified(true);
+      setStatusMessage("Face match successful! Loading ballot...");
+      setStep("done");
 
       setTimeout(() => {
-        setFaceVerified(true);
-        setAuthStep("success");
-        setStatusMessage("Authentication successful! ✓");
-
-        toast({
-          title: "Authentication Complete",
-          description: "Identity verified successfully",
-          duration: 2000,
+        onAuthSuccess({
+          rfidTag,
         });
-
-        setTimeout(() => {
-          onAuthSuccess({
-            rfidTag: selectedVoter.rfid_tag,
-            faceHash: selectedVoter.face_id_hash,
-          });
-
-          console.log("AUTHENTICATED AS:", selectedVoter);
-        }, 1800);
-      }, 2500);
-    }, 2000);
+      }, 500);
+    } else {
+      setStatusMessage(
+        `Face mismatch. Please try again. (distance: ${distance.toFixed(3)})`
+      );
+    }
   };
 
+  // ---------------------------------------------------------------------
+  // 3️⃣ RETRY BUTTON
+  // ---------------------------------------------------------------------
   const handleRetry = () => {
-    setAuthStep("idle");
+    setStep("rfid");
     setStatusMessage("");
     setRfidVerified(false);
     setFaceVerified(false);
+    setRfidTag("");
+    setStoredDescriptor(null);
   };
 
-  // -----------------------------
-  // UI
-  // -----------------------------
+  // ---------------------------------------------------------------------
+  // 4️⃣ MAIN UI
+  // ---------------------------------------------------------------------
   return (
     <div className="flex min-h-screen items-center justify-center p-8">
       <Card className="w-full max-w-2xl border-2 border-primary/20 bg-card/95 backdrop-blur-sm shadow-2xl">
         <div className="p-12">
+
+          {/* RFID Listener */}
+          <RFIDScanner onScan={handleRFID} />
 
           {/* Header */}
           <div className="flex flex-col items-center mb-12">
@@ -146,95 +150,53 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
             </p>
           </div>
 
-          {/* Voter Selector */}
-          <div className="mb-6">
-            <label className="text-sm font-semibold text-muted-foreground">
-              Select Voter (Simulation Only)
-            </label>
-            <select
-              className="mt-2 w-full p-3 border rounded-md bg-background"
-              value={selectedVoter?.id || ""}
-              onChange={(e) => {
-                const voter = voters.find((v) => v.id === e.target.value);
-                setSelectedVoter(voter);
-              }}
-            >
-              <option value="">-- Choose Voter --</option>
-
-              {voters.map((voter) => (
-                <option key={voter.id} value={voter.id}>
-                  {voter.first_name} {voter.last_name} — {voter.email}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Status Boxes */}
-          <div className="space-y-6 mb-8">
-            {/* RFID */}
-            <div
-              className={`flex items-center gap-4 p-6 rounded-xl border-2 transition-all ${
-                rfidVerified
-                  ? "border-success bg-success/5"
-                  : authStep === "rfid-scan"
-                  ? "border-primary bg-primary/5 animate-pulse"
-                  : "border-border bg-muted/30"
-              }`}
-            >
-              <div className="flex-shrink-0">
-                {rfidVerified ? (
-                  <CheckCircle2 className="h-10 w-10 text-success" />
-                ) : authStep === "rfid-scan" ? (
-                  <Loader2 className="h-10 w-10 text-primary animate-spin" />
-                ) : (
-                  <Scan className="h-10 w-10 text-muted-foreground" />
-                )}
-              </div>
-
+          {/* RFID AUTH BUTTON */}
+          <button
+            onClick={() => {
+              setStep("rfid");
+              setStatusMessage("Please tap your RFID card...");
+            }}
+            className="w-full flex items-center justify-between p-6 border rounded-xl hover:bg-primary"
+          >
+            <div className="flex items-center gap-4">
+              <Scan className="h-10 w-10 text-primary" />
               <div>
                 <h3 className="font-semibold text-lg">RFID Authentication</h3>
-                <p className="text-sm text-muted-foreground">
-                  Student ID verification
-                </p>
+                <p className="text-sm text-muted-foreground">Tap your Student ID</p>
               </div>
             </div>
+            {rfidVerified && <CheckCircle2 className="h-8 w-8 text-success" />}
+          </button>
 
-            {/* Face */}
-            <div
-              className={`flex items-center gap-4 p-6 rounded-xl border-2 transition-all ${
-                faceVerified
-                  ? "border-success bg-success/5"
-                  : authStep === "face-scan" || authStep === "verifying"
-                  ? "border-primary bg-primary/5 animate-pulse"
-                  : "border-border bg-muted/30"
-              }`}
-            >
-              <div className="flex-shrink-0">
-                {faceVerified ? (
-                  <CheckCircle2 className="h-10 w-10 text-success" />
-                ) : authStep === "face-scan" || authStep === "verifying" ? (
-                  <Loader2 className="h-10 w-10 text-primary animate-spin" />
-                ) : (
-                  <Camera className="h-10 w-10 text-muted-foreground" />
-                )}
-              </div>
-
+          {/* FACE AUTH BUTTON */}
+          <button
+            onClick={() => {
+              if (!rfidVerified) {
+                setStatusMessage("Please complete RFID first.");
+                return;
+              }
+              setStep("face");
+              setStatusMessage("Initializing camera...");
+            }}
+            className="w-full flex items-center justify-between p-6 border rounded-xl hover:bg-primary mt-6"
+          >
+            <div className="flex items-center gap-4">
+              <Camera className="h-10 w-10 text-primary" />
               <div>
                 <h3 className="font-semibold text-lg">Facial Recognition</h3>
-                <p className="text-sm text-muted-foreground">
-                  Biometric verification
-                </p>
+                <p className="text-sm text-muted-foreground">Align your face with the camera</p>
               </div>
             </div>
-          </div>
+            {faceVerified && <CheckCircle2 className="h-8 w-8 text-success" />}
+          </button>
 
-          {/* Status Message */}
+          {/* STATUS MESSAGE */}
           {statusMessage && (
             <div
-              className={`p-4 rounded-lg mb-6 text-center font-medium ${
-                authStep === "success"
+              className={`p-4 rounded-lg mt-6 text-center font-medium ${
+                step === "done"
                   ? "bg-success/10 text-success"
-                  : authStep === "error"
+                  : step === "error"
                   ? "bg-destructive/10 text-destructive"
                   : "bg-primary/10 text-primary"
               }`}
@@ -243,36 +205,32 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
             </div>
           )}
 
-          {/* Buttons */}
-          <div className="flex gap-4">
-            {authStep === "idle" && (
-              <Button
-                onClick={simulateRfidScan}
-                className="w-full h-16 text-lg font-semibold bg-gradient-primary hover:opacity-90 shadow-glow"
-              >
-                <Scan className="mr-2 h-6 w-6" />
-                Start Authentication
+          {/* FACIAL RECOGNITION VIEW */}
+          {step === "face" && (
+            <div className="mt-6">
+              <FacialRecognition onCapture={handleFaceCaptured} />
+            </div>
+          )}
+
+          {/* ERROR ACTIONS */}
+          {step === "error" && (
+            <div className="flex gap-4 mt-6">
+              <Button onClick={handleRetry} variant="outline" className="flex-1 h-14">
+                <AlertCircle className="mr-2 h-5 w-5" />
+                Retry
               </Button>
-            )}
 
-            {authStep === "error" && (
-              <>
-                <Button onClick={handleRetry} variant="outline" className="flex-1 h-14">
-                  <AlertCircle className="mr-2 h-5 w-5" />
-                  Retry
-                </Button>
-                <Button
-                  onClick={() => window.location.reload()}
-                  variant="destructive"
-                  className="flex-1 h-14"
-                >
-                  Cancel
-                </Button>
-              </>
-            )}
-          </div>
+              <Button
+                onClick={() => window.location.reload()}
+                variant="destructive"
+                className="flex-1 h-14"
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
 
-          {/* Footer */}
+          {/* FOOTER */}
           <div className="mt-8 pt-6 border-t border-border/50">
             <p className="text-sm text-center text-muted-foreground">
               Secure • Transparent • Verifiable

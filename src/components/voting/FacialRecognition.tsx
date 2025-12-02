@@ -1,238 +1,335 @@
-import { useState, useEffect, useRef } from "react";
-import { Button } from "@/components/ui/button";
-import { Camera, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
-import { toast } from "sonner";
-import * as faceapi from "@vladmandic/face-api";
+// FacialRecognition.tsx — Premium v2.5 with Live Face Outline Added
+// Only adds: properly scaled face outline.
+// Everything else (tilt, brightness, premium UI) remains unchanged.
+
+// @ts-ignore
+import * as faceapi from "face-api.js/dist/face-api.js";
+
+import React, { useEffect, useRef, useState } from "react";
 
 interface FacialRecognitionProps {
-  rfidData: any;
-  onSuccess: (faceData: string) => void;
-  onError: (error: string) => void;
+  onCapture: (descriptor: Float32Array) => void;
+  onError?: (msg: string) => void;
+  autoCapture?: boolean;
 }
 
-const FacialRecognition = ({ rfidData, onSuccess, onError }: FacialRecognitionProps) => {
-  const [status, setStatus] = useState<'idle' | 'loading-models' | 'scanning' | 'verifying' | 'success' | 'error'>('idle');
-  const [modelsLoaded, setModelsLoaded] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+const FacialRecognition: React.FC<FacialRecognitionProps> = ({
+  onCapture,
+  onError,
+  autoCapture = true,
+}) => {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
+  const [status, setStatus] = useState("Preparing camera…");
+  const [modelsReady, setModelsReady] = useState(false);
+  const [countdown, setCountdown] = useState<number | null>(null);
+
+  const [faceDetected, setFaceDetected] = useState(false);
+
+  // v2.5 extras
+  const [brightness, setBrightness] = useState<number | null>(null);
+  const [tilt, setTilt] = useState<number | null>(null);
+
+  // NEW: face outline box (scaled to display)
+  const [faceBox, setFaceBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+
+  // -------------------------------------------------------
+  // Load Models
+  // -------------------------------------------------------
   useEffect(() => {
-    loadModels();
-    return () => {
-      stopCamera();
+    const load = async () => {
+      try {
+        const MODEL_URL = "/models";
+
+        await Promise.all([
+          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        ]);
+
+        setModelsReady(true);
+        setStatus("Starting camera…");
+      } catch (err) {
+        console.error("Model load error:", err);
+        onError?.("Failed to load face recognition models.");
+        setStatus("Model loading failed.");
+      }
     };
-  }, []);
 
-  const loadModels = async () => {
-    try {
-      setStatus('loading-models');
-      const MODEL_URL = '/models'; // Models should be in public/models folder
-      
-      // Load face-api.js models
-      await Promise.all([
-        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-        faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL),
-      ]);
+    load();
+  }, [onError]);
 
-      setModelsLoaded(true);
-      setStatus('idle');
-      toast.success("Face recognition models loaded");
-    } catch (error) {
-      console.error("Error loading models:", error);
-      toast.warning("Could not load face recognition models. Using camera capture mode.");
-      setModelsLoaded(false);
-      setStatus('idle');
-    }
-  };
+  // -------------------------------------------------------
+  // Start webcam
+  // -------------------------------------------------------
+  useEffect(() => {
+    if (!modelsReady) return;
 
-  const startCamera = async () => {
-    try {
-      setStatus('scanning');
-      
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: 'user'
+    const startCam = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        });
+
+        if (videoRef.current) videoRef.current.srcObject = stream;
+        setStatus("Align your face inside the frame…");
+
+      } catch (err) {
+        onError?.("Unable to access webcam.");
+        setStatus("Unable to access webcam.");
+      }
+    };
+
+    startCam();
+
+    return () => {
+      if (videoRef.current?.srcObject instanceof MediaStream) {
+        videoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, [modelsReady, onError]);
+
+  // -------------------------------------------------------
+  // Detection Loop (Premium v2.5 + face outline)
+  // -------------------------------------------------------
+  useEffect(() => {
+    if (!modelsReady) return;
+
+    let stopped = false;
+
+    const loop = async () => {
+      if (stopped) return;
+
+      const video = videoRef.current;
+      const container = containerRef.current;
+
+      if (!video || !container || video.readyState < 2) {
+        requestAnimationFrame(loop);
+        return;
+      }
+
+      if (!autoCapture) {
+        requestAnimationFrame(loop);
+        return;
+      }
+
+      try {
+        const result = await faceapi
+          .detectSingleFace(
+            video,
+            new faceapi.TinyFaceDetectorOptions({
+              inputSize: 320,
+              scoreThreshold: 0.5,
+            })
+          )
+          .withFaceLandmarks()
+          .withFaceDescriptor();
+
+        if (result) {
+          const { box } = result.detection;
+          const landmarks = result.landmarks;
+
+          // 🌟 NEW: SCALE FACE OUTLINE TO DISPLAY
+          const videoWidth = video.videoWidth;
+          const videoHeight = video.videoHeight;
+
+          const displayWidth = container.clientWidth;
+          const displayHeight = container.clientHeight;
+
+          const scaleX = displayWidth / videoWidth;
+          const scaleY = displayHeight / videoHeight;
+
+          setFaceBox({
+            x: box.x * scaleX,
+            y: box.y * scaleY,
+            w: box.width * scaleX,
+            h: box.height * scaleY,
+          });
+
+          // v2.5 brightness
+          setBrightness(getVideoBrightness(video));
+
+          // v2.5 tilt
+          const leftEye = landmarks.getLeftEye();
+          const rightEye = landmarks.getRightEye();
+          const tiltAmount = Math.abs(leftEye[0].y - rightEye[0].y);
+          setTilt(tiltAmount);
+
+          if (!faceDetected) setFaceDetected(true);
+
+          if (countdown === null) {
+            setCountdown(3);
+            setStatus("Face detected — hold still… capturing in 3");
+          }
+        } else {
+          if (faceDetected) setFaceDetected(false);
+
+          setFaceBox(null);
+
+          if (countdown !== null && countdown > 0) {
+            setCountdown(null);
+          }
+
+          setStatus("No face detected");
         }
-      });
+      } catch (err) {
+        console.error("Detection error:", err);
+      }
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        streamRef.current = stream;
-        
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play();
-          toast.info("Camera ready. Position your face in the frame...");
-          
-          // Start face detection after a short delay
-          setTimeout(() => {
-            if (modelsLoaded) {
-              detectFace();
-            } else {
-              captureImage();
+      requestAnimationFrame(loop);
+    };
+
+    requestAnimationFrame(loop);
+    return () => {
+      stopped = true;
+    };
+  }, [modelsReady, countdown, autoCapture, faceDetected]);
+
+  // -------------------------------------------------------
+  // Countdown (unchanged)
+  // -------------------------------------------------------
+  useEffect(() => {
+    if (countdown === null) return;
+
+    if (countdown === 0) {
+      setStatus("Capturing…");
+
+      const video = videoRef.current;
+      if (video) {
+        faceapi
+          .detectSingleFace(
+            video,
+            new faceapi.TinyFaceDetectorOptions({ inputSize: 320 })
+          )
+          .withFaceLandmarks()
+          .withFaceDescriptor()
+          .then((finalDet) => {
+            if (finalDet) {
+              onCapture(finalDet.descriptor);
             }
-          }, 2000);
-        };
+          });
       }
-    } catch (error: any) {
-      console.error("Camera error:", error);
-      setStatus('error');
-      toast.error("Failed to access camera: " + error.message);
-      onError("Camera access denied");
+      return;
     }
-  };
 
-  const detectFace = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    const timer = setTimeout(() => {
+      setCountdown((prev) => (prev !== null ? prev - 1 : null));
+      setStatus(`Hold still… capturing in ${countdown - 1}`);
+    }, 1000);
 
-    try {
-      setStatus('verifying');
-      
-      const detections = await faceapi
-        .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
-        .withFaceLandmarks()
-        .withFaceDescriptor();
+    return () => clearTimeout(timer);
+  }, [countdown, onCapture]);
 
-      if (detections) {
-        // Draw detection on canvas
-        const displaySize = {
-          width: videoRef.current.videoWidth,
-          height: videoRef.current.videoHeight
-        };
-        faceapi.matchDimensions(canvasRef.current, displaySize);
-        const resizedDetections = faceapi.resizeResults(detections, displaySize);
-        
-        const context = canvasRef.current.getContext('2d');
-        if (context) {
-          context.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-          faceapi.draw.drawDetections(canvasRef.current, resizedDetections);
-          faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
-        }
+  // -------------------------------------------------------
+  // Brightness Helper
+  // -------------------------------------------------------
+  function getVideoBrightness(video: HTMLVideoElement): number {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return 1;
 
-        // Convert face descriptor to string
-        const faceEncoding = JSON.stringify(Array.from(detections.descriptor));
-        
-        setStatus('success');
-        toast.success("Face detected and verified!");
-        
-        // Stop camera
-        stopCamera();
-        
-        onSuccess(faceEncoding);
-      } else {
-        toast.warning("No face detected. Please position your face in the frame.");
-        setStatus('scanning');
-        // Retry after a second
-        setTimeout(detectFace, 1000);
-      }
-    } catch (error) {
-      console.error("Face detection error:", error);
-      // Fallback to image capture
-      captureImage();
+    canvas.width = 32;
+    canvas.height = 32;
+    ctx.drawImage(video, 0, 0, 32, 32);
+
+    const data = ctx.getImageData(0, 0, 32, 32).data;
+    let sum = 0;
+
+    for (let i = 0; i < data.length; i += 4) {
+      sum += data[i] + data[i + 1] + data[i + 2];
     }
-  };
 
-  const captureImage = () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    return sum / (32 * 32 * 3);
+  }
 
-    try {
-      const context = canvasRef.current.getContext('2d');
-      if (context) {
-        canvasRef.current.width = videoRef.current.videoWidth;
-        canvasRef.current.height = videoRef.current.videoHeight;
-        context.drawImage(videoRef.current, 0, 0);
+  // -------------------------------------------------------
+  // Guidance
+  // -------------------------------------------------------
+  let guidance = "Center your face inside the frame";
 
-        // Convert canvas to base64 image
-        const imageData = canvasRef.current.toDataURL('image/jpeg', 0.8);
-        
-        setStatus('success');
-        toast.success("Face captured successfully!");
-        
-        stopCamera();
-        onSuccess(imageData);
-      }
-    } catch (error) {
-      console.error("Capture error:", error);
-      setStatus('error');
-      toast.error("Failed to capture image");
-      onError("Image capture failed");
-    }
-  };
+  if (!faceDetected) guidance = "No face detected";
 
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-  };
+  if (brightness !== null) {
+    if (brightness < 60) guidance = "Too dark — adjust lighting";
+    else if (brightness > 200) guidance = "Too bright — avoid direct light";
+  }
 
+  if (tilt !== null && tilt > 12) guidance = "Keep your head level";
+
+  if (countdown !== null) guidance = status;
+
+  // -------------------------------------------------------
+  // UI
+  // -------------------------------------------------------
   return (
-    <div className="space-y-4">
-      <div className={`flex items-center gap-4 p-6 rounded-xl border-2 transition-all ${
-        status === 'success'
-          ? "border-success bg-success/5"
-          : status === 'scanning' || status === 'verifying'
-          ? "border-primary bg-primary/5 animate-pulse"
-          : status === 'error'
-          ? "border-destructive bg-destructive/5"
-          : "border-border bg-muted/30"
-      }`}>
-        <div className="flex-shrink-0">
-          {status === 'success' ? (
-            <CheckCircle2 className="h-10 w-10 text-success" />
-          ) : status === 'scanning' || status === 'verifying' || status === 'loading-models' ? (
-            <Loader2 className="h-10 w-10 text-primary animate-spin" />
-          ) : status === 'error' ? (
-            <AlertCircle className="h-10 w-10 text-destructive" />
-          ) : (
-            <Camera className="h-10 w-10 text-muted-foreground" />
-          )}
-        </div>
-        <div className="flex-1">
-          <h3 className="font-semibold text-lg">Facial Recognition</h3>
-          <p className="text-sm text-muted-foreground">
-            {status === 'loading-models' && "Loading AI models..."}
-            {status === 'scanning' && "Position your face in the camera frame"}
-            {status === 'verifying' && "Analyzing facial features..."}
-            {status === 'success' && "Face verified successfully!"}
-            {status === 'error' && "Face verification failed"}
-            {status === 'idle' && "Ready to scan your face"}
-          </p>
-        </div>
-        {status === 'idle' && (
-          <Button
-            onClick={startCamera}
-            className="bg-primary hover:bg-primary/90"
+    <div className="flex flex-col items-center gap-3 w-full">
+
+      {/* VIDEO + PREMIUM FRAME */}
+      <div
+        ref={containerRef}
+        className="
+          relative w-full max-w-md mx-auto rounded-3xl overflow-hidden
+          backdrop-blur-md bg-white/10
+          shadow-[0_8px_30px_rgba(0,0,0,0.12)]
+        "
+        style={{ aspectRatio: "4 / 3" }}
+      >
+        <video
+          ref={videoRef}
+          autoPlay
+          muted
+          playsInline
+          className="
+            absolute inset-0 w-full h-full object-cover rounded-3xl
+          "
+        />
+
+        {/* GLOW FRAME (same Premium v2) */}
+        <div className="absolute inset-0 flex justify-center items-center pointer-events-none">
+          <div
+            className={`
+              w-[68%] h-[68%] rounded-full border-4
+              transition-all duration-500
+              ${faceDetected ? "border-emerald-400 shadow-[0_0_25px_rgba(16,185,129,0.6)]" : "border-white/40"}
+            `}
           >
-            <Camera className="mr-2 h-4 w-4" />
-            Start Camera
-          </Button>
+            {faceDetected && (
+              <div className="absolute inset-0 rounded-full border-4 border-emerald-300 animate-ping"></div>
+            )}
+          </div>
+        </div>
+
+        {/* 🌟 NEW: LIVE FACE OUTLINE */}
+        {faceBox && (
+          <div
+            className="absolute border-2 border-emerald-300 rounded-xl pointer-events-none transition-all duration-75"
+            style={{
+              left: faceBox.x,
+              top: faceBox.y,
+              width: faceBox.w,
+              height: faceBox.h,
+            }}
+          ></div>
         )}
-        {status === 'success' && (
-          <CheckCircle2 className="h-8 w-8 text-success" />
+
+        {/* Countdown badge */}
+        {countdown !== null && (
+          <div className="absolute top-4 right-4 bg-emerald-600 text-white px-4 py-1 rounded-full text-sm font-semibold shadow-lg">
+            {countdown}
+          </div>
         )}
       </div>
 
-      {/* Video and Canvas for face detection */}
-      {(status === 'scanning' || status === 'verifying') && (
-        <div className="relative w-full max-w-2xl mx-auto rounded-lg overflow-hidden border-2 border-primary">
-          <video
-            ref={videoRef}
-            className="w-full"
-            autoPlay
-            muted
-            playsInline
-          />
-          <canvas
-            ref={canvasRef}
-            className="absolute top-0 left-0 w-full h-full"
-          />
-        </div>
-      )}
+      {/* STATUS TEXT */}
+      <p
+        className={`
+          text-sm font-medium text-center transition-all duration-300
+          ${faceDetected ? "text-emerald-600" : "text-gray-600"}
+        `}
+      >
+        {guidance}
+      </p>
     </div>
   );
 };

@@ -12,10 +12,10 @@ import Results from "./pages/Results";
 import RegistrationConfirmation from "./pages/RegistrationConfirmation";
 import Register from "./pages/Register";
 import Login from "./pages/Login";
-import Kiosk from "./pages/Kiosk";
 import { supabase } from "@/integrations/supabase/client";
 import { AdminRoute } from "@/components/AdminRoute";
-
+import RegisterVerify from "./pages/RegisterVerify";
+import RegistrationError from "./pages/RegistrationError";
 
 const queryClient = new QueryClient();
 
@@ -29,10 +29,11 @@ const App = () => (
           {/* Public routes */}
           <Route path="/" element={<Index />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/register/verify" element={<RegisterVerify />} />
+          <Route path="/registration-error" element={<RegistrationError />} />
           <Route path="/registration-confirmation" element={<RegistrationConfirmation />} />
           <Route path="/voting" element={<VotingKiosk />} />
           <Route path="/results" element={<Results />} />
-          <Route path="/kiosk" element={<Kiosk />} />
 
           {/* Admin routes */}
           <Route path="/login" element={<Login />} />

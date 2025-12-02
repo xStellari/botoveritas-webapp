@@ -97,7 +97,7 @@ const Index = () => {
       toast.error("No active elections available.");
       return;
     }
-    navigate("/kiosk");
+    navigate("/voting");
   };
 
   return (

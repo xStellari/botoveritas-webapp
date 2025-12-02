@@ -122,14 +122,13 @@ const VotingKiosk = () => {
   // AUTH SUCCESS + ANTI-SIMULTANEOUS LOGIN
   // WITH LOGGING
   // -------------------------------------------------
-  const handleAuthSuccess = async (auth: { rfidTag: string; faceHash: string }) => {
-    console.log("LOOKING UP VOTER:", auth.rfidTag, auth.faceHash);
+  const handleAuthSuccess = async (auth: { rfidTag: string}) => {
+    console.log("LOOKING UP VOTER:", auth.rfidTag);
 
     const { data: voterRow, error } = await supabase
       .from("voters")
       .select("*")
       .eq("rfid_tag", auth.rfidTag)
-      .eq("face_id_hash", auth.faceHash)
       .single();
 
     if (error || !voterRow) {
@@ -314,6 +313,18 @@ const VotingKiosk = () => {
   // -------------------------------------------------
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary/5 via-background to-secondary/5">
+      <input
+        autoFocus
+        tabIndex={-1}
+        style={{
+          position: "absolute",
+          opacity: 0,
+          pointerEvents: "none",
+          top: "-9999px",
+        }}
+      />
+      
+        {/* Render different steps based on currentStep state */}
       {currentStep === "auth" && (
         <AuthenticationScreen onAuthSuccess={handleAuthSuccess} />
       )}
