@@ -36,12 +36,12 @@ const BallotScreenWithAbstain = ({
   onComplete,
   initialSelections = []
 }: BallotScreenProps) => {
-
+  const voting_duration = 300; // 5 minutes in seconds
   const { toast } = useToast();
   const [selections, setSelections] = useState<{ [positionId: string]: string }>({});
   const [positions, setPositions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [timeRemaining, setTimeRemaining] = useState(600);
+  const [timeRemaining, setTimeRemaining] = useState(voting_duration);
 
   const [abstainConfirm, setAbstainConfirm] = useState<{ show: boolean; positionId: string }>({
     show: false,

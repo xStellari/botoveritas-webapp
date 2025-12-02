@@ -14,10 +14,15 @@ import { toast } from "sonner";
 
 import { logSessionEvent } from "@/utils/logSessionEvent";
 
+import {
+  SESSION_EXPIRATION_MINUTES,
+  SESSION_HEARTBEAT_INTERVAL_MS,
+} from "@/config/kioskConfig";
+
 // -------------------------------------------------
 // SIMPLE KIOSK CONFIG (NO kiosk_id ANYWHERE ANYMORE)
 // -------------------------------------------------
-const KIOSK_SESSION_MINUTES = 5; // how long a session stays active
+const KIOSK_SESSION_MINUTES = SESSION_EXPIRATION_MINUTES; // how long a session stays active
 
 export type VoterRow = Tables<"voters">;
 
@@ -25,6 +30,7 @@ export interface VoterData extends VoterRow {
   rfidVerified?: boolean;
   faceVerified?: boolean;
 }
+
 
 export type VotingStep =
   | "auth"
@@ -79,7 +85,7 @@ const VotingKiosk = () => {
       if (!error) {
         await logSessionEvent({ voterId: voterData.id, action: "session_extend" });
       }
-    }, 5000);
+    }, SESSION_HEARTBEAT_INTERVAL_MS);
 
     return () => clearInterval(interval);
   }, [voterData]);
