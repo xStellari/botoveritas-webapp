@@ -38,6 +38,13 @@ export default function Register() {
       },
     });
   };
+  const toTitleCase = (str: string) => 
+    str
+      .toLowerCase()
+      .split(/\s+/)
+      .map((word) => word.length === 0 ? "" : word[0].toUpperCase() + word.slice(1))
+      .join(" ");
+  
 
   return (
     <div className="min-h-screen relative flex items-center justify-center p-6 overflow-hidden">
@@ -129,7 +136,7 @@ export default function Register() {
                   <Label className="font-semibold">First Name</Label>
                   <Input
                     value={firstName}
-                    onChange={(e) => setFirstName(e.target.value)}
+                    onChange={(e) => setFirstName(toTitleCase(e.target.value))}
                     required
                     className="mt-1"
                   />
@@ -140,7 +147,7 @@ export default function Register() {
                   <Input
                     value={middleName}
                     maxLength={1}
-                    onChange={(e) => setMiddleName(e.target.value)}
+                    onChange={(e) => setMiddleName(e.target.value.toUpperCase())}
                     className="mt-1"
                   />
                 </div>
@@ -149,7 +156,7 @@ export default function Register() {
                   <Label className="font-semibold">Last Name</Label>
                   <Input
                     value={lastName}
-                    onChange={(e) => setLastName(e.target.value)}
+                    onChange={(e) => setLastName(toTitleCase(e.target.value))}
                     required
                     className="mt-1"
                   />
@@ -206,13 +213,27 @@ export default function Register() {
                 <Label className="font-semibold">FEU Email</Label>
                 <div className="flex items-center gap-2 mt-1">
                   <Input
-                    placeholder="your.email"
+                    placeholder="fmsurname"
                     value={signupEmail}
-                    onChange={(e) =>
-                      setSignupEmail(
-                        e.target.value.replace(/@feualabang\.edu\.ph$/i, "").trim()
-                      )
-                    }
+                    onChange={(e) => {
+                      let value = e.target.value;
+                      
+                      // If user typed "@", freeze input by not updating state
+                      if (value.includes("@")) {
+                        //Toast error message
+                        toast.error(
+                          <div>
+                            <p>⚠️ Please enter only the email prefix (before @). </p>
+                            <p>The domain is automatically added.</p>
+                          </div>
+                        );
+                          
+                        //Optionally blur to emphasize block
+                        e.target.blur();
+                        return;
+                      }
+                      setSignupEmail(value.trim());
+                    }}
                     required
                   />
                   <span className="text-muted-foreground">@feualabang.edu.ph</span>
