@@ -92,7 +92,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 
     if (!data.face_descriptor) {
       setStatusMessage(
-        "No facial data found for this RFID. Please re-register."
+        "No facial data found for this RFID."
       );
       setStep("error");
       return;
@@ -154,7 +154,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
       navigate("/registration-error", {
         state: {
           message:
-            "Face mismatch detected. Suspicious login attempt logged. Please contact election staff.",
+            "Face mismatch detected. Suspicious login attempt logged.",
         },
       });
     }
