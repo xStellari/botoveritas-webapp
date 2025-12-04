@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -22,6 +23,7 @@ type Step = "rfid" | "face" | "done" | "error";
 
 const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   const MASTER_RFID_TAG = "1226512821";
+  const navigate = useNavigate();
 
   const [step, setStep] = useState<Step>("rfid");
   const [statusMessage, setStatusMessage] = useState("");
@@ -32,9 +34,31 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   const [storedDescriptor, setStoredDescriptor] = useState<Float32Array | null>(
     null
   );
+
+  useEffect(() => {
+    if (step === "error"){
+      const timer = setTimeout(() => {
+        window.location.reload();
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [step]);
+  
   const generateSimulatedRFID = () => {
     return Math.floor(1000000000 + Math.random() * 9000000000).toString();
   }
+  
+
+  const logAttempt = async (type: string, rfid: string, distance?: number) => {
+    await supabase.from("auth_logs").insert([
+      {
+        event_type: type,
+        rfid_tag: rfid,
+        distance_score: distance ?? null,
+      }
+    ]);
+  };
+
 
   // ---------------------------------------------------------------------
   // 1️⃣ HANDLE RFID TAP
@@ -82,6 +106,16 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
     setStep("face");
   };
 
+  // Manual RFID Typing
+  const handleManualRFID = ( e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter"){
+      const value = (e.target as HTMLInputElement).value.trim();
+      if(value.length >= 4){
+        handleRFID(value);
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------
   // 2️⃣ HANDLE FACE CAPTURE → MATCH AGAINST STORED DESCRIPTOR
   // ---------------------------------------------------------------------
@@ -111,13 +145,23 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
       }, 500);
     } else {
       setStatusMessage(
-        `Face mismatch. Please try again. (distance: ${distance.toFixed(3)})`
+        "Face mismatch. Authentication Failed - suspicious login attempt detected"
       );
+      setStep("error");
+
+      logAttempt("FACE_MISMATCH", rfidTag, distance);
+
+      navigate("/registration-error", {
+        state: {
+          message:
+            "Face mismatch detected. Suspicious login attempt logged. Please contact election staff.",
+        },
+      });
     }
   };
 
   // ---------------------------------------------------------------------
-  // 3️⃣ RETRY BUTTON
+  // 3️⃣ RETRY BUTTON (currently not used for face mismatch, but kept as-is)
   // ---------------------------------------------------------------------
   const handleRetry = () => {
     setStep("rfid");
@@ -150,12 +194,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
             
             {/* 🔵 TEMPORARY BUTTON FOR THESIS TESTING — REMOVE ANYTIME */}
             <div className="w-full flex justify-center mt-4">
-              <Button
-                onClick={() => handleRFID(generateSimulatedRFID())}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg shadow"
-                >
-                  Simulate RFID Scan (Test Only)
-                </Button>
+ 
             </div>
 
 
@@ -169,6 +208,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
               setStep("rfid");
               setStatusMessage("Please tap your RFID card...");
             }}
+            
             className="
               group w-full flex items-center justify-between p-6 border rounded-xl
               transition-colors hover:bg-primary/10 hover:text-primary
@@ -192,6 +232,22 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
               <CheckCircle2 className="h-8 w-8 text-success" />
             )}
           </button>
+
+          {/* Manual RFID Input for Testing */}
+          <div className="mt-4">
+            <input
+              type="text"
+              placeholder="Enter RFID Tag (for testing)"
+              onKeyDown={handleManualRFID}
+              className=" 
+                w-full p-3 rounded-lg border border-gray-300 
+                focus:outline-none focus:ring-2 focus:ring-primary 
+                text-center text-lg"
+              />
+              <p className="text-xs text-muted-foreground mt-2 text-center">
+                Press Enter after typing RFID
+              </p>
+          </div>
 
           {/* ================================
               FACE AUTH BUTTON
@@ -253,23 +309,17 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 
           {/* ERROR ACTIONS */}
           {step === "error" && (
-            <div className="flex gap-4 mt-6">
-              <Button
-                onClick={handleRetry}
-                variant="outline"
-                className="flex-1 h-14"
-              >
-                <AlertCircle className="mr-2 h-5 w-5" />
-                Retry
-              </Button>
-
-              <Button
-                onClick={() => window.location.reload()}
-                variant="destructive"
-                className="flex-1 h-14"
-              >
-                Cancel
-              </Button>
+            <div className="mt-8 text-center">
+              <p className="text-red-600 font-bold text-xl mb-4">
+                Authentication Failed
+              </p>
+              <p className="text-muted-foreground mb-6">
+                Suspicious login attempt detected.                
+              </p>
+              {/* Auto-redirect after 5 seconds */}
+              <p className="text-sm text-muted-foreground">
+                Returning to main... 
+              </p>
             </div>
           )}
 
@@ -289,4 +339,3 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 };
 
 export default AuthenticationScreen;
-

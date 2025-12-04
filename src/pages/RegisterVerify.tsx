@@ -110,7 +110,7 @@ export default function RegisterVerify() {
 
     if (error) {
       navigate("/registration-error", {
-        state: { message: "Registration failed. Please try again." },
+        state: { message: "Registration failed. Please try again." + error},
       });
       return;
     }
