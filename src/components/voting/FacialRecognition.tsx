@@ -69,7 +69,10 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
     const startCam = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+          video: {
+            facingMode: "user",
+            width: { ideal: 640, max:720 }, 
+            height: { ideal: 480, max:480 }},
         });
 
         if (videoRef.current) videoRef.current.srcObject = stream;
