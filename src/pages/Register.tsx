@@ -85,7 +85,7 @@ export default function Register() {
       <div className="absolute inset-0 -z-10 bg-gradient-to-br from-primary/15 via-background to-secondary/15 animate-gradient" />
 
       <div className="max-w-2xl w-full animate-fade-in-up">
-        <Card className="shadow-xl rounded-2xl border border-primary/20 bg-white/90 backdrop-blur">
+        <Card className="shadow-xl rounded-2xl border border-emerald/20 bg-white/90 backdrop-blur">
 
           {/* ========================== */}
           {/*   REDESIGNED HEADER + STEPPER   */}
@@ -187,7 +187,7 @@ export default function Register() {
                     onChange={(e) =>
                       setMiddleName(e.target.value.toUpperCase())
                     }
-                    className="mt-1 text-center"
+                    className="mt-1"
                   />
                 </div>
 
@@ -233,6 +233,7 @@ export default function Register() {
                   <option>1st Year</option>
                   <option>2nd Year</option>
                   <option>3rd Year</option>
+                  <option>4th Year</option>
                   <option>4th Year</option>
                 </select>
               </div>

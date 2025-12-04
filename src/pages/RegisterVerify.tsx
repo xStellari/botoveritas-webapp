@@ -41,6 +41,11 @@ export default function RegisterVerify() {
     useState<Float32Array | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
 
+  // Temporary function to simulate RFID scan for testing
+  const generateSimulatedRFID = () => {
+    return Math.floor(1000000000 + Math.random() * 9000000000).toString();
+  };
+
   // 🔒 Prevent accessing this page directly
   if (!data) {
     return (
@@ -306,7 +311,10 @@ export default function RegisterVerify() {
 
                     {/* Temporary Button for testing without RFID hardware */}
                       <Button
-                        onClick={() => setRfid("999999")}
+                        onClick={() => {
+                          const newRFID = generateSimulatedRFID();
+                          setRfid(newRFID);
+                        }}
                         className="mt-3 bg-blue-600 govver:bg-blue-700 text-white"
                       >
                         Simulate RFID Scan

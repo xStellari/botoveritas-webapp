@@ -32,6 +32,9 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   const [storedDescriptor, setStoredDescriptor] = useState<Float32Array | null>(
     null
   );
+  const generateSimulatedRFID = () => {
+    return Math.floor(1000000000 + Math.random() * 9000000000).toString();
+  }
 
   // ---------------------------------------------------------------------
   // 1️⃣ HANDLE RFID TAP
@@ -144,10 +147,11 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
             <p className="text-xl text-muted-foreground text-center">
               Blockchain-Based Voting System
             </p>
+            
             {/* 🔵 TEMPORARY BUTTON FOR THESIS TESTING — REMOVE ANYTIME */}
             <div className="w-full flex justify-center mt-4">
               <Button
-                onClick={() => handleRFID("999999")}
+                onClick={() => handleRFID(generateSimulatedRFID())}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg shadow"
                 >
                   Simulate RFID Scan (Test Only)
