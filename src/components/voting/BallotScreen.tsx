@@ -21,12 +21,14 @@ import { CheckCircle2, User, Clock, ArrowRight, Ban } from "lucide-react";
 import feuLogo from "@/assets/feu-logo.png";
 import { supabase } from "@/integrations/supabase/client";
 
+// 🔥 UPDATED PROPS — timeLeft added
 interface BallotScreenProps {
   voterData: any;
   electionId: string;
   electionData: any;
   onComplete: (selections: any[]) => void;
   initialSelections?: any[];
+  timeLeft: number; // ⬅ NEW — time passed from VotingKiosk
 }
 
 const BallotScreenWithAbstain = ({
@@ -34,37 +36,27 @@ const BallotScreenWithAbstain = ({
   electionId,
   electionData,
   onComplete,
-  initialSelections = []
+  initialSelections = [],
+  timeLeft, // ⬅ NEW
 }: BallotScreenProps) => {
-  const voting_duration = 300; // 5 minutes in seconds
+
   const { toast } = useToast();
   const [selections, setSelections] = useState<{ [positionId: string]: string }>({});
   const [positions, setPositions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [timeRemaining, setTimeRemaining] = useState(voting_duration);
+
+  // ❌ Removed internal timer — BallotScreen must not track time
+  // const voting_duration = 300;
+  // const [timeRemaining, setTimeRemaining] = useState(voting_duration);
 
   const [abstainConfirm, setAbstainConfirm] = useState<{ show: boolean; positionId: string }>({
     show: false,
-    positionId: ""
+    positionId: "",
   });
 
   useEffect(() => {
     loadPositionsAndCandidates();
     initializeSelections();
-  }, []);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setTimeRemaining(prev => {
-        if (prev <= 0) {
-          clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
   }, []);
 
   const loadPositionsAndCandidates = async () => {
@@ -81,20 +73,18 @@ const BallotScreenWithAbstain = ({
       toast({
         title: "Error",
         description: "Failed to load ballot",
-        variant: "destructive"
+        variant: "destructive",
       });
       setLoading(false);
       return;
     }
 
-    // Remove any "Abstain" that might remain from old DB entries
     const filteredCandidates = candidatesData?.filter(
       (c) => c.name.toLowerCase() !== "abstain"
     );
 
-    // Group candidates by position
     const positionsMap = new Map<string, any[]>();
-    filteredCandidates?.forEach(candidate => {
+    filteredCandidates?.forEach((candidate) => {
       if (!positionsMap.has(candidate.position)) {
         positionsMap.set(candidate.position, []);
       }
@@ -105,7 +95,7 @@ const BallotScreenWithAbstain = ({
       ([position, candidates]) => ({
         id: position.toLowerCase().replace(/\s+/g, "-"),
         title: position,
-        candidates
+        candidates,
       })
     );
 
@@ -115,15 +105,16 @@ const BallotScreenWithAbstain = ({
 
   const initializeSelections = () => {
     const initialState: { [key: string]: string } = {};
-    initialSelections.forEach(sel => {
+    initialSelections.forEach((sel) => {
       initialState[sel.position] = sel.candidateId;
     });
     setSelections(initialState);
   };
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
+  const formatTime = (ms: number) => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
@@ -131,42 +122,39 @@ const BallotScreenWithAbstain = ({
     if (candidateId === "ABSTAIN") {
       setAbstainConfirm({ show: true, positionId });
     } else {
-      setSelections(prev => ({
+      setSelections((prev) => ({
         ...prev,
-        [positionId]: candidateId
+        [positionId]: candidateId,
       }));
     }
   };
 
   const confirmAbstain = () => {
-    setSelections(prev => ({
+    setSelections((prev) => ({
       ...prev,
-      [abstainConfirm.positionId]: "ABSTAIN"
+      [abstainConfirm.positionId]: "ABSTAIN",
     }));
     setAbstainConfirm({ show: false, positionId: "" });
 
     toast({
       title: "Abstention Recorded",
-      description: "Your abstention has been recorded."
+      description: "Your abstention has been recorded.",
     });
   };
 
   const handleSubmit = () => {
-    const selectedCount = Object.keys(selections).length;
-
-    if (selectedCount === 0) {
+    if (Object.keys(selections).length === 0) {
       toast({
         title: "No selections made",
         description: "Select at least one candidate or abstain.",
-        variant: "destructive"
+        variant: "destructive",
       });
       return;
     }
 
-    // Convert selections to proper format
     const candidateSelections = Object.entries(selections).map(
       ([positionId, candidateId]) => {
-        const position = positions.find(p => p.id === positionId);
+        const position = positions.find((p) => p.id === positionId);
 
         if (candidateId === "ABSTAIN") {
           return {
@@ -174,6 +162,8 @@ const BallotScreenWithAbstain = ({
             candidateId: "ABSTAIN",
             candidateName: "ABSTAIN",
             slate: "N/A",
+            electionId,
+            electionName: electionData.title,
           };
         }
 
@@ -184,6 +174,8 @@ const BallotScreenWithAbstain = ({
           candidateId: candidate.id,
           candidateName: candidate.name,
           slate: candidate.slate || "N/A",
+          electionId,
+          electionName: electionData.title,
         };
       }
     );
@@ -223,17 +215,20 @@ const BallotScreenWithAbstain = ({
                   {voterData.first_name} {voterData.last_name}
                 </span>
               </div>
+
               <Separator orientation="vertical" className="h-8" />
+
+              {/* ⏳ DYNAMIC TIMER (from VotingKiosk) */}
               <div
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-                  timeRemaining < 60
+                  timeLeft < 60000
                     ? "bg-destructive/10 text-destructive"
                     : "bg-primary/10 text-primary"
                 }`}
               >
                 <Clock className="h-5 w-5" />
                 <span className="font-mono text-lg font-bold">
-                  {formatTime(timeRemaining)}
+                  {formatTime(timeLeft)}
                 </span>
               </div>
             </div>
@@ -251,7 +246,7 @@ const BallotScreenWithAbstain = ({
         {/* Ballot Positions */}
         <ScrollArea className="h-[calc(100vh-280px)]">
           <div className="space-y-6 pr-4">
-            {positions.map(position => (
+            {positions.map((position) => (
               <Card
                 key={position.id}
                 className="border-2 border-primary/10 bg-card/95 backdrop-blur-sm"
@@ -271,9 +266,7 @@ const BallotScreenWithAbstain = ({
 
                   <RadioGroup
                     value={selections[position.id] || ""}
-                    onValueChange={(value) =>
-                      handleSelection(position.id, value)
-                    }
+                    onValueChange={(value) => handleSelection(position.id, value)}
                   >
                     <div className="space-y-4">
 
@@ -286,9 +279,7 @@ const BallotScreenWithAbstain = ({
                               ? "border-primary bg-primary/5"
                               : "border-border bg-background"
                           }`}
-                          onClick={() =>
-                            handleSelection(position.id, candidate.id)
-                          }
+                          onClick={() => handleSelection(position.id, candidate.id)}
                         >
                           <RadioGroupItem
                             value={candidate.id}
@@ -301,9 +292,7 @@ const BallotScreenWithAbstain = ({
                                 <User className="h-8 w-8 text-white" />
                               </div>
                               <div className="flex-1">
-                                <h3 className="font-semibold text-lg">
-                                  {candidate.name}
-                                </h3>
+                                <h3 className="font-semibold text-lg">{candidate.name}</h3>
                                 {candidate.slate && (
                                   <p className="text-sm text-secondary font-medium mb-2">
                                     {candidate.slate}
@@ -320,16 +309,14 @@ const BallotScreenWithAbstain = ({
                         </div>
                       ))}
 
-                      {/* ABSTAIN OPTION (the ONLY one) */}
+                      {/* ABSTAIN OPTION */}
                       <div
                         className={`flex items-start gap-4 p-4 rounded-lg border-2 transition-all cursor-pointer hover:border-warning/50 ${
                           selections[position.id] === "ABSTAIN"
                             ? "border-warning bg-warning/5"
                             : "border-border bg-muted/20"
                         }`}
-                        onClick={() =>
-                          handleSelection(position.id, "ABSTAIN")
-                        }
+                        onClick={() => handleSelection(position.id, "ABSTAIN")}
                       >
                         <RadioGroupItem
                           value="ABSTAIN"
@@ -337,18 +324,13 @@ const BallotScreenWithAbstain = ({
                           className="mt-1"
                         />
 
-                        <Label
-                          htmlFor={`${position.id}-abstain`}
-                          className="flex-1 cursor-pointer"
-                        >
+                        <Label htmlFor={`${position.id}-abstain`} className="flex-1 cursor-pointer">
                           <div className="flex items-center gap-3">
                             <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-warning/20 flex items-center justify-center">
                               <Ban className="h-6 w-6 text-warning" />
                             </div>
                             <div>
-                              <h3 className="font-semibold">
-                                Abstain from this position
-                              </h3>
+                              <h3 className="font-semibold">Abstain from this position</h3>
                               <p className="text-sm text-muted-foreground">
                                 I choose not to vote for this position.
                               </p>
@@ -400,7 +382,6 @@ const BallotScreenWithAbstain = ({
 
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-
             <AlertDialogAction
               onClick={confirmAbstain}
               className="bg-warning hover:bg-warning/90"

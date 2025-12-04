@@ -1,28 +1,21 @@
+// VotingKiosk.tsx — Final Version (Timer Start on Ballot Click, Timeout Modal, No Floating Timer)
+
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 
 import AuthenticationScreen from "@/components/voting/AuthenticationScreen";
+import ElectionSelection from "@/components/voting/ElectionSelection";
 import BallotScreen from "@/components/voting/BallotScreen";
 import ReviewScreen from "@/components/voting/ReviewScreen";
 import SubmissionScreen from "@/components/voting/SubmissionScreen";
-import ElectionSelection from "@/components/voting/ElectionSelection";
 import ElectionFinishedPopup from "@/components/voting/ElectionFinishedPopup";
 
 import { supabase } from "@/integrations/supabase/client";
-import type { Tables } from "@/types/supabase";
 import { toast } from "sonner";
 
+import type { Tables } from "@/types/supabase";
 import { logSessionEvent } from "@/utils/logSessionEvent";
-
-import {
-  SESSION_EXPIRATION_MINUTES,
-  SESSION_HEARTBEAT_INTERVAL_MS,
-} from "@/config/kioskConfig";
-
-// -------------------------------------------------
-// SIMPLE KIOSK CONFIG (NO kiosk_id ANYWHERE ANYMORE)
-// -------------------------------------------------
-const KIOSK_SESSION_MINUTES = SESSION_EXPIRATION_MINUTES; // how long a session stays active
+import { SESSION_HEARTBEAT_INTERVAL_MS } from "@/config/kioskConfig";
 
 export type VoterRow = Tables<"voters">;
 
@@ -30,7 +23,6 @@ export interface VoterData extends VoterRow {
   rfidVerified?: boolean;
   faceVerified?: boolean;
 }
-
 
 export type VotingStep =
   | "auth"
@@ -48,6 +40,7 @@ export interface CandidateSelection {
   candidateName: string;
   slate: string;
   electionId: string;
+  electionName: string; 
 }
 
 const VotingKiosk = () => {
@@ -59,72 +52,21 @@ const VotingKiosk = () => {
   const [currentSelections, setCurrentSelections] = useState<CandidateSelection[]>([]);
   const [allSelections, setAllSelections] = useState<CandidateSelection[]>([]);
 
-  const [transactionHash, setTransactionHash] = useState<string>("");
   const [selectedElection, setSelectedElection] = useState<any>(null);
+  const [transactionHash, setTransactionHash] = useState("");
+
   const [completedElections, setCompletedElections] = useState<string[]>([]);
   const [activeElections, setActiveElections] = useState<any[]>([]);
   const [expiredElections, setExpiredElections] = useState<any[]>([]);
 
-  // -------------------------------------------------
-  // HEARTBEAT — keep session alive while voting
-  // LOG: "extend"
-  // -------------------------------------------------
-  useEffect(() => {
-    if (!voterData) return;
+  // 🔥 TIMER LOGIC
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const [showTimeoutModal, setShowTimeoutModal] = useState(false);
 
-    const interval = setInterval(async () => {
-      const newExpiry = new Date(
-        Date.now() + KIOSK_SESSION_MINUTES * 60 * 1000
-      ).toISOString();
-
-      const { error } = await supabase
-        .from("voter_sessions")
-        .update({ expires_at: newExpiry })
-        .eq("voter_id", voterData.id);
-
-      if (!error) {
-        await logSessionEvent({ voterId: voterData.id, action: "session_extend" });
-      }
-    }, SESSION_HEARTBEAT_INTERVAL_MS);
-
-    return () => clearInterval(interval);
-  }, [voterData]);
-
-  // -------------------------------------------------
-  // CAST VOTE
-  // -------------------------------------------------
-  const castVote = async (
-    electionId: string,
-    candidateId: string,
-    voterId: string
-  ) => {
-    const { data, error } = await supabase.from("votes").insert([
-      {
-        election_id: electionId,
-        candidate_id: candidateId === "ABSTAIN" ? null : candidateId,
-        voter_id: voterId,
-        is_abstain: candidateId === "ABSTAIN",
-      },
-    ]);
-
-    if (error) {
-      if (error.code === "23505") {
-        console.warn("Already voted in this election.");
-      } else {
-        console.error("Error casting vote:", error.message);
-      }
-    } else {
-      console.log("Vote recorded:", data);
-    }
-  };
-
-  // -------------------------------------------------
-  // AUTH SUCCESS + ANTI-SIMULTANEOUS LOGIN
-  // WITH LOGGING
-  // -------------------------------------------------
-  const handleAuthSuccess = async (auth: { rfidTag: string}) => {
-    console.log("LOOKING UP VOTER:", auth.rfidTag);
-
+  // -----------------------------------------------------
+  // AUTH SUCCESS (NO TIMER HERE)
+  // -----------------------------------------------------
+  const handleAuthSuccess = async (auth: { rfidTag: string }) => {
     const { data: voterRow, error } = await supabase
       .from("voters")
       .select("*")
@@ -132,74 +74,42 @@ const VotingKiosk = () => {
       .single();
 
     if (error || !voterRow) {
-      console.error("Voter lookup error:", error?.message);
-      toast.error("Authentication failed. Voter not found.");
+      toast.error("Voter not found.");
       return;
     }
 
     const nowIso = new Date().toISOString();
-
-    // Check if voter already has an active session
-    const { data: existingSessions, error: sessionError } = await supabase
+    const { data: existingSessions } = await supabase
       .from("voter_sessions")
       .select("*")
       .eq("voter_id", voterRow.id)
       .gt("expires_at", nowIso);
 
-    if (sessionError) {
-      console.error("Session check error:", sessionError.message);
-      toast.error("Cannot verify your session. Please contact election staff.");
+    if (existingSessions?.length) {
+      navigate("/registration-error", {
+        state: {
+          title: "Active Voting Session Detected",
+          message:
+            "There is already an active voting session for this voter. Please wait before trying again.",
+        },
+      });
       return;
     }
 
-    if (existingSessions && existingSessions.length > 0) {
-      // LOG BLOCKED
-      await logSessionEvent({ voterId: voterRow.id, action: "simultaneous_block" });
-
-      toast.error(
-        "There is already an active voting session for this voter.\n" +
-          "Please finish the existing session or wait a few minutes before trying again."
-      );
-      return;
-    }
-
-    // Create a new session (NO kiosk_id)
-    const newExpiresAt = new Date(
-      Date.now() + KIOSK_SESSION_MINUTES * 60 * 1000
-    ).toISOString();
-
-    const { error: upsertError } = await supabase.from("voter_sessions").upsert({
-      voter_id: voterRow.id,
-      expires_at: newExpiresAt,
-    });
-
-    if (upsertError) {
-      console.error("Error creating voter session:", upsertError.message);
-      toast.error("Unable to create a secure voter session. Please try again.");
-      return;
-    }
-
-    // LOG START
     await logSessionEvent({ voterId: voterRow.id, action: "session_start" });
 
-    const enrichedVoter: VoterData = {
+    const enriched: VoterData = {
       ...voterRow,
       rfidVerified: true,
       faceVerified: true,
     };
 
-    setVoterData(enrichedVoter);
+    setVoterData(enriched);
 
     // Load elections
-    const { data: elections = [], error: electionsError } = await supabase
+    const { data: elections = [] } = await supabase
       .from("elections")
       .select("*");
-
-    if (electionsError) {
-      console.error("Error loading elections:", electionsError.message);
-      toast.error("Unable to load elections.");
-      return;
-    }
 
     const now = new Date();
     const active = elections.filter((e) => e.is_active && new Date(e.end_date) > now);
@@ -215,84 +125,95 @@ const VotingKiosk = () => {
     }
   };
 
-  // -------------------------------------------------
-  // SELECT ELECTION
-  // -------------------------------------------------
-  const handleElectionSelect = (electionId: string, electionData: any) => {
+  // -----------------------------------------------------
+  // START TIMER ON FIRST BALLOT CLICK
+  // -----------------------------------------------------
+  const handleElectionSelect = async (electionId: string, electionData: any) => {
+    if (voterData && timeLeft === null) {
+      const totalMinutes = activeElections.length * 3;
+      const totalMs = totalMinutes * 60 * 1000;
+
+      setTimeLeft(totalMs);
+      const expiresAt = Date.now() + totalMs;
+
+      await supabase.from("voter_sessions").upsert({
+        voter_id: voterData.id,
+        expires_at: new Date(expiresAt).toISOString(),
+      });
+    }
+
     setSelectedElection({ id: electionId, ...electionData });
     setCurrentSelections([]);
     setCurrentStep("ballot");
   };
 
-  // -------------------------------------------------
-  // BALLOT COMPLETE
-  // -------------------------------------------------
-  const handleBallotComplete = (selectedCandidates: CandidateSelection[]) => {
-    setCurrentSelections(selectedCandidates);
+  // -----------------------------------------------------
+  // HANDLE BALLOT COMPLETION
+  // -----------------------------------------------------
+  const handleBallotComplete = (selections: CandidateSelection[]) => {
+    setCurrentSelections(selections);
 
-    const key = selectedElection.id;
+    // merge into allSelections
+    const filtered = allSelections.filter(
+      (s) => s.electionId !== selectedElection.id
+    );
 
-    setAllSelections((prev) => {
-      const filtered = prev.filter((s) => s.electionId !== key);
-      return [...filtered, ...selectedCandidates.map((s) => ({ ...s, electionId: key }))];
-    });
+    setAllSelections([...filtered, ...selections]);
 
     setCurrentStep("review");
   };
 
-  // -------------------------------------------------
-  // REVIEW CONFIRM
-  // -------------------------------------------------
-  const handleReviewConfirm = () => {
-    handleSubmissionComplete("pending-hash");
-  };
+  // -----------------------------------------------------
+  // COUNTDOWN EFFECT
+  // -----------------------------------------------------
+  useEffect(() => {
+    if (timeLeft === null) return;
+    if (currentStep === "submitting" || currentStep === "complete") return;
 
-  const handleReviewNavigation = (action: "edit-ballot" | "back-to-elections") => {
-    if (action === "back-to-elections") {
-      setSelectedElection(null);
-      setCurrentSelections([]);
-      setCurrentStep("election-select");
-      return;
-    }
+    const interval = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev === null) return null;
 
-    setCurrentSelections([]);
-    setCurrentStep("ballot");
-  };
+        if (prev <= 1000) {
+          clearInterval(interval);
+          
+          if (!showTimeoutModal) setShowTimeoutModal(true);
+          return prev;
+        }
 
-  const handleEditBallot = () => {
-    setCurrentSelections([]);
-    setCurrentStep("ballot");
-  };
+        return prev - 1000;
+      });
+    }, 1000);
 
-  // -------------------------------------------------
-  // SUBMISSION FINISHED
-  // -------------------------------------------------
+    return () => clearInterval(interval);
+  }, [timeLeft, currentStep, voterData]);
+
+  // -----------------------------------------------------
+  // FINAL SUBMISSION COMPLETE
+  // -----------------------------------------------------
   const handleSubmissionComplete = (txHash: string) => {
     setTransactionHash(txHash);
 
-    const updatedCompleted = [...completedElections, selectedElection.id];
-    setCompletedElections(updatedCompleted);
+    const updated = [...completedElections, selectedElection.id];
+    setCompletedElections(updated);
 
-    const remainingActive = activeElections.filter(
-      (e) => !updatedCompleted.includes(e.id)
+    const remaining = activeElections.filter(
+      (e) => !updated.includes(e.id)
     );
 
-    if (remainingActive.length > 0) {
+    if (remaining.length > 0) {
       setCurrentStep("election-finished");
     } else {
       setCurrentStep("review-final");
     }
   };
 
-  // -------------------------------------------------
-  // RESET KIOSK
-  // LOG: "end"
-  // -------------------------------------------------
+  // -----------------------------------------------------
+  // RESET AFTER FULL VOTING PROCESS
+  // -----------------------------------------------------
   const handleReset = async () => {
     if (voterData?.id) {
       await supabase.from("voter_sessions").delete().eq("voter_id", voterData.id);
-
-      // LOG END
       await logSessionEvent({ voterId: voterData.id, action: "session_end" });
     }
 
@@ -305,30 +226,70 @@ const VotingKiosk = () => {
     setCompletedElections([]);
     setActiveElections([]);
     setExpiredElections([]);
+    setTimeLeft(null);
+    setShowTimeoutModal(false);
+
     navigate("/");
   };
 
-  // -------------------------------------------------
+  // -----------------------------------------------------
   // RENDER UI
-  // -------------------------------------------------
+  // -----------------------------------------------------
   return (
-    <div className="min-h-screen bg-gradient-to-br from-emerald-400/40 via-white to-yellow-300/40">
-      <input
-        autoFocus
-        tabIndex={-1}
-        style={{
-          position: "absolute",
-          opacity: 0,
-          pointerEvents: "none",
-          top: "-9999px",
-        }}
-      />
-      
-        {/* Render different steps based on currentStep state */}
-      {currentStep === "auth" && (
-        <AuthenticationScreen onAuthSuccess={handleAuthSuccess} />
+    <div className="min-h-screen bg-gradient-to-br from-emerald-400/40 via-white to-yellow-300/40 relative">
+
+      {/* TIMEOUT MODAL */}
+      {showTimeoutModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
+            <h2 className="text-2xl font-bold text-red-600 mb-4">
+              Warning
+            </h2>
+
+            <p className="text-gray-700 mb-6 leading-relaxed">
+              Your voting time is up, but don’t worry — we’ve added{" "}
+              <strong>1 minute and 30 seconds</strong> so you can finish.<br /> <br />
+              <h3 className="text-red-600"><strong>Please try to vote a little faster. </strong></h3>
+            </p>
+
+            <button
+              onClick={async () => {
+                const ext = 89* 1000;
+                const newTime = (timeLeft ?? 0) + ext;
+
+                setTimeLeft(newTime);
+                setShowTimeoutModal(false);
+
+                if(voterData) {
+                  await supabase
+                    .from("voter_sessions")
+                    .update({
+                      expires_at: new Date(Date.now() + newTime).toISOString(),
+                    })
+                    .eq("voter_id", voterData.id);
+
+                  await logSessionEvent({
+                    voterId: voterData.id,
+                    action: "session_extend",
+                  });
+                }
+              }}
+              className="px-6 py-3 bg-primary text-white rounded-lg font-semibold hover:bg-primary/80"
+              >
+                I Understand
+            </button>
+          </div>
+        </div>
       )}
 
+      {/* AUTH */}
+      {currentStep === "auth" && (
+        <AuthenticationScreen
+          onAuthSuccess={handleAuthSuccess}
+        />
+      )}
+
+      {/* ELECTION SELECT */}
       {currentStep === "election-select" && voterData && (
         <ElectionSelection
           voterData={voterData}
@@ -339,53 +300,66 @@ const VotingKiosk = () => {
         />
       )}
 
+      {/* BALLOT */}
       {currentStep === "ballot" && voterData && selectedElection && (
         <BallotScreen
           voterData={voterData}
           electionId={selectedElection.id}
           electionData={selectedElection}
           onComplete={handleBallotComplete}
-          initialSelections={allSelections
-            .filter((sel) => sel.electionId === selectedElection.id)
-            .map((sel) => ({
-              ...sel,
-              position: sel.position.toLowerCase().replace(/\s+/g, "-"),
-            }))}
+          initialSelections={allSelections.filter(
+            (sel) => sel.electionId === selectedElection.id
+          )}
+          timeLeft={timeLeft ?? 0}
         />
       )}
 
+      {/* SINGLE REVIEW */}
       {currentStep === "review" && voterData && (
         <ReviewScreen
           voterData={voterData}
           selections={currentSelections}
-          onConfirm={handleReviewConfirm}
-          onEdit={handleEditBallot}
+          onConfirm={() => handleSubmissionComplete("pending-hash")}
+          onEdit={() => setCurrentStep("ballot")}
           showAll={false}
+          timeLeft={timeLeft ?? 0}
+          activeElections={activeElections}
+          completedElections={completedElections}
         />
       )}
 
+      {/* FINAL REVIEW */}
       {currentStep === "review-final" && voterData && (
         <ReviewScreen
           voterData={voterData}
           selections={allSelections}
           onConfirm={async () => {
             for (const sel of allSelections) {
-              await castVote(sel.electionId, sel.candidateId, voterData.id);
+              await supabase.from("votes").insert({
+                election_id: sel.electionId,
+                candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
+                voter_id: voterData.id,
+                is_abstain: sel.candidateId === "ABSTAIN",
+              });
             }
             setCurrentStep("submitting");
           }}
-          onEdit={handleReviewNavigation}
+          onEdit={() => setCurrentStep("election-select")}
           showAll={true}
+          timeLeft={timeLeft ?? 0}
+          activeElections={activeElections}
+          completedElections={completedElections}
         />
       )}
 
-      {currentStep === "submitting" && voterData && (
+      {/* SUBMISSION */}
+      {currentStep === "submitting" && (
         <SubmissionScreen
           voterData={voterData}
           selections={allSelections}
           transactionHash={transactionHash}
-          onComplete={(txHash) => {
-            setTransactionHash(txHash);
+          onComplete={(tx) => {
+            setTransactionHash(tx);
             setCurrentStep("complete");
           }}
           onReset={handleReset}
@@ -393,6 +367,19 @@ const VotingKiosk = () => {
         />
       )}
 
+      {/* COMPLETE */}
+      {currentStep === "complete" && (
+        <SubmissionScreen
+          voterData={voterData}
+          selections={allSelections}
+          transactionHash={transactionHash}
+          onComplete={(tx) => {}}
+          onReset={handleReset}
+          isComplete={true}
+        />
+      )}
+
+      {/* AFTER SINGLE BALLOT */}
       {currentStep === "election-finished" && (
         <ElectionFinishedPopup
           hasRemaining={activeElections.length > completedElections.length}
@@ -405,17 +392,6 @@ const VotingKiosk = () => {
               setCurrentStep("review-final");
             }
           }}
-        />
-      )}
-
-      {currentStep === "complete" && voterData && (
-        <SubmissionScreen
-          voterData={voterData}
-          selections={allSelections}
-          transactionHash={transactionHash}
-          onComplete={handleSubmissionComplete}
-          onReset={handleReset}
-          isComplete={true}
         />
       )}
     </div>
