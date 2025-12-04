@@ -3,19 +3,35 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { CalendarDays, LogOut } from "lucide-react";
+import { CalendarDays, LogOut, CheckCircle2 } from "lucide-react";
 import { ElectionStatusBadge } from "@/components/elections/ElectionStatusBadge";
 import { sortElections } from "@/utils/sortElections";
-
 
 const RegistrationConfirmation = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { firstName, middleName, lastName, orgAffiliations } = location.state || {};
+
+  const {
+    firstName = "",
+    middleName = "",
+    lastName = "",
+    suffix = "",
+    orgAffiliations = [],
+  } = (location.state || {}) as {
+    firstName?: string;
+    middleName?: string;
+    lastName?: string;
+    suffix?: string;
+    orgAffiliations?: string[];
+  };
 
   const [elections, setElections] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [secondsLeft, setSecondsLeft] = useState(10);
+
+  const fullName = [firstName, middleName && `${middleName}.`, lastName, suffix]
+    .filter(Boolean)
+    .join(" ");
 
   useEffect(() => {
     const loadElections = async () => {
@@ -28,7 +44,7 @@ const RegistrationConfirmation = () => {
         console.error("Error loading elections:", error.message);
       } else {
         const eligible = (data || []).filter((election) =>
-          orgAffiliations?.some(org => 
+          orgAffiliations?.some((org) =>
             election.title.toLowerCase().includes(org.toLowerCase())
           )
         );
@@ -44,68 +60,108 @@ const RegistrationConfirmation = () => {
     }
   }, [orgAffiliations]);
 
-  // Helper: Render status badge based on real-time date
-  const renderStatusBadge = (election: any) => {
-    const now = new Date();
-    const start = new Date(election.start_date);
-    const end = new Date(election.end_date);
-
-    const isCurrentlyActive =
-      election.is_active && now >= start && now <= end;
-    const hasEnded = now > end;
-
-    if (isCurrentlyActive) {
-      return (
-        <Badge variant="outline" className="text-primary border-primary/40">
-          Active
-        </Badge>
-      );
+  // Auto-redirect countdown back to landing
+  useEffect(() => {
+    if (secondsLeft <= 0) {
+      navigate("/");
+      return;
     }
+    const timer = setTimeout(() => {
+      setSecondsLeft((prev) => prev - 1);
+    }, 1000);
 
-    if (hasEnded) {
-      return (
-        <Badge
-          variant="outline"
-          className="text-destructive border-destructive"
-        >
-          Inactive
-        </Badge>
-      );
-    }
-
-    return null; // No badge for future/upcoming elections
-  };
+    return () => clearTimeout(timer);
+  }, [secondsLeft, navigate]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/10 via-background to-secondary/10 p-6">
+    <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden">
+      {/* Local keyframes for background + icon animation */}
+      <style>
+        {`
+          @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+          }
+          .animate-gradient {
+            background-size: 200% 200%;
+            animation: gradientShift 12s ease-in-out infinite;
+          }
+
+          @keyframes successPop {
+            0% { transform: scale(0.6); opacity: 0; }
+            60% { transform: scale(1.05); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+          }
+
+          @keyframes ringPulse {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); }
+            100% { box-shadow: 0 0 0 18px rgba(16, 185, 129, 0); }
+          }
+
+          .success-icon {
+            animation: successPop 0.6s ease-out forwards, ringPulse 1.6s ease-out infinite;
+          }
+        `}
+      </style>
+
+      {/* Animated background */}
+      <div className="absolute inset-0 -z-10 bg-gradient-to-br from-primary/15 via-background to-secondary/15 animate-gradient" />
+
       <Card className="max-w-2xl w-full p-10 text-center shadow-xl border border-primary/20 bg-card/90 backdrop-blur-md">
-        <h1 className="text-4xl font-bold mb-4 bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-          Registration Successful
+        {/* Success badge */}
+        <div className="flex justify-center mb-6">
+          <div className="success-icon rounded-full bg-gradient-to-br from-emerald-500 to-primary p-4 text-white flex items-center justify-center">
+            <CheckCircle2 className="h-10 w-10" />
+          </div>
+        </div>
+
+        <h1 className="text-4xl font-extrabold mb-3 bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
+          Registration Complete
         </h1>
 
-        <p className="text-muted-foreground mb-7">
-          Welcome,{" "}
-          <span className="font-semibold">
-            {firstName} {middleName}. {lastName}
-          </span>
-          ! You’ve successfully registered as a voter.
+        <p className="text-muted-foreground mb-6 text-base">
+          Welcome,&nbsp;
+          <span className="font-semibold text-foreground">{fullName}</span>!
+          <br />
+          You’ve successfully registered as a voter in BotoVeritas.
         </p>
 
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold mb-2 text-primary">
+        {/* Org affiliations summary (if any) */}
+        {orgAffiliations && orgAffiliations.length > 0 && (
+          <div className="mb-7">
+            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground mb-2">
+              Registered Organizational Affiliations
+            </p>
+            <div className="flex flex-wrap gap-2 justify-center">
+              {orgAffiliations.map((org) => (
+                <span
+                  key={org}
+                  className="px-3 py-1 text-xs rounded-full bg-primary/5 text-primary border border-primary/20"
+                >
+                  {org}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Election schedule */}
+        <div className="mb-8 text-left">
+          <h2 className="text-lg font-semibold mb-2 text-primary text-center">
             Your Election Schedule
           </h2>
 
           {loading ? (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-muted-foreground text-center">
               Loading election schedule...
             </p>
           ) : elections.length > 0 ? (
-            <div className="grid gap-4">
+            <div className="grid gap-4 mt-3">
               {elections.map((election) => (
                 <div
                   key={election.title}
-                  className="border border-border rounded-lg p-4 text-left bg-muted/10"
+                  className="border border-border rounded-lg p-4 bg-muted/10"
                 >
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="text-md font-bold text-foreground">
@@ -114,9 +170,9 @@ const RegistrationConfirmation = () => {
                     <ElectionStatusBadge election={election} />
                   </div>
 
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <CalendarDays className="h-4 w-4 text-primary" />
-                    <div className="flex flex-col">
+                  <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                    <CalendarDays className="h-4 w-4 text-primary mt-[2px]" />
+                    <div className="flex flex-col gap-0.5">
                       <span>
                         <strong>Opens:</strong>{" "}
                         {new Date(election.start_date).toLocaleDateString()}{" "}
@@ -139,27 +195,29 @@ const RegistrationConfirmation = () => {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-muted-foreground text-center mt-2">
               No election schedule found for your affiliations yet.
             </p>
           )}
         </div>
 
-        <Button
-          className="w-full bg-gradient-to-r from-primary to-secondary text-white hover:opacity-90"
-          onClick={() => navigate("/")}
-        >
-          Go to Home
-        </Button>
+        {/* Primary action + countdown */}
+        <div className="space-y-3">
+          <Button
+            className="w-full bg-gradient-to-r from-primary to-secondary text-white hover:opacity-90 text-base py-5 font-semibold"
+            onClick={() => navigate("/")}
+          >
+            Go to Home Now
+          </Button>
 
-        <Button
-          variant="ghost"
-          className="mt-4 text-muted-foreground hover:text-destructive"
-          onClick={() => navigate("/auth?mode=login")}
-        >
-          <LogOut className="h-4 w-4 mr-2" />
-          Logout
-        </Button>
+          <p className="text-xs text-muted-foreground text-center">
+            Returning to Home automatically in{" "}
+            <span className="font-semibold text-primary">
+              {secondsLeft}s
+            </span>
+            ...
+          </p>
+        </div>
       </Card>
     </div>
   );

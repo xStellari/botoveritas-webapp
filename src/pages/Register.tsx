@@ -3,8 +3,26 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardDescription,
+} from "@/components/ui/card";
 import { toast } from "sonner";
+
+// OPTIONAL: Your capitalization helper (keep your preferred version)
+const formatName = (str: string) => {
+  return str
+    .toLowerCase()
+    .split(/\s+/)
+    .map((word) => {
+      if (/^(ii|iii|iv|v)$/i.test(word)) return word.toUpperCase();
+      if (word.endsWith(".")) return word.charAt(0).toUpperCase() + word.slice(1);
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(" ");
+};
 
 export default function Register() {
   const navigate = useNavigate();
@@ -12,6 +30,7 @@ export default function Register() {
   const [firstName, setFirstName] = useState("");
   const [middleName, setMiddleName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [suffix, setSuffix] = useState("");
   const [yearLevel, setYearLevel] = useState("");
   const [orgAffiliations, setOrgAffiliations] = useState<string[]>([]);
   const [signupEmail, setSignupEmail] = useState("");
@@ -32,23 +51,17 @@ export default function Register() {
         firstName,
         middleName,
         lastName,
+        suffix,
         yearLevel,
         orgAffiliations,
         fullEmail,
       },
     });
   };
-  const toTitleCase = (str: string) => 
-    str
-      .toLowerCase()
-      .split(/\s+/)
-      .map((word) => word.length === 0 ? "" : word[0].toUpperCase() + word.slice(1))
-      .join(" ");
-  
 
   return (
     <div className="min-h-screen relative flex items-center justify-center p-6 overflow-hidden">
-      {/* Animated FEU gradient background */}
+      {/* Background animation */}
       <style>
         {`
           @keyframes gradientShift {
@@ -60,12 +73,11 @@ export default function Register() {
             background-size: 200% 200%;
             animation: gradientShift 12s ease-in-out infinite;
           }
-          @keyframes fadeInUp {
-            from { opacity: 0; transform: translateY(8px); }
-            to { opacity: 1; transform: translateY(0); }
-          }
-          .animate-fade-in-up {
-            animation: fadeInUp 0.4s ease-out forwards;
+
+          /* Progress bar fill animation */
+          @keyframes progressFill {
+            0% { width: 0%; }
+            100% { width: 50%; }
           }
         `}
       </style>
@@ -74,92 +86,137 @@ export default function Register() {
 
       <div className="max-w-2xl w-full animate-fade-in-up">
         <Card className="shadow-xl rounded-2xl border border-primary/20 bg-white/90 backdrop-blur">
-          <CardHeader className="text-center py-10 overflow-visible">
+
+          {/* ========================== */}
+          {/*   REDESIGNED HEADER + STEPPER   */}
+          {/* ========================== */}
+          <CardHeader className="text-center pb-8 pt-10 space-y-4">
+
             <h1
               className="
-                text-4xl
-                font-extrabold
-                mb-3
-                leading-[1.2]
-                bg-gradient-to-r
-                from-primary
-                to-secondary
-                bg-clip-text
-                text-transparent
+                text-4xl font-extrabold leading-tight
+                bg-gradient-to-r from-primary to-secondary
+                bg-clip-text text-transparent
               "
             >
               Student Registration
             </h1>
 
             <CardDescription className="text-muted-foreground text-lg">
-              Step 1 of 2 — Enter your personal information
+              Step 1 of 2 — Personal Information
             </CardDescription>
 
-            {/* Stepper circles */}
-            <div className="mt-6 flex flex-col items-center gap-2">
-              <div className="flex items-center gap-6">
-                {/* Step 1 - active */}
-                <div className="flex flex-col items-center">
-                  <div className="h-9 w-9 rounded-full flex items-center justify-center bg-gradient-to-r from-primary to-secondary text-white font-semibold shadow-md">
-                    1
-                  </div>
-                  <span className="mt-1 text-xs font-medium text-primary">
-                    Personal Info
-                  </span>
-                </div>
+            {/* Animated Progress Bar */}
+            <div className="relative w-64 h-2 bg-gray-200 rounded-full mx-auto mt-4 overflow-hidden">
+              <div
+                className="
+                  absolute left-0 top-0 h-full
+                  bg-gradient-to-r from-primary to-secondary
+                  rounded-full
+                "
+                style={{
+                  animation: "progressFill 1.4s ease-out forwards",
+                }}
+              ></div>
+            </div>
 
-                {/* Connector */}
-                <div className="h-[2px] w-16 md:w-24 bg-primary/40" />
+            {/* Stepper Circles */}
+            <div className="flex justify-center mt-6 gap-12">
 
-                {/* Step 2 - upcoming */}
-                <div className="flex flex-col items-center">
-                  <div className="h-9 w-9 rounded-full flex items-center justify-center border-2 border-muted text-muted-foreground font-semibold bg-background">
-                    2
-                  </div>
-                  <span className="mt-1 text-xs text-muted-foreground">
-                    Identity
-                  </span>
+              {/* STEP 1 */}
+              <div className="flex flex-col items-center">
+                <div
+                  className="
+                    h-10 w-10 rounded-full flex items-center justify-center
+                    bg-gradient-to-r from-primary to-secondary text-white
+                    font-semibold shadow-md
+                  "
+                >
+                  1
                 </div>
+                <span className="mt-2 text-xs font-medium text-primary tracking-wide">
+                  Personal Info
+                </span>
               </div>
 
-              <p className="text-xs text-muted-foreground mt-1 tracking-[0.18em] uppercase">
-                Step 1 of 2
-              </p>
+              {/* STEP 2 */}
+              <div className="flex flex-col items-center opacity-60">
+                <div
+                  className="
+                    h-10 w-10 rounded-full flex items-center justify-center
+                    border-2 border-gray-300 text-gray-400 font-semibold
+                  "
+                >
+                  2
+                </div>
+                <span className="mt-2 text-xs text-muted-foreground tracking-wide">
+                  Identity
+                </span>
+              </div>
+
             </div>
           </CardHeader>
 
+          {/* ========================== */}
+          {/* FORM CONTENT (unchanged)    */}
+          {/* ========================== */}
           <CardContent className="space-y-6 px-8 pb-10">
+
             <form onSubmit={handleProceed} className="space-y-6">
-              {/* NAME FIELDS */}
-              <div className="grid gap-6 md:grid-cols-3">
+
+              {/* NAME ROW */}
+              <div className="grid gap-6 md:grid-cols-[2fr_0.5fr_2fr_1.2fr]">
+
+                {/* First Name */}
                 <div>
                   <Label className="font-semibold">First Name</Label>
                   <Input
                     value={firstName}
-                    onChange={(e) => setFirstName(toTitleCase(e.target.value))}
+                    onChange={(e) => setFirstName(formatName(e.target.value))}
                     required
                     className="mt-1"
                   />
                 </div>
 
+                {/* M.I. */}
                 <div>
                   <Label className="font-semibold">M.I.</Label>
                   <Input
                     value={middleName}
                     maxLength={1}
-                    onChange={(e) => setMiddleName(e.target.value.toUpperCase())}
-                    className="mt-1"
+                    onChange={(e) =>
+                      setMiddleName(e.target.value.toUpperCase())
+                    }
+                    className="mt-1 text-center"
                   />
                 </div>
 
+                {/* Last Name */}
                 <div>
                   <Label className="font-semibold">Last Name</Label>
                   <Input
                     value={lastName}
-                    onChange={(e) => setLastName(toTitleCase(e.target.value))}
+                    onChange={(e) => setLastName(formatName(e.target.value))}
                     required
                     className="mt-1"
                   />
+                </div>
+
+                {/* Suffix */}
+                <div>
+                  <Label className="font-semibold">Suffix</Label>
+                  <select
+                    value={suffix}
+                    onChange={(e) => setSuffix(e.target.value)}
+                    className="w-full border rounded px-3 py-2 mt-1 bg-white shadow-sm"
+                  >
+                    <option value="">None</option>
+                    <option value="Jr.">Jr.</option>
+                    <option value="Sr.">Sr.</option>
+                    <option value="II">II</option>
+                    <option value="III">III</option>
+                    <option value="IV">IV</option>
+                  </select>
                 </div>
               </div>
 
@@ -198,7 +255,7 @@ export default function Register() {
                       }
                       className={`w-full ${
                         orgAffiliations.includes(org)
-                          ? "bg-gradient-to-r from-primary to-secondary text-white"
+                          ? "bg-emerald-600 text-white shadow-md"
                           : "border-primary/40 text-primary"
                       }`}
                     >
@@ -213,25 +270,22 @@ export default function Register() {
                 <Label className="font-semibold">FEU Email</Label>
                 <div className="flex items-center gap-2 mt-1">
                   <Input
-                    placeholder="fmsurname"
+                    placeholder="your.email"
                     value={signupEmail}
                     onChange={(e) => {
                       let value = e.target.value;
-                      
-                      // If user typed "@", freeze input by not updating state
+
                       if (value.includes("@")) {
-                        //Toast error message
                         toast.error(
                           <div>
-                            <p>⚠️ Please enter only the email prefix (before @). </p>
-                            <p>The domain is automatically added.</p>
+                            Please enter only the email prefix (before @).<br /><br />
+                            The domain is automatically added.
                           </div>
                         );
-                          
-                        //Optionally blur to emphasize block
                         e.target.blur();
                         return;
                       }
+
                       setSignupEmail(value.trim());
                     }}
                     required
@@ -247,6 +301,7 @@ export default function Register() {
               >
                 Proceed to Identity Verification
               </Button>
+
             </form>
           </CardContent>
         </Card>

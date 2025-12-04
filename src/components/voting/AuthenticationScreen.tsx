@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { useToast } from "@/hooks/use-toast";
 import {
   Scan,
   Camera,
@@ -22,8 +21,6 @@ interface AuthenticationScreenProps {
 type Step = "rfid" | "face" | "done" | "error";
 
 const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
-  const { toast } = useToast();
-
   const MASTER_RFID_TAG = "1226512821";
 
   const [step, setStep] = useState<Step>("rfid");
@@ -43,7 +40,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
     console.log("RFID scanned:", uid);
     setRfidTag(uid);
 
-    // ⚡ MASTER OVERRIDE CARD
+    // MASTER OVERRIDE CARD
     if (uid === MASTER_RFID_TAG) {
       setStatusMessage("Admin override activated → Proceeding to face scan.");
       setRfidVerified(true);
@@ -51,7 +48,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
       return;
     }
 
-    // ⚡ NORMAL RFID LOOKUP
+    // NORMAL RFID LOOKUP
     setStatusMessage("Checking RFID in database...");
     const { data, error } = await supabase
       .from("voters")
@@ -133,9 +130,8 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   // ---------------------------------------------------------------------
   return (
     <div className="flex min-h-screen items-center justify-center p-8">
-      <Card className="w-full max-w-2xl border-2 border-primary/20 bg-card/95 backdrop-blur-sm shadow-2xl">
+      <Card className="w-full max-w-2xl border-2 border-primary/20 bg-white/90 backdrop-blur-sm shadow-2xl">
         <div className="p-12">
-
           {/* RFID Listener */}
           <RFIDScanner onScan={handleRFID} />
 
@@ -148,27 +144,54 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
             <p className="text-xl text-muted-foreground text-center">
               Blockchain-Based Voting System
             </p>
+            {/* 🔵 TEMPORARY BUTTON FOR THESIS TESTING — REMOVE ANYTIME */}
+            <div className="w-full flex justify-center mt-4">
+              <Button
+                onClick={() => handleRFID("999999")}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg shadow"
+                >
+                  Simulate RFID Scan (Test Only)
+                </Button>
+            </div>
+
+
           </div>
 
-          {/* RFID AUTH BUTTON */}
+          {/* ================================
+              RFID AUTH BUTTON
+              ================================ */}
           <button
             onClick={() => {
               setStep("rfid");
               setStatusMessage("Please tap your RFID card...");
             }}
-            className="w-full flex items-center justify-between p-6 border rounded-xl hover:bg-primary"
+            className="
+              group w-full flex items-center justify-between p-6 border rounded-xl
+              transition-colors hover:bg-primary/10 hover:text-primary
+            "
           >
             <div className="flex items-center gap-4">
-              <Scan className="h-10 w-10 text-primary" />
-              <div>
-                <h3 className="font-semibold text-lg">RFID Authentication</h3>
-                <p className="text-sm text-muted-foreground">Tap your Student ID</p>
+              <Scan className="h-10 w-10 text-primary group-hover:text-primary" />
+
+              {/* Text block as spans to ensure perfect alignment */}
+              <div className="flex flex-col items-start">
+                <span className="font-semibold text-lg group-hover:text-primary leading-tight">
+                  RFID Authentication
+                </span>
+                <span className="text-sm text-muted-foreground group-hover:text-primary/70 leading-snug">
+                  Tap your Student ID
+                </span>
               </div>
             </div>
-            {rfidVerified && <CheckCircle2 className="h-8 w-8 text-success" />}
+
+            {rfidVerified && (
+              <CheckCircle2 className="h-8 w-8 text-success" />
+            )}
           </button>
 
-          {/* FACE AUTH BUTTON */}
+          {/* ================================
+              FACE AUTH BUTTON
+              ================================ */}
           <button
             onClick={() => {
               if (!rfidVerified) {
@@ -178,16 +201,28 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
               setStep("face");
               setStatusMessage("Initializing camera...");
             }}
-            className="w-full flex items-center justify-between p-6 border rounded-xl hover:bg-primary mt-6"
+            className="
+              group w-full flex items-center justify-between p-6 border rounded-xl mt-6
+              transition-colors hover:bg-primary/10 hover:text-primary
+            "
           >
             <div className="flex items-center gap-4">
-              <Camera className="h-10 w-10 text-primary" />
-              <div>
-                <h3 className="font-semibold text-lg">Facial Recognition</h3>
-                <p className="text-sm text-muted-foreground">Align your face with the camera</p>
+              <Camera className="h-10 w-10 text-primary group-hover:text-primary" />
+
+              {/* Same structure here so they visually match */}
+              <div className="flex flex-col items-start">
+                <span className="font-semibold text-lg group-hover:text-primary leading-tight">
+                  Facial Recognition
+                </span>
+                <span className="text-sm text-muted-foreground group-hover:text-primary/70 leading-snug">
+                  Align your face with the camera
+                </span>
               </div>
             </div>
-            {faceVerified && <CheckCircle2 className="h-8 w-8 text-success" />}
+
+            {faceVerified && (
+              <CheckCircle2 className="h-8 w-8 text-success" />
+            )}
           </button>
 
           {/* STATUS MESSAGE */}
@@ -215,7 +250,11 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
           {/* ERROR ACTIONS */}
           {step === "error" && (
             <div className="flex gap-4 mt-6">
-              <Button onClick={handleRetry} variant="outline" className="flex-1 h-14">
+              <Button
+                onClick={handleRetry}
+                variant="outline"
+                className="flex-1 h-14"
+              >
                 <AlertCircle className="mr-2 h-5 w-5" />
                 Retry
               </Button>
@@ -236,7 +275,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
               Secure • Transparent • Verifiable
             </p>
             <p className="text-xs text-center text-muted-foreground mt-2">
-              Powered by Blockchain Technology & NFT Proof of Vote
+              Powered by Blockchain Technology &amp; NFT Proof of Vote
             </p>
           </div>
         </div>
@@ -246,3 +285,4 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 };
 
 export default AuthenticationScreen;
+

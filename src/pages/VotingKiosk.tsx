@@ -312,7 +312,7 @@ const VotingKiosk = () => {
   // RENDER UI
   // -------------------------------------------------
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary/5 via-background to-secondary/5">
+    <div className="min-h-screen bg-gradient-to-br from-emerald-400/40 via-white to-yellow-300/40">
       <input
         autoFocus
         tabIndex={-1}
