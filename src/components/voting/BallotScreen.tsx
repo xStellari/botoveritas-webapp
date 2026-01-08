@@ -100,13 +100,23 @@ const BallotScreenWithAbstain = ({
     );
 
     setPositions(positionsArray);
+
+    setSelections(prev => {
+      const cleaned: { [key: string]: string } = {};
+      positionsArray.forEach(pos => {
+        if (prev[pos.id]) cleaned[pos.id] = prev[pos.id];
+      });
+      return cleaned;
+    });
+    
     setLoading(false);
   };
 
   const initializeSelections = () => {
     const initialState: { [key: string]: string } = {};
     initialSelections.forEach((sel) => {
-      initialState[sel.position] = sel.candidateId;
+      const posId = sel.position.toLowerCase().replace(/\s+/g, "-");
+      initialState[posId] = sel.candidateId;
     });
     setSelections(initialState);
   };
@@ -143,10 +153,14 @@ const BallotScreenWithAbstain = ({
   };
 
   const handleSubmit = () => {
-    if (Object.keys(selections).length === 0) {
+    const unfilledPositions = positions.filter(
+      (pos) => !selections[pos.id]
+    );
+
+    if (unfilledPositions.length > 0){
       toast({
-        title: "No selections made",
-        description: "Select at least one candidate or abstain.",
+        title: "Incomplete Ballot",
+        description: "You must select a candidate or abstain for ALL positions before reviewing.",
         variant: "destructive",
       });
       return;
@@ -356,7 +370,7 @@ const BallotScreenWithAbstain = ({
             <Button
               onClick={handleSubmit}
               className="bg-gradient-primary hover:opacity-90 shadow-glow h-12 px-8 text-lg"
-              disabled={Object.keys(selections).length === 0}
+              disabled={Object.keys(selections).length !== positions.length}
             >
               Review Selections
               <ArrowRight className="ml-2 h-5 w-5" />

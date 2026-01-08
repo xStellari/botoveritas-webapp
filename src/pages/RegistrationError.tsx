@@ -19,7 +19,7 @@ export default function RegistrationError() {
     "An unexpected error occurred during registration.";
 
   // Auto-redirect countdown
-  const [seconds, setSeconds] = useState(8);
+  const [seconds, setSeconds] = useState(10);
 
   useEffect(() => {
     if (seconds <= 0) {
@@ -78,7 +78,7 @@ export default function RegistrationError() {
           </div>
 
           <CardTitle className="text-3xl font-extrabold text-red-600">
-            Registration Failed
+            Error
           </CardTitle>
 
           <CardDescription className="text-base text-muted-foreground">

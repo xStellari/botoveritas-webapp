@@ -104,6 +104,22 @@ const VotingKiosk = () => {
       faceVerified: true,
     };
 
+    //Check if user has already voted in any election
+    const { data: voteStatus } = await supabase
+      .from("voter_election_status")
+      .select("election_id, has_voted")
+      .eq("voter_id", voterRow.id);
+    
+    if (voteStatus && voteStatus.length > 0) {
+      navigate("/registration-error", {
+        state: {
+          title: "You Already Voted",
+          message:
+             "You have already voted.",
+        },
+      });
+      return;
+    }
     setVoterData(enriched);
 
     // Load elections
@@ -191,8 +207,23 @@ const VotingKiosk = () => {
   // -----------------------------------------------------
   // FINAL SUBMISSION COMPLETE
   // -----------------------------------------------------
-  const handleSubmissionComplete = (txHash: string) => {
+  const handleSubmissionComplete = async (txHash: string) => {
+    console.log("🔍 handleSubmissionComplete triggered");
+    console.log("voterData:", voterData);
+    console.log("selectedElection:", selectedElection);
+
     setTransactionHash(txHash);
+
+    const { data: statusInsert, error: statusError } = await supabase
+      .from("voter_election_status")
+      .upsert({
+        voter_id: voterData?.id,
+        election_id: selectedElection?.id,
+        has_voted: true,
+        voted_at: new Date().toISOString(),
+      });
+
+    console.log("🔍 UPSERT RESULT:", statusInsert, statusError);
 
     const updated = [...completedElections, selectedElection.id];
     setCompletedElections(updated);
@@ -207,6 +238,7 @@ const VotingKiosk = () => {
       setCurrentStep("review-final");
     }
   };
+
 
   // -----------------------------------------------------
   // RESET AFTER FULL VOTING PROCESS
@@ -336,11 +368,28 @@ const VotingKiosk = () => {
           onConfirm={async () => {
             for (const sel of allSelections) {
               await supabase.from("votes").insert({
-                election_id: sel.electionId,
-                candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
                 voter_id: voterData.id,
+                election_id: sel.electionId,
+                position: sel.position,
+                candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,                
                 is_abstain: sel.candidateId === "ABSTAIN",
               });
+            }
+            //Flag the voter as voted in this election
+            for (const sel of allSelections){
+              await supabase.from("voter_election_status").upsert({
+                voter_id: voterData.id,
+                election_id: sel.electionId,
+                has_voted: true,
+                voted_at: new Date().toISOString(),
+
+                voter_first_name: voterData.first_name,
+                voter_middle_name: voterData.middle_name,
+                voter_last_name: voterData.last_name,
+                voter_suffix: voterData.suffix,
+                voter_email: voterData.email,
+                year_level: voterData.year_level,
+              })
             }
             setCurrentStep("submitting");
           }}
