@@ -1,4 +1,7 @@
-// VotingKiosk.tsx — Final Version (Timer Start on Ballot Click, Timeout Modal, No Floating Timer)
+// VotingKiosk.tsx — Updated Version
+// Fixes:
+// 1) "Already voted" check now only considers ACTIVE elections and blocks only if voter has voted in ALL active elections.
+// 2) Elections with a future start time (same date) are NOT shown until start_date <= now.
 
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -40,7 +43,7 @@ export interface CandidateSelection {
   candidateName: string;
   slate: string;
   electionId: string;
-  electionName: string; 
+  electionName: string;
 }
 
 const VotingKiosk = () => {
@@ -67,6 +70,7 @@ const VotingKiosk = () => {
   // AUTH SUCCESS (NO TIMER HERE)
   // -----------------------------------------------------
   const handleAuthSuccess = async (auth: { rfidTag: string }) => {
+    // 1) Find voter by RFID
     const { data: voterRow, error } = await supabase
       .from("voters")
       .select("*")
@@ -78,6 +82,7 @@ const VotingKiosk = () => {
       return;
     }
 
+    // 2) Prevent simultaneous sessions
     const nowIso = new Date().toISOString();
     const { data: existingSessions } = await supabase
       .from("voter_sessions")
@@ -104,35 +109,75 @@ const VotingKiosk = () => {
       faceVerified: true,
     };
 
-    //Check if user has already voted in any election
-    const { data: voteStatus } = await supabase
-      .from("voter_election_status")
-      .select("election_id, has_voted")
-      .eq("voter_id", voterRow.id);
-    
-    if (voteStatus && voteStatus.length > 0) {
-      navigate("/registration-error", {
-        state: {
-          title: "You Already Voted",
-          message:
-             "You have already voted.",
-        },
-      });
-      return;
-    }
-    setVoterData(enriched);
-
-    // Load elections
-    const { data: elections = [] } = await supabase
+    // 3) Load elections FIRST (so we can determine what "active" means)
+    const { data: elections = [], error: electionsErr } = await supabase
       .from("elections")
       .select("*");
 
+    if (electionsErr) {
+      toast.error("Failed to load elections.");
+      return;
+    }
+
     const now = new Date();
-    const active = elections.filter((e) => e.is_active && new Date(e.end_date) > now);
-    const expired = elections.filter((e) => e.is_active && new Date(e.end_date) <= now);
+
+    // ✅ FIX: Election is "active" only if:
+    // - is_active = true
+    // - start_date <= now
+    // - end_date > now
+    const active = elections.filter((e) => {
+      const start = new Date(e.start_date);
+      const end = new Date(e.end_date);
+      return e.is_active && start <= now && end > now;
+    });
+
+    // Expired = was active but end_date <= now
+    const expired = elections.filter((e) => {
+      const end = new Date(e.end_date);
+      return e.is_active && end <= now;
+    });
 
     setActiveElections(active);
     setExpiredElections(expired);
+
+    // 4) ✅ FIX: already-voted logic should only consider ACTIVE elections
+    const activeIds = active.map((e) => e.id);
+
+    if (activeIds.length > 0) {
+      const { data: statusRows, error: statusErr } = await supabase
+        .from("voter_election_status")
+        .select("election_id, has_voted")
+        .eq("voter_id", voterRow.id)
+        .in("election_id", activeIds);
+
+      if (statusErr) {
+        toast.error("Failed to check voting status.");
+        return;
+      }
+
+      const completed = (statusRows ?? [])
+        .filter((r) => r.has_voted)
+        .map((r) => r.election_id);
+
+      setCompletedElections(completed);
+
+      const hasVotedAllActive = activeIds.every((id) => completed.includes(id));
+
+      if (hasVotedAllActive) {
+        navigate("/registration-error", {
+          state: {
+            title: "You Already Voted",
+            message: "You have already voted in all active elections.",
+          },
+        });
+        return;
+      }
+    } else {
+      setCompletedElections([]);
+    }
+
+    // 5) Proceed
+    setVoterData(enriched);
 
     if (active.length === 1) {
       handleElectionSelect(active[0].id, active[0]);
@@ -170,10 +215,7 @@ const VotingKiosk = () => {
     setCurrentSelections(selections);
 
     // merge into allSelections
-    const filtered = allSelections.filter(
-      (s) => s.electionId !== selectedElection.id
-    );
-
+    const filtered = allSelections.filter((s) => s.electionId !== selectedElection.id);
     setAllSelections([...filtered, ...selections]);
 
     setCurrentStep("review");
@@ -192,7 +234,6 @@ const VotingKiosk = () => {
 
         if (prev <= 1000) {
           clearInterval(interval);
-          
           if (!showTimeoutModal) setShowTimeoutModal(true);
           return prev;
         }
@@ -202,35 +243,25 @@ const VotingKiosk = () => {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [timeLeft, currentStep, voterData]);
+  }, [timeLeft, currentStep, voterData, showTimeoutModal]);
 
   // -----------------------------------------------------
   // FINAL SUBMISSION COMPLETE
   // -----------------------------------------------------
   const handleSubmissionComplete = async (txHash: string) => {
-    console.log("🔍 handleSubmissionComplete triggered");
-    console.log("voterData:", voterData);
-    console.log("selectedElection:", selectedElection);
-
     setTransactionHash(txHash);
 
-    const { data: statusInsert, error: statusError } = await supabase
-      .from("voter_election_status")
-      .upsert({
-        voter_id: voterData?.id,
-        election_id: selectedElection?.id,
-        has_voted: true,
-        voted_at: new Date().toISOString(),
-      });
-
-    console.log("🔍 UPSERT RESULT:", statusInsert, statusError);
+    await supabase.from("voter_election_status").upsert({
+      voter_id: voterData?.id,
+      election_id: selectedElection?.id,
+      has_voted: true,
+      voted_at: new Date().toISOString(),
+    });
 
     const updated = [...completedElections, selectedElection.id];
     setCompletedElections(updated);
 
-    const remaining = activeElections.filter(
-      (e) => !updated.includes(e.id)
-    );
+    const remaining = activeElections.filter((e) => !updated.includes(e.id));
 
     if (remaining.length > 0) {
       setCurrentStep("election-finished");
@@ -238,7 +269,6 @@ const VotingKiosk = () => {
       setCurrentStep("review-final");
     }
   };
-
 
   // -----------------------------------------------------
   // RESET AFTER FULL VOTING PROCESS
@@ -269,30 +299,29 @@ const VotingKiosk = () => {
   // -----------------------------------------------------
   return (
     <div className="min-h-screen bg-gradient-to-br from-emerald-400/40 via-white to-yellow-300/40 relative">
-
       {/* TIMEOUT MODAL */}
       {showTimeoutModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
-            <h2 className="text-2xl font-bold text-red-600 mb-4">
-              Warning
-            </h2>
+            <h2 className="text-2xl font-bold text-red-600 mb-4">Warning</h2>
 
             <p className="text-gray-700 mb-6 leading-relaxed">
               Your voting time is up, but don’t worry — we’ve added{" "}
               <strong>1 minute and 30 seconds</strong> so you can finish.<br /> <br />
-              <h3 className="text-red-600"><strong>Please try to vote a little faster. </strong></h3>
+              <h3 className="text-red-600">
+                <strong>Please try to vote a little faster. </strong>
+              </h3>
             </p>
 
             <button
               onClick={async () => {
-                const ext = 89* 1000;
+                const ext = 89 * 1000;
                 const newTime = (timeLeft ?? 0) + ext;
 
                 setTimeLeft(newTime);
                 setShowTimeoutModal(false);
 
-                if(voterData) {
+                if (voterData) {
                   await supabase
                     .from("voter_sessions")
                     .update({
@@ -307,19 +336,15 @@ const VotingKiosk = () => {
                 }
               }}
               className="px-6 py-3 bg-primary text-white rounded-lg font-semibold hover:bg-primary/80"
-              >
-                I Understand
+            >
+              I Understand
             </button>
           </div>
         </div>
       )}
 
       {/* AUTH */}
-      {currentStep === "auth" && (
-        <AuthenticationScreen
-          onAuthSuccess={handleAuthSuccess}
-        />
-      )}
+      {currentStep === "auth" && <AuthenticationScreen onAuthSuccess={handleAuthSuccess} />}
 
       {/* ELECTION SELECT */}
       {currentStep === "election-select" && voterData && (
@@ -339,9 +364,7 @@ const VotingKiosk = () => {
           electionId={selectedElection.id}
           electionData={selectedElection}
           onComplete={handleBallotComplete}
-          initialSelections={allSelections.filter(
-            (sel) => sel.electionId === selectedElection.id
-          )}
+          initialSelections={allSelections.filter((sel) => sel.electionId === selectedElection.id)}
           timeLeft={timeLeft ?? 0}
         />
       )}
@@ -371,12 +394,12 @@ const VotingKiosk = () => {
                 voter_id: voterData.id,
                 election_id: sel.electionId,
                 position: sel.position,
-                candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,                
+                candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
                 is_abstain: sel.candidateId === "ABSTAIN",
               });
             }
-            //Flag the voter as voted in this election
-            for (const sel of allSelections){
+
+            for (const sel of allSelections) {
               await supabase.from("voter_election_status").upsert({
                 voter_id: voterData.id,
                 election_id: sel.electionId,
@@ -389,8 +412,9 @@ const VotingKiosk = () => {
                 voter_suffix: voterData.suffix,
                 voter_email: voterData.email,
                 year_level: voterData.year_level,
-              })
+              });
             }
+
             setCurrentStep("submitting");
           }}
           onEdit={() => setCurrentStep("election-select")}
@@ -422,7 +446,7 @@ const VotingKiosk = () => {
           voterData={voterData}
           selections={allSelections}
           transactionHash={transactionHash}
-          onComplete={(tx) => {}}
+          onComplete={() => {}}
           onReset={handleReset}
           isComplete={true}
         />
