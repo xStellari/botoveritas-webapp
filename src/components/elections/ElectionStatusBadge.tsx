@@ -1,40 +1,34 @@
 import { Badge } from "@/components/ui/badge";
 
 export const ElectionStatusBadge = ({ election }: { election: any }) => {
-  const now = new Date();
-  const start = new Date(election.start_date);
-  const end = new Date(election.end_date);
+  const now = Date.now();
+  const start = new Date(election.start_date).getTime();
+  const end = new Date(election.end_date).getTime();
 
-  const isActive = election.is_active && now >= start && now <= end;
   const isUpcoming = now < start;
-  const isInactive = now > end;
+  const isOngoing = now >= start && now <= end;
+  const isClosed = now > end;
 
-  if (isActive) {
+  if (isOngoing) {
     return (
       <Badge variant="outline" className="text-primary border-primary">
-        Active
+        Ongoing
       </Badge>
     );
   }
 
   if (isUpcoming) {
     return (
-      <Badge
-        variant="outline"
-        className="text-blue-600 border-blue-600"
-      >
+      <Badge variant="outline" className="text-blue-600 border-blue-600">
         Upcoming
       </Badge>
     );
   }
 
-  if (isInactive) {
+  if (isClosed) {
     return (
-      <Badge
-        variant="outline"
-        className="text-destructive border-destructive"
-      >
-        Inactive
+      <Badge variant="outline" className="text-destructive border-destructive">
+        Closed
       </Badge>
     );
   }

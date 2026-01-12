@@ -302,9 +302,22 @@ const BallotScreenWithAbstain = ({
                           />
                           <Label htmlFor={candidate.id} className="flex-1 cursor-pointer">
                             <div className="flex items-start gap-4">
-                              <div className="flex-shrink-0 w-16 h-16 rounded-lg bg-gradient-primary flex items-center justify-center">
-                                <User className="h-8 w-8 text-white" />
+                              <div className= "w-24 h-24 rounded-lg overflow-hidden border bg-muted flex items-center justify-center">
+                                {candidate.photo_url ? (
+                                  <img
+                                    src={candidate.photo_url}
+                                    alt={candidate.name}
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                      // fallback if URL is broken
+                                      (e.currentTarget as HTMLImageElement).src = "";
+                                    }}
+                                  />
+                                  ) : (
+                                    <User className="h-12 w-12 text-muted-foreground" />
+                                  )}
                               </div>
+
                               <div className="flex-1">
                                 <h3 className="font-semibold text-lg">{candidate.name}</h3>
                                 {candidate.slate && (

@@ -1,10 +1,8 @@
-/** FULL UPDATED RegisterVerify.tsx WITH ANIMATED STEPPER **/
-/** UI REWORK to match Step 1 modern design **/
+/** FULL UPDATED RegisterVerify.tsx WITH ONE-SHOT SUBMIT (prevents double insert) **/
 
 import { useLocation, useNavigate } from "react-router-dom";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
 import {
   Card,
   CardHeader,
@@ -37,9 +35,11 @@ export default function RegisterVerify() {
     | undefined;
 
   const [rfid, setRfid] = useState<string>("");
-  const [faceDescriptor, setFaceDescriptor] =
-    useState<Float32Array | null>(null);
+  const [faceDescriptor, setFaceDescriptor] = useState<Float32Array | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+
+  // ✅ One-shot submit guard (prevents double click / double insert)
+  const hasSubmittedRef = useRef(false);
 
   // Temporary function to simulate RFID scan for testing
   const generateSimulatedRFID = () => {
@@ -52,9 +52,7 @@ export default function RegisterVerify() {
       <div className="min-h-screen flex items-center justify-center p-6">
         <Card className="p-8 max-w-md w-full text-center space-y-4">
           <CardTitle>Registration Data Missing</CardTitle>
-          <CardDescription>
-            Please restart the registration process.
-          </CardDescription>
+          <CardDescription>Please restart the registration process.</CardDescription>
           <Button onClick={() => navigate("/")}>Return Home</Button>
         </Card>
       </div>
@@ -86,77 +84,109 @@ export default function RegisterVerify() {
   // FINAL REGISTRATION SUBMIT
   // -----------------------------------------------
   const handleFinish = async () => {
+    // ✅ Hard guard: never run twice
+    if (hasSubmittedRef.current) return;
     if (!rfid || !faceDescriptor) return;
 
+    hasSubmittedRef.current = true;
     setLoading(true);
 
-    const { data: existingRFID } = await supabase
-      .from("voters")
-      .select("email")
-      .eq("rfid_tag", rfid)
-      .maybeSingle();
+    try {
+      // 1) RFID uniqueness check
+      const { data: existingRFID } = await supabase
+        .from("voters")
+        .select("email")
+        .eq("rfid_tag", rfid)
+        .maybeSingle();
 
-    if (existingRFID) {
-      navigate("/registration-error", {
-        state: { message: "This RFID is already registered to another student." },
-      });
-      return;
-    }
+      if (existingRFID) {
+        navigate("/registration-error", {
+          state: { message: "This RFID is already registered to another student." },
+        });
+        return;
+      }
 
-    const { data: signupData, error } = await supabase.auth.signUp({
-      email: data.fullEmail,
-      password: crypto.randomUUID(),
-    });
-
-    if (error) {
-      navigate("/registration-error", {
-        state: { message: "Registration failed. Please try again." + error},
-      });
-      return;
-    }
-
-    const user = signupData.user;
-    await supabase.auth.setSession(signupData.session);
-
-    const { error: voterErr } = await supabase.from("voters").insert([
-      {
-        id: user.id,
+      // 2) Create auth user
+      const { data: signupData, error } = await supabase.auth.signUp({
         email: data.fullEmail,
-        first_name: data.firstName,
-        middle_name: data.middleName,
-        last_name: data.lastName,
-        suffix: data.suffix || null,
-        year_level: data.yearLevel,
-        org_affiliations: data.orgAffiliations,
-        rfid_tag: rfid,
-        face_descriptor: Array.from(faceDescriptor),
-      },
-    ]);
-
-    if (voterErr) {
-      navigate("/registration-error", {
-        state: { message: "Failed to save voter record." },
+        password: crypto.randomUUID(),
       });
-      return;
+
+      if (error) {
+        navigate("/registration-error", {
+          state: { message: "Registration failed. Please try again. " + error.message },
+        });
+        return;
+      }
+
+      const user = signupData.user;
+      if (!user?.id) {
+        navigate("/registration-error", {
+          state: { message: "Registration failed: missing user id." },
+        });
+        return;
+      }
+
+      // Only set session if it exists (depends on email confirmation settings)
+      if (signupData.session) {
+        await supabase.auth.setSession(signupData.session);
+      }
+
+      // 3) Insert voter record
+      const { error: voterErr } = await supabase.from("voters").insert([
+        {
+          id: user.id,
+          email: data.fullEmail,
+          first_name: data.firstName,
+          middle_name: data.middleName,
+          last_name: data.lastName,
+          suffix: data.suffix || null,
+          year_level: data.yearLevel,
+          org_affiliations: data.orgAffiliations,
+          rfid_tag: rfid,
+          face_descriptor: Array.from(faceDescriptor),
+        },
+      ]);
+
+      if (voterErr) {
+        navigate("/registration-error", {
+          state: { message: "Failed to save voter record. " + voterErr.message },
+        });
+        return;
+      }
+
+      // 4) Send email (best effort; don't block success)
+      // ✅ pass BOTH voter_id + email (fallback works even if id lookup fails)
+      const { error: emailErr } = await supabase.functions.invoke(
+        "send-registration-email",
+        { body: { voter_id: user.id, email: data.fullEmail } }
+      );
+
+      if (emailErr) {
+        console.warn("send-registration-email failed:", emailErr);
+      }
+
+      // 5) Navigate to confirmation
+      navigate("/registration-confirmation", {
+        state: {
+          firstName: data.firstName,
+          middleName: data.middleName,
+          lastName: data.lastName,
+          orgAffiliations: data.orgAffiliations,
+        },
+      });
+
+      // ✅ IMPORTANT: do NOT setLoading(false) after navigate; component unmounts anyway
+    } catch (err) {
+      console.error(err);
+      navigate("/registration-error", {
+        state: { message: "Unexpected error during registration." },
+      });
     }
-
-    navigate("/registration-confirmation", {
-      state: {
-        firstName: data.firstName,
-        middleName: data.middleName,
-        lastName: data.lastName,
-        orgAffiliations: data.orgAffiliations,
-      },
-    });
   };
-
-  // ============================================================
-  // 🟩 UI — FULL REDESIGN + ANIMATED STEPPER + PROGRESS BAR
-  // ============================================================
 
   return (
     <div className="min-h-screen relative flex items-center justify-center p-6 overflow-hidden">
-
       {/* Custom animations */}
       <style>
         {`
@@ -191,45 +221,24 @@ export default function RegisterVerify() {
       {/* Main Card */}
       <div className="max-w-3xl w-full animate-fade-in-up">
         <Card className="shadow-xl rounded-2xl border border-primary/20 bg-white/90 backdrop-blur">
-
-          {/* ===================================== */}
-          {/* HEADER + ANIMATED STEPPER            */}
-          {/* ===================================== */}
-
-          <CardHeader className="text-center pb-6 pt-10">
-
-            <h1
-              className="
-                text-4xl font-extrabold mb-3
-                bg-gradient-to-r from-primary to-secondary
-                bg-clip-text text-transparent
-              "
-            >
-              Identity Verification
-            </h1>
-
-            <CardDescription className="text-muted-foreground text-lg mb-6">
-              Step 2 of 2 — Scan your RFID and capture your Face ID
+          <CardHeader className="pb-6">
+            <CardTitle className="text-3xl font-extrabold text-center bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
+              Step 2: Verify Your Identity
+            </CardTitle>
+            <CardDescription className="text-center">
+              Scan your RFID and capture your Face ID to finish registration.
             </CardDescription>
 
-            {/* ---- Animated Progress Bar ---- */}
-            <div className="relative w-64 h-2 bg-gray-200 rounded-full mx-auto overflow-hidden mb-8">
+            {/* Progress Bar */}
+            <div className="mt-6 h-2 w-full bg-muted rounded-full overflow-hidden">
               <div
-                className="
-                  absolute left-0 top-0 h-full
-                  bg-gradient-to-r from-primary to-secondary
-                  rounded-full
-                "
-                style={{
-                  animation: "progressFillStep2 1.4s ease-out forwards",
-                }}
-              ></div>
+                className="h-full bg-gradient-to-r from-primary to-secondary rounded-full"
+                style={{ animation: "progressFillStep2 1.4s ease-out forwards" }}
+              />
             </div>
 
-            {/* ---- Stepper Indicators ---- */}
+            {/* Stepper */}
             <div className="flex justify-center gap-14 mt-2">
-
-              {/* STEP 1 */}
               <div className="flex flex-col items-center">
                 <div
                   className={`
@@ -239,12 +248,9 @@ export default function RegisterVerify() {
                 >
                   1
                 </div>
-                <span className="mt-2 text-xs font-medium text-gray-700">
-                  RFID Scan
-                </span>
+                <span className="mt-2 text-xs font-medium text-gray-700">RFID Scan</span>
               </div>
 
-              {/* STEP 2 */}
               <div className="flex flex-col items-center">
                 <div
                   className={`
@@ -260,31 +266,20 @@ export default function RegisterVerify() {
                 >
                   2
                 </div>
-                <span className="mt-2 text-xs font-medium text-gray-700">
-                  Face ID
-                </span>
+                <span className="mt-2 text-xs font-medium text-gray-700">Face ID</span>
               </div>
-
             </div>
           </CardHeader>
 
-          {/* ===================================== */}
-          {/* MAIN CONTENT                          */}
-          {/* ===================================== */}
-
           <CardContent className="space-y-8 px-8 pb-10">
-
-            {/* Guide Text */}
             <div className="text-center mb-6">
               <p className="text-sm font-medium text-emerald-700">
                 Complete both steps to finish your registration
               </p>
             </div>
 
-            {/* RFID & Face ID blocks */}
             <div className="grid gap-8 lg:grid-cols-2 items-stretch">
-
-              {/* --- RFID SECTION --- */}
+              {/* RFID */}
               <div
                 className={`
                   border rounded-xl p-5 shadow-sm bg-white/70 transition flex flex-col h-full
@@ -298,29 +293,24 @@ export default function RegisterVerify() {
                     </div>
                     <p className="font-semibold text-base">Step 1: RFID Scan</p>
                   </div>
-
                   {rfid && <CheckCircle2 className="w-5 h-5 text-emerald-600" />}
                 </div>
 
                 <div className="mb-4">
                   {!rfid ? (
                     <>
-                    <p className="text-sm text-muted-foreground">
-                      Tap your RFID card on the reader to begin.
-                    </p>
+                      <p className="text-sm text-muted-foreground">
+                        Tap your RFID card on the reader to begin.
+                      </p>
 
-                    {/* Temporary Button for testing without RFID hardware */}
                       <Button
-                        onClick={() => {
-                          const newRFID = generateSimulatedRFID();
-                          setRfid(newRFID);
-                        }}
-                        className="mt-3 bg-blue-600 govver:bg-blue-700 text-white"
+                        onClick={() => setRfid(generateSimulatedRFID())}
+                        className="mt-3 bg-blue-600 hover:bg-blue-700 text-white"
+                        disabled={loading || hasSubmittedRef.current}
                       >
                         Simulate RFID Scan
                       </Button>
                     </>
-                    
                   ) : (
                     <p className="text-green-600 font-semibold text-lg">
                       RFID Detected: {rfid}
@@ -333,7 +323,7 @@ export default function RegisterVerify() {
                 </div>
               </div>
 
-              {/* --- FACE ID SECTION --- */}
+              {/* Face */}
               <div
                 id="face-step"
                 className={`
@@ -350,10 +340,7 @@ export default function RegisterVerify() {
                     </div>
                     <p className="font-semibold text-base">Step 2: Face ID</p>
                   </div>
-
-                  {faceDescriptor && (
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                  )}
+                  {faceDescriptor && <CheckCircle2 className="w-5 h-5 text-emerald-600" />}
                 </div>
 
                 <div className="mb-4">
@@ -366,9 +353,7 @@ export default function RegisterVerify() {
                       The camera will activate automatically. Align your face within the frame.
                     </p>
                   ) : (
-                    <p className="text-green-600 font-semibold text-lg">
-                      Face ID Captured
-                    </p>
+                    <p className="text-green-600 font-semibold text-lg">Face ID Captured</p>
                   )}
                 </div>
 
@@ -379,8 +364,9 @@ export default function RegisterVerify() {
                     <FacialRecognition
                       autoCapture={true}
                       onCapture={async (descriptor) => {
-                        const isDuplicate = await checkDuplicateFace(descriptor);
+                        if (hasSubmittedRef.current) return; // ✅ lock capture once submitted
 
+                        const isDuplicate = await checkDuplicateFace(descriptor);
                         if (isDuplicate) {
                           navigate("/registration-error", {
                             state: {
@@ -406,14 +392,14 @@ export default function RegisterVerify() {
               </div>
             </div>
 
-            {/* Action Buttons */}
+            {/* Buttons */}
             <div className="flex flex-col md:flex-row gap-4 mt-4">
               <Button
                 type="button"
                 variant="outline"
                 className="md:w-1/3"
                 onClick={() => navigate("/")}
-                disabled={loading}
+                disabled={loading || hasSubmittedRef.current}
               >
                 Cancel
               </Button>
@@ -421,7 +407,7 @@ export default function RegisterVerify() {
               <Button
                 className="flex-1 text-lg py-6 font-semibold bg-gradient-to-r from-primary to-secondary"
                 onClick={handleFinish}
-                disabled={loading || !rfid || !faceDescriptor}
+                disabled={loading || hasSubmittedRef.current || !rfid || !faceDescriptor}
               >
                 {loading ? "Finalizing..." : "Complete Registration"}
               </Button>
@@ -430,9 +416,11 @@ export default function RegisterVerify() {
         </Card>
       </div>
 
-      {/* RFID Listener (global, invisible) */}
+      {/* RFID Listener */}
       <RFIDScanner
         onScan={async (tag) => {
+          if (hasSubmittedRef.current) return; // ✅ lock scanning once submitted
+
           const { data: existingRFID } = await supabase
             .from("voters")
             .select("email")
@@ -441,16 +429,13 @@ export default function RegisterVerify() {
 
           if (existingRFID) {
             navigate("/registration-error", {
-              state: {
-                message: "This RFID is already registered to another student.",
-              },
+              state: { message: "This RFID is already registered to another student." },
             });
             return;
           }
 
           setRfid(tag);
 
-          // scroll Face ID into view
           setTimeout(() => {
             document.getElementById("face-step")?.scrollIntoView({
               behavior: "smooth",

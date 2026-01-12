@@ -2,6 +2,10 @@
 // Fixes:
 // 1) "Already voted" check now only considers ACTIVE elections and blocks only if voter has voted in ALL active elections.
 // 2) Elections with a future start time (same date) are NOT shown until start_date <= now.
+// 3) Timer no longer shows 0:00 (starts reliably even when auto-selecting the only active election).
+// 4) ✅ NEW: voter_sessions lock is created IMMEDIATELY after auth to prevent simultaneous access on other devices.
+// 5) ✅ NEW: Filter elections by eligibility (Option A: abbreviations in voters.org_affiliations + elections.eligible_orgs)
+// 6) ✅ NEW: Pass onRefresh callback to ElectionSelection for Refresh button
 
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -67,28 +71,139 @@ const VotingKiosk = () => {
   const [showTimeoutModal, setShowTimeoutModal] = useState(false);
 
   // -----------------------------------------------------
+  // ✅ NEW: Eligibility helpers (Option A: abbreviations only)
+  // voters.org_affiliations should be like ["SCC","ICpEP"]
+  // elections.eligible_orgs should be like ["SCC"] or ["HonSoc"]
+  // -----------------------------------------------------
+  const getVoterOrgs = (v: any): string[] =>
+    Array.isArray(v?.org_affiliations) ? v.org_affiliations : [];
+
+  const isElectionEligibleForVoter = (election: any, voterOrgs: string[]): boolean => {
+    const eligibleOrgs: string[] = Array.isArray(election?.eligible_orgs)
+      ? election.eligible_orgs
+      : [];
+
+    // If eligible_orgs is empty/null, treat as open-to-all (keep as-is)
+    if (eligibleOrgs.length === 0) return true;
+
+    return eligibleOrgs.some((org) => voterOrgs.includes(org));
+  };
+
+  // -----------------------------------------------------
+  // ✅ UPDATED: Refresh elections + status (used by Refresh button)
+  // -----------------------------------------------------
+  const refreshElectionsAndStatus = async () => {
+    if (!voterData) return;
+
+    const voterOrgs = getVoterOrgs(voterData);
+
+    // 1) Load elections
+    const { data: elections = [], error: electionsErr } = await supabase
+      .from("elections")
+      .select("*");
+
+    if (electionsErr) {
+      toast.error("Failed to load elections.");
+      return;
+    }
+
+    const now = new Date();
+
+    const active = elections.filter((e) => {
+      const start = new Date(e.start_date);
+      const end = new Date(e.end_date);
+      return (
+        e.is_active &&
+        start <= now &&
+        end > now &&
+        isElectionEligibleForVoter(e, voterOrgs)
+      );
+    });
+
+    const expired = elections.filter((e) => {
+      const end = new Date(e.end_date);
+      return e.is_active && end <= now && isElectionEligibleForVoter(e, voterOrgs);
+    });
+
+    setActiveElections(active);
+    setExpiredElections(expired);
+
+    // 2) Refresh completed elections for ACTIVE only
+    const activeIds = active.map((e) => e.id);
+
+    if (activeIds.length === 0) {
+      setCompletedElections([]);
+      return;
+    }
+
+    const { data: statusRows, error: statusErr } = await supabase
+      .from("voter_election_status")
+      .select("election_id, has_voted")
+      .eq("voter_id", voterData.id)
+      .in("election_id", activeIds);
+
+    if (statusErr) {
+      toast.error("Failed to check voting status.");
+      return;
+    }
+
+    const completed = (statusRows ?? [])
+      .filter((r) => r.has_voted)
+      .map((r) => r.election_id);
+
+    setCompletedElections(completed);
+  };
+
+  // -----------------------------------------------------
+  // TIMER START HELPER (does NOT depend on React state timing)
+  // -----------------------------------------------------
+  const ensureTimerStarted = async (voterId: string, activeCount: number) => {
+    if (timeLeft !== null) return;
+
+    const totalMinutes = Math.max(activeCount, 1) * 3; // 3 mins per active election, at least 3 mins
+    const totalMs = totalMinutes * 60 * 1000;
+
+    setTimeLeft(totalMs);
+
+    const expiresAt = Date.now() + totalMs;
+
+    await supabase.from("voter_sessions").upsert({
+      voter_id: voterId,
+      expires_at: new Date(expiresAt).toISOString(),
+    });
+  };
+
+  // -----------------------------------------------------
   // AUTH SUCCESS (NO TIMER HERE)
   // -----------------------------------------------------
   const handleAuthSuccess = async (auth: { rfidTag: string }) => {
-    // 1) Find voter by RFID
-    const { data: voterRow, error } = await supabase
-      .from("voters")
-      .select("*")
-      .eq("rfid_tag", auth.rfidTag)
-      .single();
+    // 1) Find voter by RFID (via RPC to avoid direct voters SELECT under RLS)
+    const { data: voterRows, error: voterErr } = await supabase.rpc(
+      "get_voter_by_rfid" as any,
+      { p_rfid: auth.rfidTag } as any
+    );
 
-    if (error || !voterRow) {
+    const voterRow = voterRows?.[0];
+
+    if (voterErr || !voterRow) {
       toast.error("Voter not found.");
       return;
     }
 
+    const voterOrgs = getVoterOrgs(voterRow);
+
     // 2) Prevent simultaneous sessions
     const nowIso = new Date().toISOString();
-    const { data: existingSessions } = await supabase
+    const { data: existingSessions, error: sessionCheckErr } = await supabase
       .from("voter_sessions")
       .select("*")
       .eq("voter_id", voterRow.id)
       .gt("expires_at", nowIso);
+
+    if (sessionCheckErr) {
+      toast.error("Failed to check active session.");
+      return;
+    }
 
     if (existingSessions?.length) {
       navigate("/registration-error", {
@@ -98,6 +213,21 @@ const VotingKiosk = () => {
             "There is already an active voting session for this voter. Please wait before trying again.",
         },
       });
+      return;
+    }
+
+    // ✅ NEW: Create session lock immediately after auth
+    // This prevents another device from authenticating before election selection starts.
+    const initialLockMs = 3 * 60 * 1000; // 3 minutes initial lock
+    const initialExpiresAt = new Date(Date.now() + initialLockMs).toISOString();
+
+    const { error: lockErr } = await supabase.from("voter_sessions").upsert({
+      voter_id: voterRow.id,
+      expires_at: initialExpiresAt,
+    });
+
+    if (lockErr) {
+      toast.error("Failed to create voting session lock.");
       return;
     }
 
@@ -125,16 +255,23 @@ const VotingKiosk = () => {
     // - is_active = true
     // - start_date <= now
     // - end_date > now
+    // ✅ NEW: and voter is eligible based on orgs
     const active = elections.filter((e) => {
       const start = new Date(e.start_date);
       const end = new Date(e.end_date);
-      return e.is_active && start <= now && end > now;
+      return (
+        e.is_active &&
+        start <= now &&
+        end > now &&
+        isElectionEligibleForVoter(e, voterOrgs)
+      );
     });
 
     // Expired = was active but end_date <= now
+    // ✅ NEW: and voter is eligible based on orgs
     const expired = elections.filter((e) => {
       const end = new Date(e.end_date);
-      return e.is_active && end <= now;
+      return e.is_active && end <= now && isElectionEligibleForVoter(e, voterOrgs);
     });
 
     setActiveElections(active);
@@ -167,7 +304,7 @@ const VotingKiosk = () => {
         navigate("/registration-error", {
           state: {
             title: "You Already Voted",
-            message: "You have already voted in all active elections.",
+            message: "You have already voted in all active elections available to you.",
           },
         });
         return;
@@ -179,8 +316,10 @@ const VotingKiosk = () => {
     // 5) Proceed
     setVoterData(enriched);
 
+    // ✅ IMPORTANT: if only one active election, we auto-select it.
+    // But voterData state may not be ready yet, so pass voterRow.id and active.length.
     if (active.length === 1) {
-      handleElectionSelect(active[0].id, active[0]);
+      handleElectionSelect(active[0].id, active[0], voterRow.id, active.length);
     } else {
       setCurrentStep("election-select");
     }
@@ -189,19 +328,23 @@ const VotingKiosk = () => {
   // -----------------------------------------------------
   // START TIMER ON FIRST BALLOT CLICK
   // -----------------------------------------------------
-  const handleElectionSelect = async (electionId: string, electionData: any) => {
-    if (voterData && timeLeft === null) {
-      const totalMinutes = activeElections.length * 3;
-      const totalMs = totalMinutes * 60 * 1000;
-
-      setTimeLeft(totalMs);
-      const expiresAt = Date.now() + totalMs;
-
-      await supabase.from("voter_sessions").upsert({
-        voter_id: voterData.id,
-        expires_at: new Date(expiresAt).toISOString(),
-      });
+  const handleElectionSelect = async (
+    electionId: string,
+    electionData: any,
+    voterIdOverride?: string,
+    activeCountOverride?: number
+  ) => {
+    const voterId = voterData?.id ?? voterIdOverride;
+    if (!voterId) {
+      toast.error("Missing voter session.");
+      return;
     }
+
+    // If user is selecting manually, activeElections state is already set.
+    // If auto-selecting, we pass active.length override to avoid stale state.
+    const activeCount = activeCountOverride ?? activeElections.length ?? 1;
+
+    await ensureTimerStarted(voterId, activeCount);
 
     setSelectedElection({ id: electionId, ...electionData });
     setCurrentSelections([]);
@@ -307,7 +450,8 @@ const VotingKiosk = () => {
 
             <p className="text-gray-700 mb-6 leading-relaxed">
               Your voting time is up, but don’t worry — we’ve added{" "}
-              <strong>1 minute and 30 seconds</strong> so you can finish.<br /> <br />
+              <strong>1 minute and 30 seconds</strong> so you can finish.
+              <br /> <br />
               <h3 className="text-red-600">
                 <strong>Please try to vote a little faster. </strong>
               </h3>
@@ -354,6 +498,7 @@ const VotingKiosk = () => {
           completedElections={completedElections}
           activeElections={activeElections}
           expiredElections={expiredElections}
+          onRefresh={refreshElectionsAndStatus} // ✅ NEW
         />
       )}
 

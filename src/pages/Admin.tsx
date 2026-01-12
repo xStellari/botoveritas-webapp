@@ -1,81 +1,31 @@
-import { useEffect, useState } from "react";
 import feuLogo from "@/assets/feu-logo.png";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BarChart, Users, Vote, Shield, LogOut } from "lucide-react";
-import { toast } from "sonner";
+
 import AdminAnalytics from "@/components/admin/AdminAnalytics";
 import VoterManagement from "@/components/admin/VoterManagement";
 import EnhancedElectionManagement from "@/components/admin/EnhancedElectionManagement";
 import BlockchainMonitor from "@/components/admin/BlockchainMonitor";
+import { useEffect } from "react";
 
 export default function Admin() {
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [user, setUser] = useState<any>(null);
-
-  useEffect(() => {
-    checkAdminAccess();
-  }, []);
-
-  const checkAdminAccess = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-
-    if (!session) {
-      navigate("/");
-      return;
-    }
-
-    setUser(session.user);
-
-    // Check if user has admin role
-    const { data: roles, error } = await supabase
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", session.user.id)
-      .eq("role", "admin");
-
-    if (error || !roles || roles.length === 0) {
-      toast.error("Access denied. Admin privileges required.");
-      navigate("/");
-      return;
-    }
-
-    setIsAdmin(true);
-    setLoading(false);
-  };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate("/");
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p>Verifying admin access...</p>
-      </div>
-    );
-  }
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      console.log("ADMIN SESSION:", data.session);
+      console.log("ADMIN USER ID:", data.session?.user?.id);
+    });
+  }, []);
 
-  if (!isAdmin) {
-    return null;
-  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-feu-green/10 to-feu-gold/10">
@@ -90,6 +40,7 @@ export default function Admin() {
               </p>
             </div>
           </div>
+
           <div className="flex items-center gap-4">
             <Button variant="outline" onClick={() => navigate("/results")}>
               View Results
@@ -124,7 +75,6 @@ export default function Admin() {
           </TabsList>
 
           <TabsContent value="analytics">
-            {/* ✅ self-contained AdminAnalytics, no props */}
             <AdminAnalytics />
           </TabsContent>
 

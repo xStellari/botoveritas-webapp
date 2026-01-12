@@ -56,7 +56,7 @@ export default function Login() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-feu-green via-background to-feu-gold p-4">
       <Card className="w-full max-w-md backdrop-blur-sm bg-background/95">
         <CardHeader className="text-center">
-          <img src="/src/assets/feu-logo.png" alt="FEU Alabang" className="h-20 mx-auto mb-4" />
+          <img src="/FEU_Alabang_logo.png" alt="FEU Alabang" className="h-20 mx-auto mb-4" />
           <CardTitle className="text-2xl font-bold text-feu-green">Admin Login</CardTitle>
           <CardDescription>Restricted access for administrators</CardDescription>
         </CardHeader>
