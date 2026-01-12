@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Loader2, CheckCircle2, Mail, Home } from "lucide-react";
+import { Loader2, CheckCircle2, Home } from "lucide-react";
 import feuLogo from "@/assets/feu-logo.png";
 import type { VoterData, CandidateSelection } from "@/pages/VotingKiosk";
+import { supabase } from "@/integrations/supabase/client";
 // 🎉 Confetti animation
 import Confetti from "react-confetti";
 
@@ -18,6 +19,32 @@ interface SubmissionScreenProps {
 
 type SubmissionStep = "encrypting" | "blockchain" | "minting" | "email" | "complete";
 
+type ReceiptItem = {
+  position: string;
+  choiceName: string; // masked candidate name or "ABSTAIN"
+  choiceId?: string | null;
+  isAbstain?: boolean;
+};
+
+const maskWord = (word: string) => {
+  const w = word.trim();
+  if (!w) return w;
+  if (w.length <= 2) return w[0] + "*"; // e.g. "Al" -> "A*"
+  // keep first and last, mask middle
+  return `${w[0]}${"*".repeat(Math.min(6, w.length - 2))}${w[w.length - 1]}`;
+};
+
+const maskCandidateName = (name: string) => {
+  const upper = name.trim().toUpperCase();
+  if (upper === "ABSTAIN") return "ABSTAIN";
+
+  // Preserve spaces; mask each word separately
+  return name
+    .split(" ")
+    .map((w) => maskWord(w))
+    .join(" ");
+};
+
 const SubmissionScreen = ({
   voterData,
   selections,
@@ -29,6 +56,47 @@ const SubmissionScreen = ({
   const [currentStep, setCurrentStep] = useState<SubmissionStep>("encrypting");
   const [generatedTxHash, setGeneratedTxHash] = useState("");
   const [countdown, setCountdown] = useState(30);
+
+  const [receiptStatus, setReceiptStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+
+  const uniqueElectionTitles = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of selections) {
+      if (s?.electionName) set.add(s.electionName);
+    }
+    return Array.from(set);
+  }, [selections]);
+
+  const computedElectionTitle = useMemo(() => {
+    if (uniqueElectionTitles.length === 1) return uniqueElectionTitles[0];
+    if (uniqueElectionTitles.length > 1) return "Multiple Elections";
+    return "Election";
+  }, [uniqueElectionTitles]);
+
+  const buildReceiptItems = (): ReceiptItem[] => {
+    return selections.map((sel) => {
+      const isAbstain =
+        sel.candidateId === "ABSTAIN" ||
+        sel.candidateName?.toUpperCase?.() === "ABSTAIN";
+
+      const maskedName = isAbstain
+        ? "ABSTAIN"
+        : maskCandidateName(sel.candidateName ?? "—");
+
+      // If multiple elections, include election label in the “position” field for clarity
+      const positionLabel =
+        uniqueElectionTitles.length > 1
+          ? `${sel.electionName ?? "Election"} • ${sel.position}`
+          : sel.position;
+
+      return {
+        position: positionLabel,
+        choiceName: maskedName,
+        choiceId: isAbstain ? null : (sel.candidateId ?? null),
+        isAbstain,
+      };
+    });
+  };
 
   useEffect(() => {
     if (!isComplete) {
@@ -43,9 +111,11 @@ const SubmissionScreen = ({
         }
 
         if (stepIndex === 1) {
-          mockHash = "0x" + Array.from({ length: 64 }, () =>
-            Math.floor(Math.random() * 16).toString(16)
-          ).join("");
+          mockHash =
+            "0x" +
+            Array.from({ length: 64 }, () =>
+              Math.floor(Math.random() * 16).toString(16)
+            ).join("");
           setGeneratedTxHash(mockHash);
         }
 
@@ -68,6 +138,43 @@ const SubmissionScreen = ({
       return () => clearTimeout(fallback);
     }
   }, [isComplete, onComplete]);
+
+  // ✅ Send the vote receipt during the “email” step (masked names)
+  useEffect(() => {
+    const run = async () => {
+      if (isComplete) return;
+      if (currentStep !== "email") return;
+      if (receiptStatus !== "idle") return;
+
+      setReceiptStatus("sending");
+      try {
+        const tx = generatedTxHash || transactionHash || undefined;
+
+        const receiptItems = buildReceiptItems();
+
+        await supabase.functions.invoke("send-vote-receipt-email", {
+          body: {
+            toEmail: voterData.email,
+            voterName: `${voterData.first_name} ${voterData.last_name}`.trim() || undefined,
+            electionTitle: computedElectionTitle,
+            votedAt: new Date().toISOString(),
+            receiptItems,
+            txHash: tx,
+            explorerUrl: tx ? `https://polygonscan.com/tx/${tx}` : undefined,
+          },
+        });
+
+        setReceiptStatus("sent");
+      } catch (e) {
+        console.warn("Vote receipt email failed:", e);
+        // don’t block completion UX
+        setReceiptStatus("failed");
+      }
+    };
+
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStep, isComplete, generatedTxHash, transactionHash, voterData.email, receiptStatus, computedElectionTitle, selections]);
 
   useEffect(() => {
     if (isComplete && countdown > 0) {
@@ -135,13 +242,22 @@ const SubmissionScreen = ({
                         {step === "encrypting" && "Encrypting Vote"}
                         {step === "blockchain" && "Recording on Blockchain"}
                         {step === "minting" && "Minting NFT Proof"}
-                        {step === "email" && "Sending Confirmation"}
+                        {step === "email" && "Sending Receipt"}
                       </h3>
                       <p className="text-sm text-muted-foreground">
                         {step === "encrypting" && "Applying zero-knowledge proof encryption..."}
                         {step === "blockchain" && "Submitting to Polygon network..."}
                         {step === "minting" && "Creating your digital proof of vote..."}
-                        {step === "email" && `Email being sent to ${voterData.email}...`}
+                        {step === "email" &&
+                          `Email being sent to ${voterData.email}... ${
+                            receiptStatus === "sending"
+                              ? "(sending)"
+                              : receiptStatus === "sent"
+                                ? "(sent)"
+                                : receiptStatus === "failed"
+                                  ? "(failed — vote still recorded)"
+                                  : ""
+                          }`}
                       </p>
                     </div>
                   </div>
@@ -177,14 +293,14 @@ const SubmissionScreen = ({
                     </p>
                   </div>
                   <div className="bg-card rounded-lg p-4 border border-border">
-                    <h3 className="font-semibold mb-2">📧 Confirmation</h3>
+                    <h3 className="font-semibold mb-2">📧 Receipt</h3>
                     <p className="text-sm text-muted-foreground">
-                      A confirmation email has been sent to <strong>{voterData.email}</strong>.
+                      A vote receipt email has been sent to <strong>{voterData.email}</strong>.
+                      <br />
+                      Candidate names are partially masked for privacy.
                     </p>
                   </div>
                 </div>
-
-                
               </div>
             </Card>
 
@@ -192,7 +308,8 @@ const SubmissionScreen = ({
             <Card className="border-2 border-primary/10 bg-card/95 backdrop-blur-sm">
               <div className="p-6 text-center">
                 <p className="text-muted-foreground mb-4">
-                  This kiosk will automatically reset in <strong className="text-primary text-xl font-mono">{countdown}</strong> seconds
+                  This kiosk will automatically reset in{" "}
+                  <strong className="text-primary text-xl font-mono">{countdown}</strong> seconds
                 </p>
                 <Button
                   onClick={onReset}

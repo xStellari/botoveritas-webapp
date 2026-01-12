@@ -13,14 +13,7 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import feuLogo from "@/assets/feu-logo.png";
 
-import {
-  Trophy,
-  TrendingUp,
-  RefreshCw,
-  Download,
-  Clock,
-  CheckCircle2,
-} from "lucide-react";
+import { Trophy, RefreshCw, Download, Clock, CheckCircle2 } from "lucide-react";
 
 import {
   BarChart,
@@ -67,7 +60,7 @@ type PositionSummary = {
   total_ballots: number;
   abstain_count: number;
   leader_vote_count: number;
-  leaders: string[]; // candidate names (ties possible)
+  leaders: string[];
 };
 
 function formatDateTime(dt?: string | null) {
@@ -94,19 +87,30 @@ function downloadTextFile(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
+function getElectionStatus(e?: ElectionRow | null) {
+  if (!e) return "—";
+  const now = Date.now();
+  const start = new Date(e.start_date).getTime();
+  const end = new Date(e.end_date).getTime();
+  if (now < start) return "Upcoming";
+  if (now > end) return "Ended";
+  return "Live";
+}
+
 export default function Results() {
   const navigate = useNavigate();
 
   const [elections, setElections] = useState<ElectionRow[]>([]);
-  const [selectedElection, setSelectedElection] = useState<ElectionRow | null>(null);
-
-  const [candidates, setCandidates] = useState<CandidateWithCount[]>([]);
-  const [positionSummaries, setPositionSummaries] = useState<Record<string, PositionSummary>>(
-    {}
+  const [selectedElection, setSelectedElection] = useState<ElectionRow | null>(
+    null
   );
 
+  const [candidates, setCandidates] = useState<CandidateWithCount[]>([]);
+  const [positionSummaries, setPositionSummaries] = useState<
+    Record<string, PositionSummary>
+  >({});
+
   const [stats, setStats] = useState({
-    
     eligibleVoters: 0,
     votersWhoVoted: 0,
     turnoutRate: 0,
@@ -115,10 +119,12 @@ export default function Results() {
   const [loading, setLoading] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
 
-  const channelsRef = useRef<{ candidates?: any; votes?: any; status?: any }>({});
+  const channelsRef = useRef<{ candidates?: any; votes?: any; status?: any }>(
+    {}
+  );
 
   // ----------------------------
-  // Load elections (show all, newest first)
+  // Load elections
   // ----------------------------
   const loadElections = async () => {
     const { data, error } = await supabase
@@ -137,7 +143,6 @@ export default function Results() {
     if (!selectedElection && list.length > 0) {
       setSelectedElection(list[0]);
     } else if (selectedElection) {
-      // keep selection fresh if list updated
       const stillThere = list.find((e) => e.id === selectedElection.id);
       if (!stillThere && list.length > 0) setSelectedElection(list[0]);
     }
@@ -145,13 +150,12 @@ export default function Results() {
 
   // ----------------------------
   // Eligible voters count (best-effort)
-  // - If eligible_orgs is empty/null -> all voters
-  // - If eligible_orgs has values -> count voters whose org_affiliations includes ANY of them
-  //   (done client-side to avoid guessing your column type/operators)
   // ----------------------------
   const loadEligibleVoterCount = async (election: ElectionRow) => {
-    // fast path: open-to-all
-    const eligibleOrgs = Array.isArray(election.eligible_orgs) ? election.eligible_orgs : [];
+    const eligibleOrgs = Array.isArray(election.eligible_orgs)
+      ? election.eligible_orgs
+      : [];
+
     if (eligibleOrgs.length === 0) {
       const { count, error } = await supabase
         .from("voters")
@@ -161,28 +165,26 @@ export default function Results() {
       return count || 0;
     }
 
-    // best-effort: fetch org_affiliations and count locally
+    // Fetch affiliations and count locally
     const { data, error } = await supabase.from("voters").select("org_affiliations");
     if (error) throw error;
 
-    const rows = data || [];
     let eligible = 0;
-
-    for (const r of rows as any[]) {
-      const aff: string[] = Array.isArray(r?.org_affiliations) ? r.org_affiliations : [];
+    for (const r of (data || []) as any[]) {
+      const aff: string[] = Array.isArray(r?.org_affiliations)
+        ? r.org_affiliations
+        : [];
       if (eligibleOrgs.some((org) => aff.includes(org))) eligible++;
     }
-
     return eligible;
   };
 
   // ----------------------------
-  // Main: load candidates + votes, compute counts per position
+  // Load results + compute summaries
   // ----------------------------
   const loadResults = async (election: ElectionRow) => {
     setLoading(true);
     try {
-      // candidates for election
       const { data: candidatesData, error: candErr } = await supabase
         .from("candidates")
         .select("id,name,position,slate")
@@ -190,7 +192,6 @@ export default function Results() {
 
       if (candErr) throw candErr;
 
-      // votes for election (we count using candidate_id + is_abstain)
       const { data: votesData, error: votesErr } = await supabase
         .from("votes")
         .select("election_id, position, candidate_id, is_abstain")
@@ -201,7 +202,6 @@ export default function Results() {
       const candList = (candidatesData || []) as CandidateRow[];
       const voteList = (votesData || []) as VoteRow[];
 
-      // vote count per candidate_id per position (candidate_id can be null for abstain)
       const countByPosCandidate = new Map<string, Map<string, number>>();
       const abstainByPos = new Map<string, number>();
       const totalByPos = new Map<string, number>();
@@ -221,7 +221,6 @@ export default function Results() {
         m.set(v.candidate_id, (m.get(v.candidate_id) || 0) + 1);
       }
 
-      // merge counts into candidates
       const merged: CandidateWithCount[] = candList.map((c) => {
         const pos = c.position || "General";
         const m = countByPosCandidate.get(pos);
@@ -229,7 +228,7 @@ export default function Results() {
         return { ...c, vote_count };
       });
 
-      // winner marking per position (ties supported)
+      // Winner marking + per-position summaries
       const summaries: Record<string, PositionSummary> = {};
       const grouped = merged.reduce((acc: Record<string, CandidateWithCount[]>, c) => {
         const pos = c.position || "General";
@@ -242,7 +241,6 @@ export default function Results() {
         const leaderCount = sorted[0]?.vote_count ?? 0;
         const leaders = sorted.filter((x) => x.vote_count === leaderCount && leaderCount > 0);
 
-        // apply winner flag
         const leaderIds = new Set(leaders.map((l) => l.id));
         for (const c of list) c.isWinner = leaderIds.has(c.id);
 
@@ -255,6 +253,7 @@ export default function Results() {
         };
       }
 
+      // Turnout stats (people-based)
       const { count: votedCount, error: votedErr } = await supabase
         .from("voter_election_status")
         .select("*", { count: "exact", head: true })
@@ -267,7 +266,6 @@ export default function Results() {
       const votersWhoVoted = votedCount || 0;
       const turnoutRate = eligibleVoters ? (votersWhoVoted / eligibleVoters) * 100 : 0;
 
-      // final sorting: within each position later
       merged.sort((a, b) => {
         const ap = a.position || "General";
         const bp = b.position || "General";
@@ -277,7 +275,7 @@ export default function Results() {
 
       setCandidates(merged);
       setPositionSummaries(summaries);
-      setStats({eligibleVoters, votersWhoVoted, turnoutRate });
+      setStats({ eligibleVoters, votersWhoVoted, turnoutRate });
       setLastUpdatedAt(new Date());
     } catch (e: any) {
       toast.error(e?.message ?? "Failed to load results");
@@ -301,13 +299,14 @@ export default function Results() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When election changes, load + resubscribe
+  // ----------------------------
+  // When election changes: load + subscribe
+  // ----------------------------
   useEffect(() => {
     if (!selectedElection) return;
 
     loadResults(selectedElection);
 
-    // cleanup old channels
     const prev = channelsRef.current;
     if (prev.candidates) supabase.removeChannel(prev.candidates);
     if (prev.votes) supabase.removeChannel(prev.votes);
@@ -355,7 +354,11 @@ export default function Results() {
       )
       .subscribe();
 
-    channelsRef.current = { candidates: candidatesChannel, votes: votesChannel, status: statusChannel };
+    channelsRef.current = {
+      candidates: candidatesChannel,
+      votes: votesChannel,
+      status: statusChannel,
+    };
 
     return () => {
       supabase.removeChannel(candidatesChannel);
@@ -365,7 +368,7 @@ export default function Results() {
   }, [selectedElection]);
 
   // ----------------------------
-  // Derived: candidates grouped by position
+  // Derived grouping
   // ----------------------------
   const candidatesByPosition = useMemo(() => {
     return (candidates || []).reduce((acc: Record<string, CandidateWithCount[]>, c) => {
@@ -376,7 +379,7 @@ export default function Results() {
   }, [candidates]);
 
   // ----------------------------
-  // CSV Export
+  // CSV Export (less convoluted, abstain preserved via SUMMARY rows)
   // ----------------------------
   const exportCsv = () => {
     if (!selectedElection) return;
@@ -397,12 +400,14 @@ export default function Results() {
       ].join(",")
     );
 
-    const positions = Object.keys(candidatesByPosition).sort((a, b) => a.localeCompare(b));
+    const positions = Object.keys(candidatesByPosition).sort((a, b) =>
+      a.localeCompare(b)
+    );
 
     for (const pos of positions) {
       const sum = positionSummaries[pos];
 
-      // 1) SUMMARY row (once per position)
+      // SUMMARY row (once per position): where abstain + total belongs
       lines.push(
         [
           "SUMMARY",
@@ -418,8 +423,11 @@ export default function Results() {
         ].join(",")
       );
 
-      // 2) Candidate rows
-      const sorted = candidatesByPosition[pos].slice().sort((a, b) => b.vote_count - a.vote_count);
+      // Candidate rows (clean)
+      const sorted = candidatesByPosition[pos]
+        .slice()
+        .sort((a, b) => b.vote_count - a.vote_count);
+
       sorted.forEach((c, i) => {
         lines.push(
           [
@@ -429,8 +437,8 @@ export default function Results() {
             JSON.stringify(c.name),
             JSON.stringify(c.slate || ""),
             String(c.vote_count),
-            "", // abstain_count (kept in summary row)
-            "", // total_ballots (kept in summary row)
+            "", // abstain_count is in SUMMARY row
+            "", // total_ballots is in SUMMARY row
             String(i + 1),
             c.isWinner ? "TRUE" : "FALSE",
           ].join(",")
@@ -443,17 +451,15 @@ export default function Results() {
     toast.success("CSV exported");
   };
 
-
-  // ----------------------------
-  // UI
-  // ----------------------------
   const electionBadge = (e: ElectionRow) => {
-    const now = Date.now();
-    const start = new Date(e.start_date).getTime();
-    const end = new Date(e.end_date).getTime();
-
-    if (now < start) return <Badge variant="outline">Upcoming</Badge>;
-    if (now > end) return <Badge variant="outline" className="border-gray-300 text-gray-700">Ended</Badge>;
+    const status = getElectionStatus(e);
+    if (status === "Upcoming") return <Badge variant="outline">Upcoming</Badge>;
+    if (status === "Ended")
+      return (
+        <Badge variant="outline" className="border-gray-300 text-gray-700">
+          Ended
+        </Badge>
+      );
     return (
       <Badge variant="outline" className="border-emerald-500 text-emerald-700">
         Live
@@ -468,7 +474,9 @@ export default function Results() {
           <div className="flex items-center gap-3">
             <img src={feuLogo} alt="FEU" className="h-10 w-auto" />
             <div className="leading-tight">
-              <div className="text-lg font-bold text-feu-green">Election Results</div>
+              <div className="text-lg font-bold text-feu-green">
+                Election Results
+              </div>
               <div className="text-xs text-muted-foreground">
                 Live updates • Admin view
               </div>
@@ -476,13 +484,23 @@ export default function Results() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={exportCsv} disabled={!selectedElection || loading}>
+            <Button
+              variant="outline"
+              onClick={exportCsv}
+              disabled={!selectedElection || loading}
+            >
               <Download className="h-4 w-4 mr-2" />
               Export CSV
             </Button>
 
-            <Button variant="outline" onClick={refreshAll} disabled={!selectedElection || loading}>
-              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+            <Button
+              variant="outline"
+              onClick={refreshAll}
+              disabled={!selectedElection || loading}
+            >
+              <RefreshCw
+                className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`}
+              />
               Refresh
             </Button>
 
@@ -517,13 +535,15 @@ export default function Results() {
               ) : null}
             </CardDescription>
           </CardHeader>
+
           <CardContent className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
             <div className="min-w-[260px]">
               <select
                 className="w-full border rounded-md px-3 py-2 text-sm bg-white"
                 value={selectedElection?.id || ""}
                 onChange={(e) => {
-                  const next = elections.find((el) => el.id === e.target.value) || null;
+                  const next =
+                    elections.find((el) => el.id === e.target.value) || null;
                   setSelectedElection(next);
                 }}
               >
@@ -533,6 +553,7 @@ export default function Results() {
                   </option>
                 ))}
               </select>
+
               {selectedElection?.description ? (
                 <p className="text-xs text-muted-foreground mt-2">
                   {selectedElection.description}
@@ -554,34 +575,17 @@ export default function Results() {
           </CardContent>
         </Card>
 
-        {/* Stats */}
+        {/* Stats (people-focused) */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Election Status</CardTitle>
-            <CardDescription className="text-xs">Based on schedule</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="text-xl font-semibold">
-              {(() => {
-                const now = Date.now();
-                const start = new Date(selectedElection!.start_date).getTime();
-                const end = new Date(selectedElection!.end_date).getTime();
-                if (now < start) return "Upcoming";
-                if (now > end) return "Ended";
-                return "Live";
-              })()}
-            </div>
-          </CardContent>
-        </Card>
-
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium">Eligible Voters</CardTitle>
               <CardDescription className="text-xs">Best-effort count</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-feu-gold">{stats.eligibleVoters}</div>
+              <div className="text-3xl font-bold text-feu-gold">
+                {stats.eligibleVoters}
+              </div>
             </CardContent>
           </Card>
 
@@ -591,17 +595,16 @@ export default function Results() {
               <CardDescription className="text-xs">From voter_election_status</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-feu-green">{stats.votersWhoVoted}</div>
+              <div className="text-3xl font-bold text-feu-green">
+                {stats.votersWhoVoted}
+              </div>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium">Turnout</CardTitle>
-              <CardDescription className="text-xs">
-                <TrendingUp className="inline h-3 w-3 mr-1" />
-                Live tracking
-              </CardDescription>
+              <CardDescription className="text-xs">Participation rate</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-feu-green">
@@ -609,9 +612,21 @@ export default function Results() {
               </div>
             </CardContent>
           </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">Election Status</CardTitle>
+              <CardDescription className="text-xs">Based on schedule</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-feu-green">
+                {getElectionStatus(selectedElection)}
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
-        {/* Results */}
+        {/* Results by position */}
         {Object.entries(candidatesByPosition)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([position, positionCandidates]) => {
@@ -622,7 +637,6 @@ export default function Results() {
               .map((c) => ({
                 name: c.name,
                 votes: c.vote_count,
-                isWinner: !!c.isWinner,
               }));
 
             const leaderText =
@@ -665,13 +679,16 @@ export default function Results() {
                   {/* Chart */}
                   <div className="w-full h-[280px]">
                     <ResponsiveContainer>
-                      <BarChart data={chartData} layout="vertical" margin={{ left: 24, right: 24 }}>
+                      <BarChart
+                        data={chartData}
+                        layout="vertical"
+                        margin={{ left: 24, right: 24 }}
+                      >
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis type="number" allowDecimals={false} />
                         <YAxis type="category" dataKey="name" width={160} />
                         <Tooltip />
                         <Legend />
-                        {/* keep default styling; don’t hard-code colors too aggressively */}
                         <Bar dataKey="votes" name="Votes" />
                       </BarChart>
                     </ResponsiveContainer>
@@ -716,7 +733,9 @@ export default function Results() {
                           </div>
 
                           <div className="text-right">
-                            <p className="text-2xl font-bold text-feu-green">{c.vote_count}</p>
+                            <p className="text-2xl font-bold text-feu-green">
+                              {c.vote_count}
+                            </p>
                             <p className="text-xs text-muted-foreground">votes</p>
                           </div>
                         </div>
