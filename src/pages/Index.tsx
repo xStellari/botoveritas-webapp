@@ -9,7 +9,6 @@ import {
   CalendarDays,
   Vote,
   UserPlus,
-  LayoutDashboard,
   CheckCircle,
 } from "lucide-react";
 
@@ -109,10 +108,6 @@ const Index = () => {
           <div className="flex items-center gap-3">
             <img src={feuLogo} className="h-12" />
           </div>
-
-          <Button variant="ghost" className="flex items-center gap-2">
-            <LayoutDashboard className="h-4 w-4" /> Dashboard
-          </Button>
         </div>
       </header>
 
