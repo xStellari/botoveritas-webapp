@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -24,6 +25,7 @@ type Step = "rfid" | "face" | "done" | "error";
 const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   const MASTER_RFID_TAG = "1226512821";
   const navigate = useNavigate();
+  const [voterId, setVoterId] = useState<string | null>(null);
 
   const [step, setStep] = useState<Step>("rfid");
   const [statusMessage, setStatusMessage] = useState("");
@@ -49,14 +51,25 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   }
   
 
-  const logAttempt = async (type: string, rfid: string, distance?: number) => {
-    await supabase.from("auth_logs").insert([
-      {
-        event_type: type,
-        rfid_tag: rfid,
-        distance_score: distance ?? null,
-      }
-    ]);
+  const logAttempt = async (type: string, rfid: string, distance?: number, voterIdOverride?: string | null) => {
+    const payload = {
+      event_type: type,
+      rfid_tag: rfid || null,
+      distance_score: typeof distance === "number" ? distance : null,
+      voter_id: voterIdOverride ?? voterId,
+    };
+
+    const { error } = await supabase.from("auth_logs").insert([payload]);
+
+    if (error) {
+      console.error("auth_logs insert failed:", error);
+      toast.error(`auth_logs insert failed: ${error.message}`);
+    } else {
+      // optional, for testing:
+      toast.message(`Logged: ${type}`);
+    }
+
+    return { error };
   };
 
 
@@ -65,35 +78,31 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   // ---------------------------------------------------------------------
   const handleRFID = async (uid: string) => {
     console.log("RFID scanned:", uid);
+    await logAttempt("RFID_SCANNED", uid);
     setRfidTag(uid);
-
-    // MASTER OVERRIDE CARD
-    if (uid === MASTER_RFID_TAG) {
-      setStatusMessage("Admin override activated → Proceeding to face scan.");
-      setRfidVerified(true);
-      setStep("face");
-      return;
-    }
 
     // NORMAL RFID LOOKUP
     setStatusMessage("Checking RFID in database...");
     const { data, error } = await supabase
       .from("voters")
-      .select("face_descriptor")
+      .select("id, face_descriptor")
       .eq("rfid_tag", uid)
       .single();
 
     if (error || !data) {
       console.error("RFID not found:", error?.message);
       setStatusMessage("RFID not registered. Please contact election staff.");
+      await logAttempt("RFID_NOT_REGISTERED", uid);
       setStep("error");
       return;
     }
+    setVoterId(data.id);
 
     if (!data.face_descriptor) {
       setStatusMessage(
         "No facial data found for this RFID."
       );
+      await logAttempt("RFID_NO_FACE_DATA", uid);
       setStep("error");
       return;
     }
@@ -103,6 +112,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 
     setRfidVerified(true);
     setStatusMessage("RFID verified! Proceed to face recognition.");
+    await logAttempt("RFID_VERIFIED", uid, undefined, data.id);
     setStep("face");
   };
 
@@ -119,7 +129,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   // ---------------------------------------------------------------------
   // 2️⃣ HANDLE FACE CAPTURE → MATCH AGAINST STORED DESCRIPTOR
   // ---------------------------------------------------------------------
-  const handleFaceCaptured = (liveDescriptor: Float32Array) => {
+  const handleFaceCaptured = async (liveDescriptor: Float32Array) => {
     if (!storedDescriptor) {
       setStatusMessage("No stored face data found.");
       setStep("error");
@@ -136,6 +146,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
     if (match) {
       setFaceVerified(true);
       setStatusMessage("Face match successful! Loading ballot...");
+      await logAttempt("FACE_MATCH", rfidTag, distance, voterId);
       setStep("done");
 
       setTimeout(() => {
@@ -149,8 +160,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
       );
       setStep("error");
 
-      logAttempt("FACE_MISMATCH", rfidTag, distance);
-
+      await logAttempt("FACE_MISMATCH", rfidTag, distance, voterId);
       navigate("/registration-error", {
         state: {
           message:
