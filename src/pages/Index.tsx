@@ -178,7 +178,7 @@ const Index = () => {
                 </div>
                 <h3 className="text-xl font-bold">Cast Your Vote</h3>
                 <p className="text-sm text-muted-foreground">
-                  Authenticate through the kiosk and submit your ballot.
+                  Authenticate and submit your ballot.
                 </p>
                 <Button
                   className="w-full mt-2 bg-gradient-gold text-black hover:opacity-90"

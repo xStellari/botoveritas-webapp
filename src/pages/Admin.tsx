@@ -3,12 +3,13 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { BarChart, Users, Vote, Shield, LogOut } from "lucide-react";
+import { BarChart, Users, Vote, Shield, LogOut, Inbox } from "lucide-react";
 
 import AdminAnalytics from "@/components/admin/AdminAnalytics";
 import VoterManagement from "@/components/admin/VoterManagement";
 import EnhancedElectionManagement from "@/components/admin/EnhancedElectionManagement";
 import BlockchainMonitor from "@/components/admin/BlockchainMonitor";
+import OrgMembershipRequests from "@/components/admin/OrgMembershipRequests";
 import { useEffect } from "react";
 
 export default function Admin() {
@@ -25,7 +26,6 @@ export default function Admin() {
       console.log("ADMIN USER ID:", data.session?.user?.id);
     });
   }, []);
-
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-feu-green/10 to-feu-gold/10">
@@ -55,10 +55,10 @@ export default function Admin() {
 
       <main className="max-w-7xl mx-auto p-6">
         <Tabs defaultValue="analytics" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="analytics">
               <BarChart className="h-4 w-4 mr-2" />
-              Analytics
+              Operations
             </TabsTrigger>
             <TabsTrigger value="elections">
               <Vote className="h-4 w-4 mr-2" />
@@ -67,6 +67,10 @@ export default function Admin() {
             <TabsTrigger value="voters">
               <Users className="h-4 w-4 mr-2" />
               Voters
+            </TabsTrigger>
+            <TabsTrigger value="requests">
+              <Inbox className="h-4 w-4 mr-2" />
+              Requests
             </TabsTrigger>
             <TabsTrigger value="blockchain">
               <Shield className="h-4 w-4 mr-2" />
@@ -84,6 +88,10 @@ export default function Admin() {
 
           <TabsContent value="voters">
             <VoterManagement />
+          </TabsContent>
+
+          <TabsContent value="requests">
+            <OrgMembershipRequests />
           </TabsContent>
 
           <TabsContent value="blockchain">
