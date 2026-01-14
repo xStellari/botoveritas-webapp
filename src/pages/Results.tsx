@@ -12,9 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import feuLogo from "@/assets/feu-logo.png";
-
 import { Trophy, RefreshCw, Download, Clock, CheckCircle2 } from "lucide-react";
-
 import {
   BarChart,
   Bar,
@@ -123,6 +121,84 @@ export default function Results() {
     {}
   );
 
+  const downloadPdfReport = async () => {
+    if (!selectedElection?.id) return;
+
+    try {
+      const { data, error } = await supabase.functions.invoke(
+        "generate-results-pdf",
+        {
+          body: {
+            election_id: selectedElection.id,
+
+            // Signatures / certification blocks (your real names + placeholders)
+            signatories: [
+              { label: "Prepared by", name: "Isaac Caubat", role: "Group Member" },
+              {
+                label: "Prepared by",
+                name: "Lance Owen Miguel Cervantes",
+                role: "Group Member",
+              },
+              { label: "Prepared by", name: "Jego Creencia", role: "Group Member" },
+              { label: "Prepared by", name: "Jonas Gomez", role: "Group Member" },
+              {
+                label: "Prepared by",
+                name: "Deric Lei Leopando",
+                role: "Group Member",
+              },
+
+              { label: "Noted by", name: "Honeylet G. Grimaldo", role: "Thesis Adviser" },
+              { label: "Noted by", name: "Saturnino R. Perlas", role: "Course Adviser" },
+
+              {
+                label: "Certified by",
+                name: "__________________________",
+                role: "COMELEC Chairman",
+              },
+              {
+                label: "Approved by",
+                name: "__________________________",
+                role: "SADU Director",
+              },
+            ],
+          },
+        }
+      );
+
+      if (error) throw error;
+
+      const blob =
+        data instanceof Blob ? data : new Blob([data], { type: "application/pdf" });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `BotoVeritas_${selectedElection.title}_Results.pdf`.replace(
+        /\s+/g,
+        "_"
+      );
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      console.error("PDF error object:", e);
+
+      const body = e?.context?.body;
+      if (body) {
+        try {
+          console.error("PDF error body:", JSON.parse(body));
+          alert(`PDF error: ${JSON.parse(body).error}`);
+        } catch {
+          console.error("PDF error body (raw):", body);
+          alert(`PDF error: ${body}`);
+        }
+      } else {
+        alert(e?.message ?? "Failed to download PDF report");
+      }
+    }
+  };
+
   // ----------------------------
   // Load elections
   // ----------------------------
@@ -228,18 +304,22 @@ export default function Results() {
         return { ...c, vote_count };
       });
 
-      // Winner marking + per-position summaries
       const summaries: Record<string, PositionSummary> = {};
-      const grouped = merged.reduce((acc: Record<string, CandidateWithCount[]>, c) => {
-        const pos = c.position || "General";
-        (acc[pos] ||= []).push(c);
-        return acc;
-      }, {});
+      const grouped = merged.reduce(
+        (acc: Record<string, CandidateWithCount[]>, c) => {
+          const pos = c.position || "General";
+          (acc[pos] ||= []).push(c);
+          return acc;
+        },
+        {}
+      );
 
       for (const [pos, list] of Object.entries(grouped)) {
         const sorted = list.slice().sort((a, b) => b.vote_count - a.vote_count);
         const leaderCount = sorted[0]?.vote_count ?? 0;
-        const leaders = sorted.filter((x) => x.vote_count === leaderCount && leaderCount > 0);
+        const leaders = sorted.filter(
+          (x) => x.vote_count === leaderCount && leaderCount > 0
+        );
 
         const leaderIds = new Set(leaders.map((l) => l.id));
         for (const c of list) c.isWinner = leaderIds.has(c.id);
@@ -253,7 +333,6 @@ export default function Results() {
         };
       }
 
-      // Turnout stats (people-based)
       const { count: votedCount, error: votedErr } = await supabase
         .from("voter_election_status")
         .select("*", { count: "exact", head: true })
@@ -291,17 +370,11 @@ export default function Results() {
     toast.success("Results refreshed");
   };
 
-  // ----------------------------
-  // Initial load
-  // ----------------------------
   useEffect(() => {
     loadElections();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ----------------------------
-  // When election changes: load + subscribe
-  // ----------------------------
   useEffect(() => {
     if (!selectedElection) return;
 
@@ -367,20 +440,17 @@ export default function Results() {
     };
   }, [selectedElection]);
 
-  // ----------------------------
-  // Derived grouping
-  // ----------------------------
   const candidatesByPosition = useMemo(() => {
-    return (candidates || []).reduce((acc: Record<string, CandidateWithCount[]>, c) => {
-      const pos = c.position || "General";
-      (acc[pos] ||= []).push(c);
-      return acc;
-    }, {});
+    return (candidates || []).reduce(
+      (acc: Record<string, CandidateWithCount[]>, c) => {
+        const pos = c.position || "General";
+        (acc[pos] ||= []).push(c);
+        return acc;
+      },
+      {}
+    );
   }, [candidates]);
 
-  // ----------------------------
-  // CSV Export (less convoluted, abstain preserved via SUMMARY rows)
-  // ----------------------------
   const exportCsv = () => {
     if (!selectedElection) return;
 
@@ -407,23 +477,21 @@ export default function Results() {
     for (const pos of positions) {
       const sum = positionSummaries[pos];
 
-      // SUMMARY row (once per position): where abstain + total belongs
       lines.push(
         [
           "SUMMARY",
           JSON.stringify(selectedElection.title),
           JSON.stringify(pos),
-          "", // candidate_name
-          "", // slate
-          "", // vote_count
+          "",
+          "",
+          "",
           String(sum?.abstain_count ?? 0),
           String(sum?.total_ballots ?? 0),
-          "", // rank
-          "", // is_winner
+          "",
+          "",
         ].join(",")
       );
 
-      // Candidate rows (clean)
       const sorted = candidatesByPosition[pos]
         .slice()
         .sort((a, b) => b.vote_count - a.vote_count);
@@ -437,8 +505,8 @@ export default function Results() {
             JSON.stringify(c.name),
             JSON.stringify(c.slate || ""),
             String(c.vote_count),
-            "", // abstain_count is in SUMMARY row
-            "", // total_ballots is in SUMMARY row
+            "",
+            "",
             String(i + 1),
             c.isWinner ? "TRUE" : "FALSE",
           ].join(",")
@@ -474,23 +542,15 @@ export default function Results() {
           <div className="flex items-center gap-3">
             <img src={feuLogo} alt="FEU" className="h-10 w-auto" />
             <div className="leading-tight">
-              <div className="text-lg font-bold text-feu-green">
-                Election Results
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Live updates • Admin view
-              </div>
+              <div className="text-lg font-bold text-feu-green">Election Results</div>
+              <div className="text-xs text-muted-foreground">Live updates • Admin view</div>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              onClick={exportCsv}
-              disabled={!selectedElection || loading}
-            >
+            <Button variant="outline" onClick={downloadPdfReport}>
               <Download className="h-4 w-4 mr-2" />
-              Export CSV
+              Download PDF Report
             </Button>
 
             <Button
@@ -498,9 +558,7 @@ export default function Results() {
               onClick={refreshAll}
               disabled={!selectedElection || loading}
             >
-              <RefreshCw
-                className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`}
-              />
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
               Refresh
             </Button>
 
@@ -512,7 +570,6 @@ export default function Results() {
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-6">
-        {/* Election selector */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center justify-between gap-3">
@@ -575,7 +632,6 @@ export default function Results() {
           </CardContent>
         </Card>
 
-        {/* Stats (people-focused) */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <Card>
             <CardHeader className="pb-2">
@@ -626,7 +682,6 @@ export default function Results() {
           </Card>
         </div>
 
-        {/* Results by position */}
         {Object.entries(candidatesByPosition)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([position, positionCandidates]) => {
@@ -676,7 +731,6 @@ export default function Results() {
                 </CardHeader>
 
                 <CardContent className="space-y-4">
-                  {/* Chart */}
                   <div className="w-full h-[280px]">
                     <ResponsiveContainer>
                       <BarChart
@@ -694,7 +748,6 @@ export default function Results() {
                     </ResponsiveContainer>
                   </div>
 
-                  {/* Ranked list */}
                   <div className="space-y-2">
                     {positionCandidates
                       .slice()
