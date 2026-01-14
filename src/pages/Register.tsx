@@ -3,12 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardDescription,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardDescription } from "@/components/ui/card";
 import { toast } from "sonner";
 
 // OPTIONAL: Your capitalization helper (keep your preferred version)
@@ -32,10 +27,8 @@ export default function Register() {
   const [lastName, setLastName] = useState("");
   const [suffix, setSuffix] = useState("");
   const [yearLevel, setYearLevel] = useState("");
-  const [orgAffiliations, setOrgAffiliations] = useState<string[]>([]);
   const [signupEmail, setSignupEmail] = useState("");
 
-  const orgs = ["Student Coordinating Council", "ICpEP", "Honor Society"];
   const fullEmail = `${signupEmail.trim()}@feualabang.edu.ph`;
 
   const handleProceed = (e: React.FormEvent) => {
@@ -46,6 +39,7 @@ export default function Register() {
       return;
     }
 
+    // ✅ org affiliations are now auto-assigned server-side (SCC always + roster match)
     navigate("/register/verify", {
       state: {
         firstName,
@@ -53,7 +47,6 @@ export default function Register() {
         lastName,
         suffix,
         yearLevel,
-        orgAffiliations,
         fullEmail,
       },
     });
@@ -86,12 +79,10 @@ export default function Register() {
 
       <div className="max-w-2xl w-full animate-fade-in-up">
         <Card className="shadow-xl rounded-2xl border border-emerald/20 bg-white/90 backdrop-blur">
-
           {/* ========================== */}
           {/*   REDESIGNED HEADER + STEPPER   */}
           {/* ========================== */}
           <CardHeader className="text-center pb-8 pt-10 space-y-4">
-
             <h1
               className="
                 text-4xl font-extrabold leading-tight
@@ -122,7 +113,6 @@ export default function Register() {
 
             {/* Stepper Circles */}
             <div className="flex justify-center mt-6 gap-12">
-
               {/* STEP 1 */}
               <div className="flex flex-col items-center">
                 <div
@@ -153,20 +143,16 @@ export default function Register() {
                   Identity
                 </span>
               </div>
-
             </div>
           </CardHeader>
 
           {/* ========================== */}
-          {/* FORM CONTENT (unchanged)    */}
+          {/* FORM CONTENT               */}
           {/* ========================== */}
           <CardContent className="space-y-6 px-8 pb-10">
-
             <form onSubmit={handleProceed} className="space-y-6">
-
               {/* NAME ROW */}
               <div className="grid gap-6 md:grid-cols-[2fr_0.5fr_2fr_1.2fr]">
-
                 {/* First Name */}
                 <div>
                   <Label className="font-semibold">First Name</Label>
@@ -184,9 +170,7 @@ export default function Register() {
                   <Input
                     value={middleName}
                     maxLength={1}
-                    onChange={(e) =>
-                      setMiddleName(e.target.value.toUpperCase())
-                    }
+                    onChange={(e) => setMiddleName(e.target.value.toUpperCase())}
                     className="mt-1"
                   />
                 </div>
@@ -229,7 +213,9 @@ export default function Register() {
                   className="w-full border rounded px-3 py-2 mt-1 bg-white shadow-sm"
                   required
                 >
-                  <option value="" disabled>Select Year Level</option>
+                  <option value="" disabled>
+                    Select Year Level
+                  </option>
                   <option>1st Year</option>
                   <option>2nd Year</option>
                   <option>3rd Year</option>
@@ -238,32 +224,12 @@ export default function Register() {
                 </select>
               </div>
 
-              {/* ORG AFFILIATIONS */}
-              <div>
-                <Label className="font-semibold">Organizational Affiliations</Label>
-                <div className="grid md:grid-cols-3 gap-3 mt-3">
-                  {orgs.map((org) => (
-                    <Button
-                      key={org}
-                      type="button"
-                      variant={orgAffiliations.includes(org) ? "default" : "outline"}
-                      onClick={() =>
-                        setOrgAffiliations((prev) =>
-                          prev.includes(org)
-                            ? prev.filter((o) => o !== org)
-                            : [...prev, org]
-                        )
-                      }
-                      className={`w-full ${
-                        orgAffiliations.includes(org)
-                          ? "bg-emerald-600 text-white shadow-md"
-                          : "border-primary/40 text-primary"
-                      }`}
-                    >
-                      {org}
-                    </Button>
-                  ))}
-                </div>
+              {/* ✅ NOTE ABOUT AUTO-ASSIGN (thesis-friendly) */}
+              <div className="rounded-lg border border-primary/15 bg-primary/5 p-4">
+                <p className="text-sm text-muted-foreground">
+                  <span className="font-semibold text-foreground">Note:</span> Organizational
+                  eligibility is automatically assigned from official membership rosters.
+                </p>
               </div>
 
               {/* EMAIL */}
@@ -279,7 +245,8 @@ export default function Register() {
                       if (value.includes("@")) {
                         toast.error(
                           <div>
-                            Please enter only the email prefix (before @).<br /><br />
+                            Please enter only the email prefix (before @).<br />
+                            <br />
                             The domain is automatically added.
                           </div>
                         );
@@ -302,7 +269,6 @@ export default function Register() {
               >
                 Proceed to Identity Verification
               </Button>
-
             </form>
           </CardContent>
         </Card>

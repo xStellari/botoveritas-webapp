@@ -142,7 +142,8 @@ export default function RegisterVerify() {
           last_name: data.lastName,
           suffix: data.suffix || null,
           year_level: data.yearLevel,
-          org_affiliations: data.orgAffiliations,
+          // org_affiliations is system-assigned (authoritative roster)
+          org_affiliations: null,
           rfid_tag: rfid,
           face_descriptor: Array.from(faceDescriptor),
         },
@@ -153,6 +154,24 @@ export default function RegisterVerify() {
           state: { message: "Failed to save voter record. " + voterErr.message },
         });
         return;
+      }
+
+      // 3b) Refresh and persist system-assigned org affiliations (RLS-safe)
+      // This RPC updates voters.org_affiliations server-side and returns the computed array.
+      // If email confirmation is enabled and no session exists, we fall back to SCC-only display.
+      let finalOrgs: string[] = ["SCC"]; // SCC is open to all (safe fallback)
+      try {
+        const { data: refreshed, error: refreshErr } = await supabase.rpc(
+          "refresh_voter_org_affiliations" as any,
+          { p_voter_id: user.id } as any
+        );
+        if (refreshErr) {
+          console.warn("refresh_voter_org_affiliations failed:", refreshErr);
+        } else if (Array.isArray(refreshed)) {
+          finalOrgs = refreshed as string[];
+        }
+      } catch (e) {
+        console.warn("refresh_voter_org_affiliations exception:", e);
       }
 
       // 4) Send email (best effort; don't block success)
@@ -172,7 +191,7 @@ export default function RegisterVerify() {
           firstName: data.firstName,
           middleName: data.middleName,
           lastName: data.lastName,
-          orgAffiliations: data.orgAffiliations,
+          orgAffiliations: finalOrgs,
         },
       });
 
