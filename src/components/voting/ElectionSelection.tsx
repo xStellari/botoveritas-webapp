@@ -10,6 +10,7 @@ import {
   Flame,
   CheckCircle,
   RefreshCw,
+  Info,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -106,6 +107,12 @@ const ElectionSelection = ({
 
   const voterFullName = `${voterData.first_name} ${voterData.middle_name}. ${voterData.last_name}`;
 
+  // Tooltip content (native title to avoid extra component dependencies)
+  const whyTooltip =
+    "Election visibility is based on official eligibility rules. " +
+    "Some elections are restricted to specific organizations (e.g., ICpEP, HonSoc). " +
+    "If you’re not eligible, that election won’t appear on this kiosk.";
+
   return (
     <div className="min-h-screen flex flex-col bg-neutral-50">
       {/* NAVBAR (match Index.tsx) */}
@@ -132,7 +139,8 @@ const ElectionSelection = ({
             </p>
 
             <p className="text-xs md:text-sm text-muted-foreground">
-              Logged in as <span className="font-semibold text-foreground">{voterFullName}</span>
+              Logged in as{" "}
+              <span className="font-semibold text-foreground">{voterFullName}</span>
             </p>
 
             <div className="flex justify-center items-center gap-2 mt-4 flex-wrap">
@@ -160,17 +168,41 @@ const ElectionSelection = ({
           </section>
 
           {/* ACTIVE ELECTIONS */}
-          <section className="space-y-4">
-            <h2 className="text-xl font-bold text-emerald-800 flex items-center gap-2">
-              <Flame className="h-5 w-5 text-emerald-700" />
-              Active Elections
-            </h2>
+          <section className="space-y-3">
+            <div className="flex items-end justify-between gap-3 flex-wrap">
+              <h2 className="text-xl font-bold text-emerald-800 flex items-center gap-2">
+                <Flame className="h-5 w-5 text-emerald-700" />
+                Active Elections
+              </h2>
+
+              {/* ✅ Hint + "Why?" tooltip (non-interactive) */}
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>Some elections may not appear if you’re not eligible.</span>
+                <span
+                  className="inline-flex items-center gap-1 text-emerald-800 font-medium cursor-help"
+                  title={whyTooltip}
+                  aria-label="Why elections might be missing"
+                >
+                  <Info className="h-3.5 w-3.5" />
+                  Why?
+                </span>
+              </div>
+            </div>
 
             {eligibleActiveElections.length === 0 ? (
               <Card className="p-6 border">
                 <p className="text-sm text-muted-foreground">
                   No active elections at the moment.
                 </p>
+
+                {/* keep the hint visible even in empty state */}
+                <p className="text-xs text-muted-foreground mt-2">
+                  Some elections may not appear if you’re not eligible.{" "}
+                  <span className="font-medium text-emerald-800 cursor-help" title={whyTooltip}>
+                    Why?
+                  </span>
+                </p>
+
                 <div className="mt-4 flex justify-center">
                   <Button
                     variant="outline"
