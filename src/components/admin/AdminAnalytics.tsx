@@ -24,39 +24,25 @@ import { toast } from "sonner";
 interface ElectionStats {
   election_id: string;
   title: string;
-  registeredVoters: number;
+  eligibleVoters: number;
   votedCount: number;
-  turnoutRateVsRegistered: number;
+  turnoutRateVsEligible: number;
 }
 
 type ElectionOption = { id: string; title: string };
 
-type CandidateRow = {
+type ElectionRow = {
   id: string;
-  name: string;
-  slate: string | null;
-  position: string;
-  election_id: string;
+  title: string;
+  start_date: string;
+  eligible_orgs: string[] | null;
 };
 
-type VoteRow = {
-  created_at?: string;
-  election_id: string;
-  position: string;
-  candidate_id: string | null;
-  is_abstain: boolean | null;
-};
-
-type TallyRow = {
-  election_id: string;
-  election_title: string;
-  position: string;
-  candidate_id: string | null;
-  candidate_name: string;
-  slate: string | null;
-  vote_count: number;
-  abstain_count: number;
-  total_ballots_for_position: number;
+type OpsMetrics = {
+  votesLast60m: number;
+  votesLast15m: number;
+  activeSessions: number;
+  sessionsExpiringSoon: number;
 };
 
 function toHourBucketISO(dateISO: string) {
@@ -74,11 +60,8 @@ function downloadCSV(filename: string, rows: Array<Record<string, any>>) {
     return;
   }
 
-  // Build headers safely (avoids TS reduce/Array.from overload issues)
   const headerSet = new Set<string>();
-  for (const r of rows) {
-    Object.keys(r).forEach((k) => headerSet.add(k));
-  }
+  for (const r of rows) Object.keys(r).forEach((k) => headerSet.add(k));
   const headers = [...headerSet];
 
   const escape = (val: any) => {
@@ -104,6 +87,7 @@ function downloadCSV(filename: string, rows: Array<Record<string, any>>) {
   URL.revokeObjectURL(url);
 }
 
+
 export default function AdminAnalytics() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -112,9 +96,10 @@ export default function AdminAnalytics() {
   const [selectedElectionId, setSelectedElectionId] = useState<string>("ALL");
 
   const [globalStats, setGlobalStats] = useState({
-    totalVoters: 0,
+    totalEligible: 0,
     votedCount: 0,
     turnoutRate: 0,
+    totalRegistered: 0, // keep registered count for ALL scope clarity
   });
 
   const [perElectionStats, setPerElectionStats] = useState<ElectionStats[]>([]);
@@ -122,35 +107,31 @@ export default function AdminAnalytics() {
     []
   );
 
-  const [tallyByPosition, setTallyByPosition] = useState<
-    { position: string; rows: TallyRow[] }[]
-  >([]);
-  const [flatTallyRows, setFlatTallyRows] = useState<TallyRow[]>([]);
+  const [ops, setOps] = useState<OpsMetrics>({
+    votesLast60m: 0,
+    votesLast15m: 0,
+    activeSessions: 0,
+    sessionsExpiringSoon: 0,
+  });
 
   useEffect(() => {
     loadAnalytics();
 
     const channel = supabase
       .channel("analytics-updates")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "votes" },
-        () => loadAnalytics()
+      .on("postgres_changes", { event: "*", schema: "public", table: "votes" }, () =>
+        loadAnalytics()
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "voter_election_status" },
         () => loadAnalytics()
       )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "voters" },
-        () => loadAnalytics()
+      .on("postgres_changes", { event: "*", schema: "public", table: "voters" }, () =>
+        loadAnalytics()
       )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "elections" },
-        () => loadAnalytics()
+      .on("postgres_changes", { event: "*", schema: "public", table: "elections" }, () =>
+        loadAnalytics()
       )
       .subscribe();
 
@@ -165,29 +146,48 @@ export default function AdminAnalytics() {
     setErrorMsg(null);
 
     try {
-      // 1) Elections list
-      const { data: electionsData, error: electionsError } = await supabase
+      // 1) Elections list (include eligible_orgs for correct denominators)
+      const { data: electionsDataRaw, error: electionsError } = await supabase
         .from("elections")
-        .select("id, title, start_date")
+        .select("id, title, start_date, eligible_orgs")
         .order("start_date", { ascending: false });
 
       if (electionsError) throw electionsError;
 
+      const electionsData = (electionsDataRaw || []) as unknown as ElectionRow[];
+
       const electionOptions =
-        (electionsData || []).map((e: any) => ({ id: e.id, title: e.title })) ?? [];
+        (electionsData || []).map((e) => ({ id: e.id, title: e.title })) ?? [];
       setElections(electionOptions);
-
-      const electionTitleMap = new Map<string, string>();
-      (electionsData || []).forEach((e: any) => electionTitleMap.set(e.id, e.title));
-
-      // 2) Total registered voters
-      const { count: totalVoters, error: voterError } = await supabase
+      // 2) Registered voters (global count)
+      const { count: registeredCount, error: regErr } = await supabase
         .from("voters")
-        .select("*", { count: "exact", head: true });
+        .select("id", { count: "exact", head: true });
 
-      if (voterError) throw voterError;
+      if (regErr) throw regErr;
 
-      const tv = totalVoters || 0;
+      const totalRegistered = registeredCount || 0;
+
+      // 3) Eligibility stats (authoritative name-based eligibility, per election)
+      const { data: eligRowsRaw, error: eligErr } = await supabase.rpc(
+        "get_election_eligibility_stats" as any,
+        { p_election_id: null } as any
+      );
+
+      if (eligErr) throw eligErr;
+
+      const eligRows = (eligRowsRaw || []) as any[];
+      const eligMap = new Map<
+        string,
+        { eligible_voters: number; voted_eligible: number }
+      >();
+
+      for (const r of eligRows) {
+        eligMap.set(r.election_id, {
+          eligible_voters: Number(r.eligible_voters || 0),
+          voted_eligible: Number(r.voted_eligible || 0),
+        });
+      }
 
       // 3) Global voted count (scoped)
       let votedCountScoped = 0;
@@ -203,46 +203,42 @@ export default function AdminAnalytics() {
         const distinct = new Set((statusRows || []).map((r: any) => r.voter_id));
         votedCountScoped = distinct.size;
       } else {
-        const { count, error: statusErr } = await supabase
-          .from("voter_election_status")
-          .select("*", { count: "exact", head: true })
-          .eq("election_id", selectedElectionId)
-          .eq("has_voted", true);
+        votedCountScoped = eligMap.get(selectedElectionId)?.voted_eligible ?? 0;
+      }
+      // 4) Compute eligible denominator for the current scope
+      // - ALL: uses total registered voters (SCC open-to-all baseline)
+      // - Specific election: uses authoritative roster eligibility counts
+      let scopeEligible = totalRegistered;
 
-        if (statusErr) throw statusErr;
-        votedCountScoped = count || 0;
+      if (selectedElectionId !== "ALL") {
+        scopeEligible = eligMap.get(selectedElectionId)?.eligible_voters ?? 0;
       }
 
       setGlobalStats({
-        totalVoters: tv,
+        totalEligible: scopeEligible,
         votedCount: votedCountScoped,
-        turnoutRate: tv ? (votedCountScoped / tv) * 100 : 0,
+        turnoutRate: scopeEligible ? (votedCountScoped / scopeEligible) * 100 : 0,
+        totalRegistered,
       });
 
-      // 4) Per-election stats
+      
+      // 5) Per-election stats (eligible turnout is authoritative name-based eligibility)
       const perStats: ElectionStats[] = [];
       for (const e of electionsData || []) {
-        const { count, error } = await supabase
-          .from("voter_election_status")
-          .select("*", { count: "exact", head: true })
-          .eq("election_id", (e as any).id)
-          .eq("has_voted", true);
-
-        if (error) throw error;
-
-        const votedCount = count || 0;
+        const eligibleVoters = eligMap.get(e.id)?.eligible_voters ?? 0;
+        const votedCount = eligMap.get(e.id)?.voted_eligible ?? 0;
 
         perStats.push({
-          election_id: (e as any).id,
-          title: (e as any).title,
-          registeredVoters: tv,
+          election_id: e.id,
+          title: e.title,
+          eligibleVoters,
           votedCount,
-          turnoutRateVsRegistered: tv ? (votedCount / tv) * 100 : 0,
+          turnoutRateVsEligible: eligibleVoters ? (votedCount / eligibleVoters) * 100 : 0,
         });
       }
       setPerElectionStats(perStats);
 
-      // 5) Timeline chart (votes per hour)
+      // 6) Timeline chart (votes per hour) — good for monitoring stalls/spikes
       if (selectedElectionId === "ALL") {
         const { data: voteTimes, error: votesError } = await supabase
           .from("votes")
@@ -288,111 +284,57 @@ export default function AdminAnalytics() {
         );
       }
 
-      // 6) Candidate tallies
-      if (selectedElectionId === "ALL") {
-        setTallyByPosition([]);
-        setFlatTallyRows([]);
-      } else {
-        const electionTitle =
-          electionTitleMap.get(selectedElectionId) ?? "Selected election";
+      // 7) Operational metrics — intentionally NO candidate tallies (Results page owns that)
+      const now = new Date();
+      const isoNow = now.toISOString();
 
-        const { data: candidates, error: candErr } = await supabase
-          .from("candidates")
-          .select("id, name, slate, position, election_id")
-          .eq("election_id", selectedElectionId);
+      const isoMinusMins = (mins: number) =>
+        new Date(now.getTime() - mins * 60 * 1000).toISOString();
 
-        if (candErr) throw candErr;
+      const isoPlusMins = (mins: number) =>
+        new Date(now.getTime() + mins * 60 * 1000).toISOString();
 
-        const { data: votes, error: vErr } = await supabase
-          .from("votes")
-          .select("election_id, position, candidate_id, is_abstain")
-          .eq("election_id", selectedElectionId);
+      const votesBase = supabase.from("votes").select("id", { count: "exact", head: true });
 
-        if (vErr) throw vErr;
+      const votes60Query =
+        selectedElectionId === "ALL"
+          ? votesBase.gte("created_at", isoMinusMins(60))
+          : votesBase
+              .eq("election_id", selectedElectionId)
+              .gte("created_at", isoMinusMins(60));
 
-        const voteRows = (votes || []) as VoteRow[];
+      const votes15Query =
+        selectedElectionId === "ALL"
+          ? supabase
+              .from("votes")
+              .select("id", { count: "exact", head: true })
+              .gte("created_at", isoMinusMins(15))
+          : supabase
+              .from("votes")
+              .select("id", { count: "exact", head: true })
+              .eq("election_id", selectedElectionId)
+              .gte("created_at", isoMinusMins(15));
 
-        const totalByPos = new Map<string, number>();
-        const abstainByPos = new Map<string, number>();
+      const [{ count: v60 }, { count: v15 }] = await Promise.all([votes60Query, votes15Query]);
 
-        for (const v of voteRows) {
-          const pos = v.position || "Unspecified";
-          totalByPos.set(pos, (totalByPos.get(pos) || 0) + 1);
-          if (v.is_abstain) {
-            abstainByPos.set(pos, (abstainByPos.get(pos) || 0) + 1);
-          }
-        }
+      // Active sessions / expiring sessions (global by design)
+      const { count: activeSess } = await supabase
+        .from("voter_sessions")
+        .select("voter_id", { count: "exact", head: true })
+        .gt("expires_at", isoNow);
 
-        const countMap = new Map<string, number>();
-        for (const v of voteRows) {
-          if (v.is_abstain) continue;
-          if (!v.candidate_id) continue;
-          const pos = v.position || "Unspecified";
-          const key = `${pos}::${v.candidate_id}`;
-          countMap.set(key, (countMap.get(key) || 0) + 1);
-        }
+      const { count: expSoon } = await supabase
+        .from("voter_sessions")
+        .select("voter_id", { count: "exact", head: true })
+        .gt("expires_at", isoNow)
+        .lte("expires_at", isoPlusMins(10));
 
-        const positions = new Set<string>();
-        (candidates || []).forEach((c: any) => positions.add(c.position || "Unspecified"));
-        voteRows.forEach((v) => positions.add(v.position || "Unspecified"));
-
-        const positionsSorted = Array.from(positions).sort((a, b) =>
-          a < b ? -1 : a > b ? 1 : 0
-        );
-
-        const flat: TallyRow[] = [];
-
-        for (const pos of positionsSorted) {
-          const totalBallots = totalByPos.get(pos) || 0;
-          const abstainCount = abstainByPos.get(pos) || 0;
-
-          const candsForPos = (candidates || []).filter(
-            (c: any) => (c.position || "Unspecified") === pos
-          );
-
-          for (const c of candsForPos) {
-            const key = `${pos}::${c.id}`;
-            const vc = countMap.get(key) || 0;
-
-            flat.push({
-              election_id: selectedElectionId,
-              election_title: electionTitle,
-              position: pos,
-              candidate_id: c.id,
-              candidate_name: c.name,
-              slate: c.slate ?? null,
-              vote_count: vc,
-              abstain_count: abstainCount,
-              total_ballots_for_position: totalBallots,
-            });
-          }
-
-          flat.push({
-            election_id: selectedElectionId,
-            election_title: electionTitle,
-            position: pos,
-            candidate_id: null,
-            candidate_name: "ABSTAIN",
-            slate: null,
-            vote_count: abstainCount,
-            abstain_count: abstainCount,
-            total_ballots_for_position: totalBallots,
-          });
-        }
-
-        const byPos = new Map<string, TallyRow[]>();
-        for (const r of flat) {
-          byPos.set(r.position, [...(byPos.get(r.position) || []), r]);
-        }
-
-        const grouped = Array.from(byPos.entries()).map(([position, rows]) => ({
-          position,
-          rows: [...rows].sort((a, b) => (b.vote_count || 0) - (a.vote_count || 0)),
-        }));
-
-        setFlatTallyRows(flat);
-        setTallyByPosition(grouped);
-      }
+      setOps({
+        votesLast60m: v60 || 0,
+        votesLast15m: v15 || 0,
+        activeSessions: activeSess || 0,
+        sessionsExpiringSoon: expSoon || 0,
+      });
     } catch (err: any) {
       console.error("AdminAnalytics load error:", err);
       setErrorMsg(err?.message || "Failed to load analytics.");
@@ -407,13 +349,28 @@ export default function AdminAnalytics() {
     return elections.find((e) => e.id === selectedElectionId)?.title ?? "Selected election";
   }, [elections, selectedElectionId]);
 
+  const scopeDenominatorLabel =
+    selectedElectionId === "ALL"
+      ? "Registered voters used as denominator (overall participation)"
+      : "Eligible voters used as denominator (based on org membership)";
+
+  const totalEligibleLabel =
+    selectedElectionId === "ALL"
+      ? "Registered students (global)"
+      : "Eligible voters (based on org membership)";
+
+  const votedScopedLabel =
+    selectedElectionId === "ALL"
+      ? "Distinct voters who voted in any election"
+      : "Voters who voted in the selected election";
+
   const exportPerElection = () => {
     const rows = perElectionStats.map((e) => ({
       election_id: e.election_id,
       election_title: e.title,
-      registered_voters: e.registeredVoters,
+      eligible_voters: e.eligibleVoters,
       voted_count: e.votedCount,
-      turnout_percent: Number(e.turnoutRateVsRegistered.toFixed(2)),
+      turnout_percent: Number(e.turnoutRateVsEligible.toFixed(2)),
     }));
     downloadCSV(`per-election-participation.csv`, rows);
   };
@@ -430,30 +387,11 @@ export default function AdminAnalytics() {
     );
   };
 
-  const exportTally = () => {
-    if (selectedElectionId === "ALL") {
-      toast.message("Select an election to export candidate tallies.");
-      return;
-    }
-    const rows = flatTallyRows.map((r) => ({
-      election_id: r.election_id,
-      election_title: r.election_title,
-      position: r.position,
-      candidate_id: r.candidate_id ?? "",
-      candidate_name: r.candidate_name,
-      slate: r.slate ?? "",
-      vote_count: r.vote_count,
-      total_ballots_for_position: r.total_ballots_for_position,
-      abstain_count: r.abstain_count,
-    }));
-    downloadCSV(`candidate-tallies-${selectedElectionId}.csv`, rows);
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Analytics</h2>
+          <h2 className="text-lg font-semibold">Operations</h2>
           <p className="text-sm text-muted-foreground">
             Scope: <span className="font-medium">{selectedElectionTitle}</span>
           </p>
@@ -477,34 +415,6 @@ export default function AdminAnalytics() {
           <Button variant="outline" onClick={loadAnalytics} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh"}
           </Button>
-
-          <Button
-            variant="secondary"
-            onClick={exportPerElection}
-            disabled={loading || perElectionStats.length === 0}
-          >
-            <Download className="h-4 w-4 mr-2" />
-            Export Participation CSV
-          </Button>
-
-          <Button
-            variant="secondary"
-            onClick={exportTimeline}
-            disabled={loading || hourlyData.length === 0}
-          >
-            <Download className="h-4 w-4 mr-2" />
-            Export Timeline CSV
-          </Button>
-
-          <Button
-            variant="secondary"
-            onClick={exportTally}
-            disabled={loading || selectedElectionId === "ALL"}
-            title={selectedElectionId === "ALL" ? "Select an election first" : "Export tallies"}
-          >
-            <Download className="h-4 w-4 mr-2" />
-            Export Tallies CSV
-          </Button>
         </div>
       </div>
 
@@ -524,13 +434,21 @@ export default function AdminAnalytics() {
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Total Voters</CardTitle>
+              <CardTitle className="text-sm font-medium">
+                {selectedElectionId === "ALL" ? "Total Registered" : "Total Eligible"}
+              </CardTitle>
               <Users className="h-4 w-4 text-muted-foreground" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{loading ? "…" : globalStats.totalVoters}</div>
-            <p className="text-xs text-muted-foreground mt-1">Registered students (global)</p>
+            <div className="text-2xl font-bold">{loading ? "…" : globalStats.totalEligible}</div>
+            <p className="text-xs text-muted-foreground mt-1">{totalEligibleLabel}</p>
+
+            {selectedElectionId !== "ALL" ? (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Registered (global): {loading ? "…" : globalStats.totalRegistered}
+              </p>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -545,16 +463,16 @@ export default function AdminAnalytics() {
             <div className="text-2xl font-bold text-green-600">
               {loading ? "…" : globalStats.votedCount}
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Based on voter_election_status.has_voted
-            </p>
+            <p className="text-xs text-muted-foreground mt-1">{votedScopedLabel}</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Turnout vs Registered</CardTitle>
+              <CardTitle className="text-sm font-medium">
+                {selectedElectionId === "ALL" ? "Overall Participation" : "Turnout vs Eligible"}
+              </CardTitle>
               <TrendingUp className="h-4 w-4 text-feu-green" />
             </div>
           </CardHeader>
@@ -562,19 +480,86 @@ export default function AdminAnalytics() {
             <div className="text-2xl font-bold text-feu-green">
               {loading ? "…" : globalStats.turnoutRate.toFixed(1)}%
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Registered voters used as denominator
-            </p>
+            <p className="text-xs text-muted-foreground mt-1">{scopeDenominatorLabel}</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-medium">Votes (last 15 min)</CardTitle>
+              <Vote className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{loading ? "…" : ops.votesLast15m}</div>
+            <p className="text-xs text-muted-foreground mt-1">Quick stall/spike indicator</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-medium">Votes (last 60 min)</CardTitle>
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{loading ? "…" : ops.votesLast60m}</div>
+            <p className="text-xs text-muted-foreground mt-1">Rolling activity window</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-medium">Active Sessions</CardTitle>
+              <Users className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{loading ? "…" : ops.activeSessions}</div>
+            <p className="text-xs text-muted-foreground mt-1">voter_sessions.expires_at &gt; now</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-medium">Expiring Soon</CardTitle>
+              <Users className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{loading ? "…" : ops.sessionsExpiringSoon}</div>
+            <p className="text-xs text-muted-foreground mt-1">Within next 10 minutes</p>
           </CardContent>
         </Card>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Per-Election Participation</CardTitle>
-          <CardDescription>
-            Distinct voters per election (rate shown vs total registered voters)
-          </CardDescription>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <CardTitle>Per-Election Participation</CardTitle>
+              <CardDescription>
+                Turnout computed using <span className="font-medium">eligible voters</span> per election (based on org
+                membership). Elections with no eligible_orgs are treated as open to all registered voters.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={exportPerElection}
+              disabled={loading || perElectionStats.length === 0}
+              title="Export per-election participation CSV"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Export CSV
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -587,7 +572,7 @@ export default function AdminAnalytics() {
                 <li key={e.election_id} className="flex justify-between py-1">
                   <span className="truncate pr-3">{e.title}</span>
                   <span className="font-bold">
-                    {e.votedCount}/{e.registeredVoters} ({e.turnoutRateVsRegistered.toFixed(1)}%)
+                    {e.votedCount}/{e.eligibleVoters} ({e.turnoutRateVsEligible.toFixed(1)}%)
                   </span>
                 </li>
               ))}
@@ -598,68 +583,22 @@ export default function AdminAnalytics() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Live Candidate Results</CardTitle>
-          <CardDescription>
-            {selectedElectionId === "ALL"
-              ? "Select an election to view per-position candidate tallies."
-              : "Tallies computed directly from votes + candidates."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {selectedElectionId === "ALL" ? (
-            <p className="text-sm text-muted-foreground">
-              Pick an election above to view per-position totals and export tallies.
-            </p>
-          ) : loading ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
-          ) : tallyByPosition.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No votes yet.</p>
-          ) : (
-            <div className="space-y-6">
-              {tallyByPosition.map((group) => {
-                const total = group.rows?.[0]?.total_ballots_for_position ?? 0;
-                const abstain = group.rows?.[0]?.abstain_count ?? 0;
-
-                return (
-                  <div key={group.position} className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">{group.position}</h3>
-                      <span className="text-xs text-muted-foreground">
-                        Total ballots: {total} • Abstain: {abstain}
-                      </span>
-                    </div>
-
-                    <ul>
-                      {group.rows.map((r) => (
-                        <li
-                          key={`${group.position}-${r.candidate_id ?? r.candidate_name}`}
-                          className="flex justify-between py-1"
-                        >
-                          <span className="truncate pr-3">
-                            {r.candidate_name}
-                            {r.slate ? (
-                              <span className="text-xs text-muted-foreground">
-                                {" "}
-                                • {r.slate}
-                              </span>
-                            ) : null}
-                          </span>
-                          <span className="font-bold">{r.vote_count}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                );
-              })}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <CardTitle>Voting Activity Timeline</CardTitle>
+              <CardDescription>Votes per hour (scoped)</CardDescription>
             </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Voting Activity Timeline</CardTitle>
-          <CardDescription>Votes per hour (scoped)</CardDescription>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={exportTimeline}
+              disabled={loading || hourlyData.length === 0}
+              title="Export voting timeline CSV"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Export CSV
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={300}>
