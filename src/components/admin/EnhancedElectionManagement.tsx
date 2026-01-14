@@ -36,6 +36,7 @@ import {
   GripVertical,
   Upload,
   Image as ImageIcon,
+  Lock,
 } from "lucide-react";
 
 type ElectionRow = {
@@ -46,6 +47,14 @@ type ElectionRow = {
   end_date: string;
   is_active: boolean | null;
   eligible_orgs: string[] | null;
+  is_final?: boolean | null;
+  finalized_at?: string | null;
+  finalized_by?: string | null;
+  finalized_by_email?: string | null;
+  is_archived?: boolean | null;
+  archived_at?: string | null;
+  archived_by?: string | null;
+  archived_by_email?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -148,6 +157,19 @@ export default function EnhancedElectionManagement() {
     [elections, selectedElectionId]
   );
 
+  const operationalElections = useMemo(
+    () => elections.filter((e) => !e.is_archived),
+    [elections]
+  );
+
+  const archivedElections = useMemo(
+    () => elections.filter((e) => Boolean(e.is_archived)),
+    [elections]
+  );
+
+  const isSelectedFinal = Boolean(selectedElection?.is_final);
+  const isSelectedArchived = Boolean(selectedElection?.is_archived);
+
   // Candidates
   const [candidates, setCandidates] = useState<CandidateRow[]>([]);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
@@ -169,6 +191,22 @@ export default function EnhancedElectionManagement() {
     is_active: false,
     eligible_orgs_csv: "",
   });
+
+  // Finalize election (irreversible) dialog
+  const [finalizeDialogOpen, setFinalizeDialogOpen] = useState(false);
+  const [finalizeTarget, setFinalizeTarget] = useState<ElectionRow | null>(null);
+  const [finalizeConfirmText, setFinalizeConfirmText] = useState("");
+
+  // Archive (hide from operational lists, keep history)
+  const [showArchived, setShowArchived] = useState(false);
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<ElectionRow | null>(null);
+  const [archiveConfirmText, setArchiveConfirmText] = useState("");
+
+  const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
+  const [restoreTarget, setRestoreTarget] = useState<ElectionRow | null>(null);
+  const [restoreConfirmText, setRestoreConfirmText] = useState("");
+
 
   // Candidate dialog
   const [candidateDialogOpen, setCandidateDialogOpen] = useState(false);
@@ -247,7 +285,8 @@ export default function EnhancedElectionManagement() {
     setLoading(false);
 
     if (!selectedElectionId && data && data.length > 0) {
-      setSelectedElectionId((data[0] as any).id);
+      const firstNonArchived = (data as any[]).find((x) => !x.is_archived) ?? (data as any[])[0];
+      setSelectedElectionId(firstNonArchived?.id ?? null);
     }
   };
 
@@ -285,6 +324,10 @@ export default function EnhancedElectionManagement() {
   };
 
   const openEditElection = (e: ElectionRow) => {
+    if (Boolean(e.is_final)) {
+      toast.error("This election is finalized and cannot be edited.");
+      return;
+    }
     setEditingElection(e);
     setEForm({
       title: e.title ?? "",
@@ -297,7 +340,160 @@ export default function EnhancedElectionManagement() {
     setElectionDialogOpen(true);
   };
 
+  const openFinalizeElection = (e: ElectionRow) => {
+    if (Boolean(e.is_final)) return;
+    setFinalizeTarget(e);
+    setFinalizeConfirmText("");
+    setFinalizeDialogOpen(true);
+  };
+
+  const confirmFinalizeElection = async () => {
+    if (!finalizeTarget) return;
+
+    if (finalizeConfirmText.trim().toUpperCase() !== "FINALIZE") {
+      toast.error('Type "FINALIZE" to confirm.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      const { error } = await supabase
+        .from("elections")
+        .update({
+          is_final: true,
+          // Optional but recommended: store who finalized
+          finalized_by: user?.id ?? null,
+          finalized_by_email: user?.email ?? null,
+        })
+        .eq("id", finalizeTarget.id);
+
+      if (error) throw error;
+
+      toast.success("Election finalized. Editing is now locked.");
+      setFinalizeDialogOpen(false);
+      setFinalizeTarget(null);
+      setFinalizeConfirmText("");
+
+      await loadElections();
+
+      // If currently selected, refresh candidates too (read-only view)
+      if (selectedElectionId) {
+        await loadCandidates(selectedElectionId);
+      }
+
+      // Close any open edit dialogs (they may now be invalid)
+      setElectionDialogOpen(false);
+      setCandidateDialogOpen(false);
+    } catch (err: any) {
+      toast.error(`Failed to finalize election: ${err.message ?? err}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+
+  const openArchiveElection = (e: ElectionRow) => {
+    if (!Boolean(e.is_final)) {
+      toast.error("Only finalized elections can be archived.");
+      return;
+    }
+    if (Boolean(e.is_archived)) return;
+    setArchiveTarget(e);
+    setArchiveConfirmText("");
+    setArchiveDialogOpen(true);
+  };
+
+  const confirmArchiveElection = async () => {
+    if (!archiveTarget) return;
+
+    if (archiveConfirmText.trim().toUpperCase() !== "ARCHIVE") {
+      toast.error('Type "ARCHIVE" to confirm.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      const { error } = await supabase
+        .from("elections")
+        .update({
+          is_archived: true,
+          archived_at: new Date().toISOString(),
+          archived_by: user?.id ?? null,
+          archived_by_email: user?.email ?? null,
+        } as any)
+        .eq("id", archiveTarget.id);
+
+      if (error) throw error;
+
+      toast.success("Election archived.");
+      await loadElections();
+
+      setArchiveDialogOpen(false);
+      setArchiveTarget(null);
+      setArchiveConfirmText("");
+    } catch (err: any) {
+      toast.error(`Failed to archive election: ${err.message ?? err}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openRestoreElection = (e: ElectionRow) => {
+    if (!Boolean(e.is_archived)) return;
+    setRestoreTarget(e);
+    setRestoreConfirmText("");
+    setRestoreDialogOpen(true);
+  };
+
+  const confirmRestoreElection = async () => {
+    if (!restoreTarget) return;
+
+    if (restoreConfirmText.trim().toUpperCase() !== "RESTORE") {
+      toast.error('Type "RESTORE" to confirm.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const { error } = await supabase
+        .from("elections")
+        .update({
+          is_archived: false,
+          archived_at: null,
+          archived_by: null,
+          archived_by_email: null,
+        } as any)
+        .eq("id", restoreTarget.id);
+
+      if (error) throw error;
+
+      toast.success("Election restored to operational list.");
+      await loadElections();
+
+      setRestoreDialogOpen(false);
+      setRestoreTarget(null);
+      setRestoreConfirmText("");
+    } catch (err: any) {
+      toast.error(`Failed to restore election: ${err.message ?? err}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+
   const saveElection = async () => {
+    if (editingElection && Boolean(editingElection.is_final)) {
+      toast.error("This election is finalized and cannot be edited.");
+      return;
+    }
     if (!eForm.title.trim()) return toast.error("Election title is required.");
     if (!eForm.startLocal || !eForm.endLocal)
       return toast.error("Start and end date/time are required.");
@@ -365,6 +561,10 @@ export default function EnhancedElectionManagement() {
   };
 
   const toggleElectionActive = async (e: ElectionRow) => {
+    if (Boolean(e.is_final)) {
+      toast.error("This election is finalized and cannot be modified.");
+      return;
+    }
     if (saving) return;
 
     const next = !Boolean(e.is_active);
@@ -398,6 +598,11 @@ export default function EnhancedElectionManagement() {
   };
 
   const deleteElection = async (electionId: string) => {
+    const target = elections.find((x) => x.id === electionId);
+    if (target?.is_final) {
+      toast.error("This election is finalized and cannot be deleted.");
+      return;
+    }
     if (!confirm("Delete this election? This will also delete its candidates."))
       return;
 
@@ -438,6 +643,7 @@ export default function EnhancedElectionManagement() {
 
   const openCreateCandidate = (prefillPosition?: string) => {
     if (!selectedElectionId) return toast.error("Select an election first.");
+    if (isSelectedFinal) return toast.error("This election is finalized. Candidates are locked.");
     setEditingCandidate(null);
     setCForm({
       name: "",
@@ -451,6 +657,7 @@ export default function EnhancedElectionManagement() {
   };
 
   const openEditCandidate = (c: CandidateRow) => {
+    if (isSelectedFinal) return toast.error("This election is finalized. Candidates are locked.");
     setEditingCandidate(c);
     setCForm({
       name: c.name ?? "",
@@ -494,6 +701,7 @@ export default function EnhancedElectionManagement() {
 
   const saveCandidate = async () => {
     if (!selectedElectionId) return toast.error("Select an election first.");
+    if (isSelectedFinal) return toast.error("This election is finalized. Candidates are locked.");
     if (!cForm.name.trim()) return toast.error("Candidate name is required.");
     if (!cForm.position.trim()) return toast.error("Position is required.");
 
@@ -583,6 +791,10 @@ export default function EnhancedElectionManagement() {
   };
 
   const deleteCandidate = async (candidateId: string) => {
+    if (isSelectedFinal) {
+      toast.error("This election is finalized. Candidates are locked.");
+      return;
+    }
     if (!confirm("Delete this candidate?")) return;
 
     setSaving(true);
@@ -637,10 +849,33 @@ export default function EnhancedElectionManagement() {
     );
   };
 
+  const finalBadge = (e: ElectionRow) => {
+    return Boolean(e.is_final) ? (
+      <Badge className="border-violet-600 text-violet-700 bg-violet-600/10">
+        <span className="inline-flex items-center gap-1">
+          <Lock className="h-3.5 w-3.5" />
+          Final
+        </span>
+      </Badge>
+    ) : null;
+  };
+
+  const archiveBadge = (e: ElectionRow) => {
+    return Boolean(e.is_archived) ? (
+      <Badge className="border-amber-600 text-amber-700 bg-amber-600/10">
+        Archived
+      </Badge>
+    ) : null;
+  };
+
 
   // --- Drag & Drop reorder (per position) ---
   const persistOrderForPosition = async (position: string, orderedIds: string[]) => {
     if (!selectedElectionId) return;
+    if (isSelectedFinal) {
+      toast.error("This election is finalized. Candidate order is locked.");
+      return;
+    }
     setSaving(true);
 
     try {
@@ -725,13 +960,13 @@ export default function EnhancedElectionManagement() {
     <div className="grid gap-6 lg:grid-cols-[420px_1fr]">
       {/* LEFT: Elections */}
       <Card className="rounded-2xl">
-        <CardHeader className="flex flex-row items-center justify-between">
+        <CardHeader className="flex flex-col gap-3">
           <CardTitle className="flex items-center gap-2">
             <Calendar className="h-5 w-5" />
             Elections
           </CardTitle>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="outline"
               size="sm"
@@ -741,6 +976,12 @@ export default function EnhancedElectionManagement() {
               <RefreshCcw className="h-4 w-4 mr-2" />
               Refresh
             </Button>
+            
+            <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+              <span className="text-xs font-medium">Show Archived</span>
+              <Switch checked={showArchived} onCheckedChange={setShowArchived} />
+            </div>
+
             <Button size="sm" onClick={openCreateElection}>
               <Plus className="h-4 w-4 mr-2" />
               New
@@ -751,12 +992,12 @@ export default function EnhancedElectionManagement() {
         <CardContent className="space-y-3">
           {loading ? (
             <div className="text-sm text-muted-foreground">Loading elections…</div>
-          ) : elections.length === 0 ? (
+          ) : operationalElections.length === 0 ? (
             <div className="text-sm text-muted-foreground">
               No elections yet. Click <b>New</b>.
             </div>
           ) : (
-            elections.map((e) => {
+            operationalElections.map((e) => {
               const selected = e.id === selectedElectionId;
               return (
                 <div
@@ -775,6 +1016,7 @@ export default function EnhancedElectionManagement() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <div className="font-semibold">{e.title}</div>
                         {activeBadge(e)}
+                        {finalBadge(e)}
                         {statusBadge(e)}
                       </div>
 
@@ -815,7 +1057,7 @@ export default function EnhancedElectionManagement() {
                         variant="outline"
                         size="sm"
                         onClick={() => openEditElection(e)}
-                        disabled={saving}
+                        disabled={saving || Boolean(e.is_final)}
                       >
                         <Pencil className="h-4 w-4 mr-2" />
                         Edit
@@ -825,16 +1067,58 @@ export default function EnhancedElectionManagement() {
                         <span className="text-xs font-medium">Active</span>
                         <Switch
                           checked={Boolean(e.is_active)}
-                          disabled={saving}
+                          disabled={saving || Boolean(e.is_final)}
                           onCheckedChange={() => toggleElectionActive(e)}
                         />
                       </div>
+
+                      {Boolean(e.is_final) ? (
+                        <>
+                          <div className="rounded-md border px-3 py-2">
+
+                          <div className="text-xs font-medium flex items-center gap-2">
+                            <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+                            Finalized
+                          </div>
+                          <div className="text-xs text-muted-foreground mt-1">
+                            {e.finalized_at
+                              ? formatDateTimeShort(e.finalized_at)
+                              : "—"}
+                          </div>
+                          <div className="text-xs text-muted-foreground mt-1">
+                            Finalized by: {e.finalized_by_email || (e.finalized_by ? `${e.finalized_by.slice(0, 8)}…` : "—")}
+                          </div>
+                        </div>
+
+                          {!Boolean(e.is_archived) ? (
+                            <Button
+                              className="mt-3 w-full"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openArchiveElection(e)}
+                              disabled={saving}
+                            >
+                              Archive
+                            </Button>
+                          ) : null}
+                        </>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openFinalizeElection(e)}
+                          disabled={saving}
+                        >
+                          <Lock className="h-4 w-4 mr-2" />
+                          Finalize
+                        </Button>
+                      )}
 
                       <Button
                         variant="destructive"
                         size="sm"
                         onClick={() => deleteElection(e.id)}
-                        disabled={saving}
+                        disabled={saving || Boolean(e.is_final)}
                       >
                         <Trash2 className="h-4 w-4 mr-2" />
                         Delete
@@ -845,7 +1129,75 @@ export default function EnhancedElectionManagement() {
               );
             })
           )}
-        </CardContent>
+        
+        {showArchived ? (
+          <>
+            <Separator className="my-6" />
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold">Archived Elections</div>
+                <div className="text-xs text-muted-foreground">
+                  Archived elections are hidden from the operational list, but remain viewable as read-only history.
+                </div>
+              </div>
+              <Badge variant="outline">{archivedElections.length}</Badge>
+            </div>
+
+            {archivedElections.length === 0 ? (
+              <div className="text-sm text-muted-foreground mt-3">
+                No archived elections.
+              </div>
+            ) : (
+              <div className="mt-3 space-y-3">
+                {archivedElections.map((e) => (
+                  <div
+                    key={e.id}
+                    className={`rounded-2xl border p-4 transition ${selectedElectionId === e.id ? "border-amber-500/60 bg-amber-500/5" : "hover:bg-muted/30"}`}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div
+                        className="flex-1 cursor-pointer"
+                        onClick={() => setSelectedElectionId(e.id)}
+                      >
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <div className="font-semibold">{e.title}</div>
+                          {archiveBadge(e)}
+                          {finalBadge(e)}
+                          {statusBadge(e)}
+                        </div>
+
+                        <div className="text-xs text-muted-foreground mt-2">
+                          {formatDateTimeShort(e.start_date)} — {formatDateTimeShort(e.end_date)}
+                        </div>
+
+                        <div className="text-xs text-muted-foreground mt-2">
+                          Archived at: {e.archived_at ? formatDateTimeShort(e.archived_at) : "—"}
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          Archived by:{" "}
+                          {e.archived_by_email ||
+                            (e.archived_by ? `${e.archived_by.slice(0, 8)}…` : "—")}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openRestoreElection(e)}
+                          disabled={saving}
+                        >
+                          Restore
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        ) : null}
+</CardContent>
       </Card>
 
       {/* RIGHT: Candidates */}
@@ -870,7 +1222,7 @@ export default function EnhancedElectionManagement() {
             <Button
               size="sm"
               onClick={() => openCreateCandidate()}
-              disabled={!selectedElectionId}
+              disabled={!selectedElectionId || isSelectedFinal}
             >
               <Plus className="h-4 w-4 mr-2" />
               Add Candidate
@@ -893,6 +1245,18 @@ export default function EnhancedElectionManagement() {
                   {formatDateTimeShort(selectedElection.start_date)} —{" "}
                   {formatDateTimeShort(selectedElection.end_date)}
                 </div>
+                {isSelectedFinal ? (
+                  <div className="mt-3 rounded-lg border border-violet-600/30 bg-violet-600/5 p-3 text-sm">
+                    <div className="flex items-center gap-2 font-medium text-violet-800">
+                      <Lock className="h-4 w-4" />
+                      Finalized election (read-only)
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Editing election details, candidates, and votes is locked. Reporting remains available.
+                    </div>
+                  </div>
+                ) : null}
+
               </div>
 
               {candidatesLoading ? (
@@ -921,6 +1285,7 @@ export default function EnhancedElectionManagement() {
                             variant="outline"
                             size="sm"
                             onClick={() => openCreateCandidate(pos)}
+                            disabled={isSelectedFinal}
                           >
                             <Plus className="h-4 w-4 mr-2" />
                             Add to {pos}
@@ -934,8 +1299,8 @@ export default function EnhancedElectionManagement() {
                             <div
                               key={c.id}
                               className="rounded-xl border p-3 flex items-start justify-between gap-3"
-                              draggable
-                              onDragStart={() => onDragStartCandidate(pos, c.id)}
+                              draggable={!isSelectedFinal}
+                              onDragStart={() => !isSelectedFinal && onDragStartCandidate(pos, c.id)}
                               onDragOver={(e) => {
                                 // allow drop
                                 e.preventDefault();
@@ -993,7 +1358,7 @@ export default function EnhancedElectionManagement() {
                                   variant="outline"
                                   size="sm"
                                   onClick={() => openEditCandidate(c)}
-                                  disabled={saving}
+                                  disabled={saving || isSelectedFinal}
                                 >
                                   <Pencil className="h-4 w-4 mr-2" />
                                   Edit
@@ -1002,7 +1367,7 @@ export default function EnhancedElectionManagement() {
                                   variant="destructive"
                                   size="sm"
                                   onClick={() => deleteCandidate(c.id)}
-                                  disabled={saving}
+                                  disabled={saving || isSelectedFinal}
                                 >
                                   <Trash2 className="h-4 w-4 mr-2" />
                                   Delete
@@ -1297,6 +1662,186 @@ export default function EnhancedElectionManagement() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Finalize election dialog */}
+      <Dialog
+        open={finalizeDialogOpen}
+        onOpenChange={(open) => {
+          setFinalizeDialogOpen(open);
+          if (!open) {
+            setFinalizeTarget(null);
+            setFinalizeConfirmText("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[620px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Lock className="h-5 w-5" />
+              Finalize Election
+            </DialogTitle>
+            <DialogDescription>
+              Finalizing is <b>permanent</b>. This will lock the election definition,
+              candidates, and votes from any further modifications. Reporting and exports
+              remain available.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-4">
+            <div className="rounded-xl border p-3 bg-muted/20">
+              <div className="font-semibold">{finalizeTarget?.title ?? "—"}</div>
+              {finalizeTarget ? (
+                <div className="text-xs text-muted-foreground mt-1">
+                  {formatDateTimeShort(finalizeTarget.start_date)} —{" "}
+                  {formatDateTimeShort(finalizeTarget.end_date)}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-xl border border-red-600/30 bg-red-600/5 p-3">
+              <div className="text-sm font-medium text-red-800">
+                This action cannot be undone.
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Type <b>FINALIZE</b> below to confirm.
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Confirmation</Label>
+              <Input
+                value={finalizeConfirmText}
+                onChange={(e) => setFinalizeConfirmText(e.target.value)}
+                placeholder='Type "FINALIZE"'
+                autoFocus
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <Button
+                variant="outline"
+                onClick={() => setFinalizeDialogOpen(false)}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={confirmFinalizeElection}
+                disabled={
+                  saving || finalizeConfirmText.trim().toUpperCase() !== "FINALIZE"
+                }
+              >
+                <Lock className="h-4 w-4 mr-2" />
+                Finalize (Permanent)
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Archive election dialog */}
+      <Dialog
+        open={archiveDialogOpen}
+        onOpenChange={(open) => {
+          setArchiveDialogOpen(open);
+          if (!open) {
+            setArchiveTarget(null);
+            setArchiveConfirmText("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Archive Election</DialogTitle>
+            <DialogDescription>
+              Archiving hides a finalized election from the operational list, but keeps it available as read-only history. This does not delete any data.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="font-semibold">{archiveTarget?.title ?? "—"}</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Type <b>ARCHIVE</b> to confirm.
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Confirmation</Label>
+              <Input
+                value={archiveConfirmText}
+                onChange={(e) => setArchiveConfirmText(e.target.value)}
+                placeholder="Type ARCHIVE"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setArchiveDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={confirmArchiveElection}
+                disabled={saving || archiveConfirmText.trim().toUpperCase() !== "ARCHIVE"}
+              >
+                Archive
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Restore election dialog */}
+      <Dialog
+        open={restoreDialogOpen}
+        onOpenChange={(open) => {
+          setRestoreDialogOpen(open);
+          if (!open) {
+            setRestoreTarget(null);
+            setRestoreConfirmText("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Restore Archived Election</DialogTitle>
+            <DialogDescription>
+              Restoring returns the election to the operational list. The election remains finalized and read-only.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="font-semibold">{restoreTarget?.title ?? "—"}</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Type <b>RESTORE</b> to confirm.
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Confirmation</Label>
+              <Input
+                value={restoreConfirmText}
+                onChange={(e) => setRestoreConfirmText(e.target.value)}
+                placeholder="Type RESTORE"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setRestoreDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={confirmRestoreElection}
+                disabled={saving || restoreConfirmText.trim().toUpperCase() !== "RESTORE"}
+              >
+                Restore
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
     </div>
   );
 }
