@@ -6,6 +6,9 @@
 // 4) ✅ NEW: voter_sessions lock is created IMMEDIATELY after auth to prevent simultaneous access on other devices.
 // 5) ✅ NEW: Filter elections by eligibility (Option A: abbreviations in voters.org_affiliations + elections.eligible_orgs)
 // 6) ✅ NEW: Pass onRefresh callback to ElectionSelection for Refresh button
+// 7) ✅ UPDATED: Session check uses SERVER TIME via RPC (prevents kiosk clock skew issues)
+// 8) ✅ OPTIONAL: Best-effort delete of expired session row for this voter before checking
+// 9) ✅ OPTIONAL: Make election visibility authoritative by using server-side RPC eligibility checks (not just org_affiliations UI filter)
 
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -71,22 +74,40 @@ const VotingKiosk = () => {
   const [showTimeoutModal, setShowTimeoutModal] = useState(false);
 
   // -----------------------------------------------------
-  // ✅ NEW: Eligibility helpers (Option A: abbreviations only)
-  // voters.org_affiliations should be like ["SCC","ICpEP"]
-  // elections.eligible_orgs should be like ["SCC"] or ["HonSoc"]
+  // ✅ OPTIONAL: Authoritative eligibility is now handled via RPC (name-based membership lists)
   // -----------------------------------------------------
-  const getVoterOrgs = (v: any): string[] =>
-    Array.isArray(v?.org_affiliations) ? v.org_affiliations : [];
 
-  const isElectionEligibleForVoter = (election: any, voterOrgs: string[]): boolean => {
-    const eligibleOrgs: string[] = Array.isArray(election?.eligible_orgs)
-      ? election.eligible_orgs
-      : [];
+  // -----------------------------------------------------
+  // ✅ OPTIONAL: Authoritative eligibility (server-side)
+  // Uses the RPC that checks the imported membership lists by NAME.
+  // We confirm eligibility via RPC so election visibility is correct.
+  // -----------------------------------------------------
+  const filterElectionsByEligibilityRpc = async (elections: any[], voterId: string) => {
+    if (!elections.length) return [];
 
-    // If eligible_orgs is empty/null, treat as open-to-all (keep as-is)
-    if (eligibleOrgs.length === 0) return true;
+    let hadError = false;
+    const results = await Promise.all(
+      elections.map(async (e) => {
+        const { data, error } = await supabase.rpc(
+          "is_voter_eligible_for_election" as any,
+          { p_voter_id: voterId, p_election_id: e.id } as any
+        );
 
-    return eligibleOrgs.some((org) => voterOrgs.includes(org));
+        if (error) {
+          hadError = true;
+          console.error("Eligibility RPC failed for election", e?.id, error);
+          return null; // safest: hide election if eligibility cannot be verified
+        }
+
+        return data ? e : null;
+      })
+    );
+
+    if (hadError) {
+      toast.error("Some eligibility checks failed. Please refresh.");
+    }
+
+    return results.filter(Boolean);
   };
 
   // -----------------------------------------------------
@@ -94,8 +115,6 @@ const VotingKiosk = () => {
   // -----------------------------------------------------
   const refreshElectionsAndStatus = async () => {
     if (!voterData) return;
-
-    const voterOrgs = getVoterOrgs(voterData);
 
     // 1) Load elections
     const { data: elections = [], error: electionsErr } = await supabase
@@ -109,21 +128,20 @@ const VotingKiosk = () => {
 
     const now = new Date();
 
-    const active = elections.filter((e) => {
+    const activeTimeWindow = elections.filter((e) => {
       const start = new Date(e.start_date);
       const end = new Date(e.end_date);
-      return (
-        e.is_active &&
-        start <= now &&
-        end > now &&
-        isElectionEligibleForVoter(e, voterOrgs)
-      );
+      return e.is_active && start <= now && end > now;
     });
 
-    const expired = elections.filter((e) => {
+    const expiredTimeWindow = elections.filter((e) => {
       const end = new Date(e.end_date);
-      return e.is_active && end <= now && isElectionEligibleForVoter(e, voterOrgs);
+      return e.is_active && end <= now;
     });
+
+    // ✅ OPTIONAL: Authoritative eligibility (server-side)
+    const active = await filterElectionsByEligibilityRpc(activeTimeWindow, voterData.id);
+    const expired = await filterElectionsByEligibilityRpc(expiredTimeWindow, voterData.id);
 
     setActiveElections(active);
     setExpiredElections(expired);
@@ -190,22 +208,25 @@ const VotingKiosk = () => {
       return;
     }
 
-    const voterOrgs = getVoterOrgs(voterRow);
-
-    // 2) Prevent simultaneous sessions
-    const nowIso = new Date().toISOString();
-    const { data: existingSessions, error: sessionCheckErr } = await supabase
+    // 2) Prevent simultaneous sessions (SERVER TIME via RPC)
+    // OPTIONAL: best-effort delete any expired row for this voter (helps immediately even before cron cleanup)
+    await supabase
       .from("voter_sessions")
-      .select("*")
+      .delete()
       .eq("voter_id", voterRow.id)
-      .gt("expires_at", nowIso);
+      .lte("expires_at", new Date().toISOString());
+
+    const { data: hasActive, error: sessionCheckErr } = await supabase.rpc(
+      "has_active_voter_session" as any,
+      { p_voter_id: voterRow.id } as any
+    );
 
     if (sessionCheckErr) {
       toast.error("Failed to check active session.");
       return;
     }
 
-    if (existingSessions?.length) {
+    if (hasActive) {
       navigate("/registration-error", {
         state: {
           title: "Active Voting Session Detected",
@@ -255,24 +276,22 @@ const VotingKiosk = () => {
     // - is_active = true
     // - start_date <= now
     // - end_date > now
-    // ✅ NEW: and voter is eligible based on orgs
-    const active = elections.filter((e) => {
+    const activeTimeWindow = elections.filter((e) => {
       const start = new Date(e.start_date);
       const end = new Date(e.end_date);
-      return (
-        e.is_active &&
-        start <= now &&
-        end > now &&
-        isElectionEligibleForVoter(e, voterOrgs)
-      );
+      return e.is_active && start <= now && end > now;
     });
 
     // Expired = was active but end_date <= now
-    // ✅ NEW: and voter is eligible based on orgs
-    const expired = elections.filter((e) => {
+    const expiredTimeWindow = elections.filter((e) => {
       const end = new Date(e.end_date);
-      return e.is_active && end <= now && isElectionEligibleForVoter(e, voterOrgs);
+      return e.is_active && end <= now;
     });
+
+    // ✅ OPTIONAL: Authoritative eligibility (server-side)
+    // Uses membership list RPC (name-based) so the election list is correct even if org_affiliations is stale.
+    const active = await filterElectionsByEligibilityRpc(activeTimeWindow, voterRow.id);
+    const expired = await filterElectionsByEligibilityRpc(expiredTimeWindow, voterRow.id);
 
     setActiveElections(active);
     setExpiredElections(expired);
@@ -337,6 +356,23 @@ const VotingKiosk = () => {
     const voterId = voterData?.id ?? voterIdOverride;
     if (!voterId) {
       toast.error("Missing voter session.");
+      return;
+    }
+
+    // ✅ Enforce eligibility server-side (prevents UI bypass)
+    const { data: isEligible, error: eligErr } = await supabase.rpc(
+      "is_voter_eligible_for_election" as any,
+      { p_voter_id: voterId, p_election_id: electionId } as any
+    );
+
+    if (eligErr) {
+      console.error("Eligibility check failed:", eligErr);
+      toast.error("Eligibility check failed.");
+      return;
+    }
+
+    if (!isEligible) {
+      toast.error("You are not eligible to vote in this election.");
       return;
     }
 
