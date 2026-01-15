@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import feuLogo from "@/assets/feu-logo.png";
-import { Trophy, RefreshCw, Download, Clock, CheckCircle2 } from "lucide-react";
+import { Trophy, RefreshCw, Download, Clock, CheckCircle2, Loader2 } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -51,6 +51,7 @@ type VoteRow = {
 type CandidateWithCount = CandidateRow & {
   vote_count: number;
   isWinner?: boolean;
+  isTiedLeader?: boolean;
 };
 
 type PositionSummary = {
@@ -59,6 +60,7 @@ type PositionSummary = {
   abstain_count: number;
   leader_vote_count: number;
   leaders: string[];
+  is_tie?: boolean;
 };
 
 function formatDateTime(dt?: string | null) {
@@ -113,74 +115,68 @@ export default function Results() {
     votersWhoVoted: 0,
     turnoutRate: 0,
   });
-
-  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [pdfDownloading, setPdfDownloading] = useState(false);
+  const [resultsLoading, setResultsLoading] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
-
   const channelsRef = useRef<{ candidates?: any; votes?: any; status?: any }>(
     {}
   );
 
   const downloadPdfReport = async () => {
     if (!selectedElection?.id) return;
+    if (pdfDownloading) return;
+
+    setPdfDownloading(true);
+
+    // Immediate user feedback
+    const toastId = toast.loading(
+      <div className="space-y-1">
+        <div>Generating PDF report...</div>
+        <div className="text-xs text-muted-foreground">
+          This may take up to 5–10 seconds.
+        </div>
+      </div>
+    );
+
+
 
     try {
-      const { data, error } = await supabase.functions.invoke(
-        "generate-results-pdf",
-        {
-          body: {
-            election_id: selectedElection.id,
-
-            // Signatures / certification blocks (your real names + placeholders)
-            signatories: [
-              { label: "Prepared by", name: "Isaac Caubat", role: "Group Member" },
-              {
-                label: "Prepared by",
-                name: "Lance Owen Miguel Cervantes",
-                role: "Group Member",
-              },
-              { label: "Prepared by", name: "Jego Creencia", role: "Group Member" },
-              { label: "Prepared by", name: "Jonas Gomez", role: "Group Member" },
-              {
-                label: "Prepared by",
-                name: "Deric Lei Leopando",
-                role: "Group Member",
-              },
-
-              { label: "Noted by", name: "Honeylet G. Grimaldo", role: "Thesis Adviser" },
-              { label: "Noted by", name: "Saturnino R. Perlas", role: "Course Adviser" },
-
-              {
-                label: "Certified by",
-                name: "__________________________",
-                role: "COMELEC Chairman",
-              },
-              {
-                label: "Approved by",
-                name: "__________________________",
-                role: "SADU Director",
-              },
-            ],
-          },
-        }
-      );
+      const { data, error } = await supabase.functions.invoke("generate-results-pdf", {
+        body: {
+          election_id: selectedElection.id,
+          signatories: [
+            { label: "Prepared by", name: "Isaac Caubat", role: "Group Member" },
+            { label: "Prepared by", name: "Lance Owen Miguel Cervantes", role: "Group Member" },
+            { label: "Prepared by", name: "Jego Creencia", role: "Group Member" },
+            { label: "Prepared by", name: "Jonas Gomez", role: "Group Member" },
+            { label: "Prepared by", name: "Deric Lei Leopando", role: "Group Member" },
+            { label: "Noted by", name: "Honeylet G. Grimaldo", role: "Thesis Adviser" },
+            { label: "Noted by", name: "Saturnino R. Perlas", role: "Course Adviser" },
+            { label: "Certified by", name: "Juan Dela Cruz", role: "COMELEC Chairman" },
+            { label: "Approved by", name: "Jose Santos", role: "SADU Director" },
+          ],
+        },
+      });
 
       if (error) throw error;
 
-      const blob =
-        data instanceof Blob ? data : new Blob([data], { type: "application/pdf" });
-
+      const blob = data instanceof Blob ? data : new Blob([data], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
+
+      // Best UX: trigger download in the same tab (no popups/tabs)
       const a = document.createElement("a");
       a.href = url;
-      a.download = `BotoVeritas_${selectedElection.title}_Results.pdf`.replace(
-        /\s+/g,
-        "_"
-      );
+      a.download = `BotoVeritas_${selectedElection.title}_Results.pdf`.replace(/\s+/g, "_");
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
+
+
+      toast.success("PDF ready.", { id: toastId });
+
+      // If you keep the fallback download, revoke after a short delay so the download can start
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (e: any) {
       console.error("PDF error object:", e);
 
@@ -188,16 +184,19 @@ export default function Results() {
       if (body) {
         try {
           console.error("PDF error body:", JSON.parse(body));
-          alert(`PDF error: ${JSON.parse(body).error}`);
+          toast.error(`PDF error: ${JSON.parse(body).error}`, { id: toastId });
         } catch {
           console.error("PDF error body (raw):", body);
-          alert(`PDF error: ${body}`);
+          toast.error(`PDF error: ${body}`, { id: toastId });
         }
       } else {
-        alert(e?.message ?? "Failed to download PDF report");
+        toast.error(e?.message ?? "Failed to download PDF report", { id: toastId });
       }
+    } finally {
+      setPdfDownloading(false);
     }
   };
+
 
   // ----------------------------
   // Load elections
@@ -259,7 +258,7 @@ export default function Results() {
   // Load results + compute summaries
   // ----------------------------
   const loadResults = async (election: ElectionRow) => {
-    setLoading(true);
+    setResultsLoading(true);
     try {
       const { data: candidatesData, error: candErr } = await supabase
         .from("candidates")
@@ -321,8 +320,13 @@ export default function Results() {
           (x) => x.vote_count === leaderCount && leaderCount > 0
         );
 
+        const isTie = leaders.length > 1;
+
         const leaderIds = new Set(leaders.map((l) => l.id));
-        for (const c of list) c.isWinner = leaderIds.has(c.id);
+        for (const c of list) {
+          c.isWinner = !isTie && leaderIds.has(c.id);       // only 1 winner allowed
+          c.isTiedLeader = isTie && leaderIds.has(c.id);    // mark as tied leaders instead
+        }
 
         summaries[pos] = {
           position: pos,
@@ -330,7 +334,9 @@ export default function Results() {
           abstain_count: abstainByPos.get(pos) || 0,
           leader_vote_count: leaderCount,
           leaders: leaders.map((l) => l.name),
+          is_tie: isTie,
         };
+
       }
 
       const { count: votedCount, error: votedErr } = await supabase
@@ -359,15 +365,20 @@ export default function Results() {
     } catch (e: any) {
       toast.error(e?.message ?? "Failed to load results");
     } finally {
-      setLoading(false);
+      setResultsLoading(false);
     }
   };
 
   const refreshAll = async () => {
     if (!selectedElection) return;
-    await loadElections();
-    await loadResults(selectedElection);
-    toast.success("Results refreshed");
+    setRefreshing(true);
+    try {
+      await loadElections();
+      await loadResults(selectedElection);
+      toast.success("Results refreshed");
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   useEffect(() => {
@@ -548,17 +559,25 @@ export default function Results() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={downloadPdfReport}>
-              <Download className="h-4 w-4 mr-2" />
-              Download PDF Report
+            <Button 
+              variant="outline" 
+              onClick={downloadPdfReport} 
+              disabled={!selectedElection || pdfDownloading}
+              >
+              {pdfDownloading ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                  <Download className="h-4 w-4 mr-2" />
+              )}
+              {pdfDownloading ? "Generating PDF..." : "Download PDF Report"}
             </Button>
 
             <Button
               variant="outline"
               onClick={refreshAll}
-              disabled={!selectedElection || loading}
+              disabled={!selectedElection || refreshing || pdfDownloading}
             >
-              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
               Refresh
             </Button>
 
@@ -693,11 +712,18 @@ export default function Results() {
                 name: c.name,
                 votes: c.vote_count,
               }));
+            if ((sum?.abstain_count ?? 0) > 0) {
+              chartData.push({ name: "ABSTAIN", votes: sum!.abstain_count });
+            }
+
 
             const leaderText =
               sum?.leaders?.length
-                ? `${sum.leaders.join(" • ")} (${sum.leader_vote_count})`
+                ? (sum?.is_tie
+                    ? `Tie: ${sum.leaders.join(" • ")} (${sum.leader_vote_count})`
+                    : `${sum.leaders.join(" • ")} (${sum.leader_vote_count})`)
                 : "—";
+
 
             return (
               <Card key={position}>
@@ -710,7 +736,7 @@ export default function Results() {
 
                     <div className="flex items-center gap-2">
                       <Badge variant="outline" className="border-gray-300 text-gray-700">
-                        Total ballots: {sum?.total_ballots ?? 0}
+                        Selections recorded: {sum?.total_ballots ?? 0}
                       </Badge>
                       <Badge variant="outline" className="border-amber-500 text-amber-700">
                         Abstain: {sum?.abstain_count ?? 0}
@@ -774,6 +800,12 @@ export default function Results() {
                                   >
                                     Winner
                                   </Badge>
+                                ) : c.isTiedLeader ? (
+                                  <Badge
+                                    variant="outline"
+                                    className="border-amber-500 text-amber-700">
+                                      Tied
+                                    </Badge>
                                 ) : null}
                               </div>
 
