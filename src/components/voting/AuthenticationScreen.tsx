@@ -85,7 +85,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
     setStatusMessage("Checking RFID in database...");
     const { data, error } = await supabase
       .from("voters")
-      .select("id, face_descriptor")
+      .select("id, face_descriptor, email_verified_at")
       .eq("rfid_tag", uid)
       .single();
 
@@ -97,6 +97,16 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
       return;
     }
     setVoterId(data.id);
+
+    if (!data.email_verified_at) {
+      setStatusMessage(
+        "Email verification required. Please open the verification link sent to your school email, then try again."
+      );
+      await logAttempt("EMAIL_NOT_VERIFIED", uid, undefined, data.id);
+      setStep("error");
+      return;
+    }
+
 
     if (!data.face_descriptor) {
       setStatusMessage(
