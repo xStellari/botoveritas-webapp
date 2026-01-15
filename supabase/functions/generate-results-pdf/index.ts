@@ -370,12 +370,8 @@ serve(async (req) => {
     const body = await req.json().catch(() => ({}));
 
     const election_id = body?.election_id as string | undefined;
-    if (!election_id) {
-      return new Response(JSON.stringify({ error: "Missing election_id" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    const isAllElections = !election_id;
+
 
     // Branding: allow override, otherwise use secrets
     const logo_url =
@@ -442,1146 +438,1190 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    // Election metadata (for eligible_orgs + schedule shown in report)
-    const { data: electionMeta, error: electionErr } = await supabase
-      .from("elections")
-      .select("id,title,start_date,end_date,eligible_orgs,is_final,finalized_at,finalized_by,finalized_by_email")
-      .eq("id", election_id)
-      .maybeSingle();
+    const buildSingleElectionPdf = async (election_id: string) => {
+          // Election metadata (for eligible_orgs + schedule shown in report)
+          const { data: electionMeta, error: electionErr } = await supabase
+            .from("elections")
+            .select("id,title,start_date,end_date,eligible_orgs,is_final,finalized_at,finalized_by,finalized_by_email")
+            .eq("id", election_id)
+            .maybeSingle();
 
-    if (electionErr) throw new Error(`elections: ${electionErr.message}`);
-    const election = electionMeta as ElectionRow | null;
+          if (electionErr) throw new Error(`elections: ${electionErr.message}`);
+          const election = electionMeta as ElectionRow | null;
 
-    // Pull tallies (vote_tally_view)
-    const { data: tallies, error: talliesErr } = await supabase
-      .from("vote_tally_view")
-      .select(
-        "election_id,election_title,position,candidate_id,candidate_name,slate,vote_count,abstain_count,total_ballots_for_position",
-      )
-      .eq("election_id", election_id);
+          // Pull tallies (vote_tally_view)
+          const { data: tallies, error: talliesErr } = await supabase
+            .from("vote_tally_view")
+            .select(
+              "election_id,election_title,position,candidate_id,candidate_name,slate,vote_count,abstain_count,total_ballots_for_position",
+            )
+            .eq("election_id", election_id);
 
-    if (talliesErr) throw new Error(`vote_tally_view: ${talliesErr.message}`);
+          if (talliesErr) throw new Error(`vote_tally_view: ${talliesErr.message}`);
 
-    const tallyRows = (tallies ?? []) as VoteTallyRow[];
-    if (!tallyRows.length) {
-      return new Response(
-        JSON.stringify({ error: "No tally data found for election_id" }),
-        {
-          status: 404,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        },
-      );
-    }
-
-    const electionTitle =
-      election?.title ?? tallyRows[0]?.election_title ?? "Election";
-
-    // Year-level turnout (RPC)
-    let yearLevelRows: YearLevelRow[] = [];
-    const { data: ylData, error: ylErr } = await supabase.rpc(
-      "year_level_turnout_for_election",
-      { p_election_id: election_id },
-    );
-    if (!ylErr && Array.isArray(ylData)) {
-      yearLevelRows = ylData as YearLevelRow[];
-    }
-
-    // Turnout metrics
-    // total ballots (count of vote rows) + distinct voters who cast at least one vote
-    const { count: totalBallots, error: totalBallotsErr } = await supabase
-      .from("votes")
-      .select("*", { count: "exact", head: true })
-      .eq("election_id", election_id);
-
-    if (totalBallotsErr) {
-      throw new Error(`votes count: ${totalBallotsErr.message}`);
-    }
-
-    const { data: voterIdRows, error: voterIdsErr } = await supabase
-      .from("votes")
-      .select("voter_id")
-      .eq("election_id", election_id);
-
-    if (voterIdsErr) throw new Error(`votes voter_id: ${voterIdsErr.message}`);
-
-    const distinctVoterIds = new Set<string>();
-    for (const r of (voterIdRows ?? []) as any[]) {
-      if (r?.voter_id) distinctVoterIds.add(String(r.voter_id));
-    }
-    const votersWhoVoted = distinctVoterIds.size;
-
-    // Eligible voters: if eligible_orgs empty => all voters; else overlap org_affiliations
-    let eligibleVoters = 0;
-    const eligibleOrgs = Array.isArray(election?.eligible_orgs)
-      ? election!.eligible_orgs!.filter(Boolean)
-      : [];
-
-    if (eligibleOrgs.length === 0) {
-      const { count, error } = await supabase
-        .from("voters")
-        .select("*", { count: "exact", head: true });
-      if (error) throw new Error(`voters count: ${error.message}`);
-      eligibleVoters = count ?? 0;
-    } else {
-      const { data, error } = await supabase
-        .from("voters")
-        .select("org_affiliations");
-      if (error) throw new Error(`voters org_affiliations: ${error.message}`);
-
-      let n = 0;
-      for (const row of (data ?? []) as any[]) {
-        const aff = row?.org_affiliations;
-        const list: string[] = Array.isArray(aff)
-          ? aff.map(String)
-          : typeof aff === "string"
-          ? (() => {
-            // try parse JSON-stringified array
-            try {
-              const parsed = JSON.parse(aff);
-              return Array.isArray(parsed) ? parsed.map(String) : [];
-            } catch {
-              return [];
-            }
-          })()
-          : [];
-        if (eligibleOrgs.some((org) => list.includes(org))) n++;
-      }
-      eligibleVoters = n;
-    }
-
-    const turnoutRate = eligibleVoters
-      ? (votersWhoVoted / eligibleVoters) * 100
-      : 0;
-
-    const byPosition = groupBy(tallyRows, (r) => r.position || "General");
-
-    // Fetch logo bytes (optional)
-    let logoBytes: Uint8Array | null = null;
-    if (logo_url) {
-      try {
-        logoBytes = await fetchBytes(logo_url);
-      } catch {
-        logoBytes = null;
-      }
-    }
-
-    // PDF setup (A4)
-    const pdf = await PDFDocument.create();
-    const font = await pdf.embedFont(StandardFonts.Helvetica);
-    const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
-
-    const pageW = 595.28;
-    const pageH = 841.89;
-    const margin = 48;
-
-    // -------------------------
-    // COVER PAGE (improved)
-    // -------------------------
-    {
-      const page = pdf.addPage([pageW, pageH]);
-
-      // Hero band
-      page.drawRectangle({
-        x: 0,
-        y: pageH - 240,
-        width: pageW,
-        height: 240,
-        color: rgb(0.98, 0.98, 0.985),
-      });
-
-      // Logo
-      if (logoBytes) {
-        try {
-          const img = await embedLogo(pdf, logoBytes);
-          const h = 46;
-          const w = (img.width / img.height) * h;
-          page.drawImage(img, {
-            x: margin,
-            y: pageH - 120,
-            width: w,
-            height: h,
-          });
-        } catch {}
-      }
-
-      page.drawText("BotoVeritas", {
-        x: margin,
-        y: pageH - 160,
-        size: 20,
-        font: fontBold,
-        color: rgb(0.12, 0.18, 0.14),
-      });
-
-      page.drawText("Election Results Report (PDF Export)", {
-        x: margin,
-        y: pageH - 188,
-        size: 12,
-        font,
-        color: rgb(0.35, 0.35, 0.35),
-      });
-
-      page.drawText(electionTitle, {
-        x: margin,
-        y: pageH - 270,
-        size: 22,
-        font: fontBold,
-        color: rgb(0.12, 0.18, 0.14),
-      });
-
-      const scheduleLine = election
-        ? `Election Window: ${fmtShortDate(election.start_date)}  to  ${
-          fmtShortDate(election.end_date)
-        }`
-        : "Election Window: —";
-
-      page.drawText(scheduleLine, {
-        x: margin,
-        y: pageH - 300,
-        size: 10.5,
-        font,
-        color: rgb(0.35, 0.35, 0.35),
-      });
-
-      page.drawText(`Generated: ${fmtDate(new Date())}`, {
-        x: margin,
-        y: pageH - 322,
-        size: 10.5,
-        font,
-        color: rgb(0.35, 0.35, 0.35),
-      });
-
-      // Contents
-      drawSectionTitle(page, fontBold, "Contents", margin, pageH - 380);
-
-      const items = [
-        "1. Executive Summary (Turnout & Methodology)",
-        "2. Turnout Distribution by Year Level",
-        "3. Results per Position (Pie Distribution + Ranked Table + Summary)",
-        "4. Blockchain Verification Summary",
-        "5. Certification / Signatures",
-      ];
-
-      let y = pageH - 410;
-      for (const it of items) {
-        page.drawText(`• ${it}`, {
-          x: margin,
-          y,
-          size: 11,
-          font,
-          color: rgb(0.2, 0.2, 0.2),
-        });
-        y -= 18;
-      }
-
-      // Footer note
-      const foot =
-        "Note: This report is generated from immutable vote records. Percentages are rounded to one decimal place.";
-      drawParagraph(
-        page,
-        font,
-        foot,
-        margin,
-        90,
-        pageW - margin * 2,
-        9.2,
-        13,
-        rgb(0.45, 0.45, 0.45),
-      );
-    }
-
-    // -------------------------
-    // EXECUTIVE SUMMARY (turnout + explanation)
-    // -------------------------
-    {
-      const page = pdf.addPage([pageW, pageH]);
-      const yStart = await drawHeader({
-        pdf,
-        page,
-        fontBold,
-        font,
-        title: "Executive Summary",
-        subtitle: electionTitle,
-        logoBytes,
-      });
-
-      let y = yStart - 6;
-
-      drawParagraph(
-        page,
-        font,
-        "This section summarizes participation metrics and explains how turnout is computed for this election. The turnout rate helps contextualize results by showing the proportion of eligible voters who cast at least one ballot during the election window.",
-        margin,
-        y,
-        pageW - margin * 2,
-      );
-      y -= 70;
-
-      // Metric boxes
-      const boxW = (pageW - margin * 2 - 18) / 2;
-      const boxH = 80;
-
-      drawInfoBox({
-        page,
-        fontBold,
-        font,
-        x: margin,
-        y,
-        w: boxW,
-        h: boxH,
-        title: "Eligible Voters",
-        value: String(eligibleVoters),
-        footnote: eligibleOrgs.length
-          ? `Eligibility: ${eligibleOrgs.join(", ")}`
-          : "Eligibility: Open to all",
-      });
-
-      drawInfoBox({
-        page,
-        fontBold,
-        font,
-        x: margin + boxW + 18,
-        y,
-        w: boxW,
-        h: boxH,
-        title: "Voters Who Voted (Distinct)",
-        value: String(votersWhoVoted),
-        footnote: "Count of unique voter IDs with >= 1 vote row",
-      });
-
-      y -= boxH + 14;
-
-      drawInfoBox({
-        page,
-        fontBold,
-        font,
-        x: margin,
-        y,
-        w: boxW,
-        h: boxH,
-        title: "Turnout Rate",
-        value: `${turnoutRate.toFixed(1)}%`,
-        footnote: "Rounded to 1 decimal place",
-      });
-
-      drawInfoBox({
-        page,
-        fontBold,
-        font,
-        x: margin + boxW + 18,
-        y,
-        w: boxW,
-        h: boxH,
-        title: "Total Ballots Cast",
-        value: String(totalBallots ?? 0),
-        footnote: "Total rows in votes table for this election",
-      });
-
-      y -= boxH + 26;
-
-      drawSectionTitle(page, fontBold, "Turnout Rate Calculation", margin, y);
-      y -= 20;
-
-      const calcText =
-        "Turnout rate is computed as the percentage of eligible voters who participated in the election: " +
-        "Turnout Rate = (Distinct Voters Who Voted ÷ Eligible Voters) × 100. " +
-        "A voter is considered to have voted if their voter ID appears at least once in the vote records for this election.";
-      y = drawParagraph(page, font, calcText, margin, y, pageW - margin * 2);
-
-      y -= 10;
-      const example =
-        `For this election: Turnout Rate = (${votersWhoVoted} ÷ ${
-          eligibleVoters || 0
-        }) × 100 = ${turnoutRate.toFixed(1)}%.`;
-      drawParagraph(
-        page,
-        font,
-        example,
-        margin,
-        y,
-        pageW - margin * 2,
-        10.5,
-        14,
-        rgb(0.2, 0.2, 0.2),
-      );
-    }
-
-    // -------------------------
-    // TURNOUT BY YEAR LEVEL (donut + interpretation)
-    // -------------------------
-    {
-      const page = pdf.addPage([pageW, pageH]);
-      const yStart = await drawHeader({
-        pdf,
-        page,
-        fontBold,
-        font,
-        title: "Turnout Distribution by Year Level",
-        subtitle: `${electionTitle} • Overall Turnout: ${turnoutRate.toFixed(1)}%`,
-        logoBytes,
-      });
-
-      let y = yStart - 6;
-
-      drawParagraph(
-        page,
-        font,
-        "The donut chart below shows how participating voters are distributed across year levels. Counts represent distinct voters who cast at least one ballot in this election.",
-        margin,
-        y,
-        pageW - margin * 2,
-      );
-
-      y -= 58;
-
-      if (!yearLevelRows.length) {
-        page.drawText(
-          "No year-level turnout data available (ensure RPC year_level_turnout_for_election exists).",
-          {
-            x: margin,
-            y: y,
-            size: 11,
-            font,
-            color: rgb(0.4, 0.2, 0.2),
-          },
-        );
-      } else {
-        const labels = yearLevelRows.map((r) => r.year_level);
-        const values = yearLevelRows.map((r) => r.voter_count);
-
-        const donutConfig = {
-          type: "doughnut",
-          data: { labels, datasets: [{ data: values }] },
-          options: {
-            plugins: {
-              legend: { position: "right" },
-              title: { display: false },
-            },
-            cutout: "55%",
-          },
-        };
-
-        try {
-          const pngBytes = await quickChartPng(donutConfig);
-          const img = await pdf.embedPng(pngBytes);
-
-          const imgW = pageW - margin * 2;
-          const imgH = (img.height / img.width) * imgW;
-
-          page.drawImage(img, {
-            x: margin,
-            y: y - imgH,
-            width: imgW,
-            height: imgH,
-          });
-
-          // Table under chart
-          let ty = y - imgH - 18;
-
-          page.drawLine({
-            start: { x: margin, y: ty },
-            end: { x: pageW - margin, y: ty },
-            thickness: 1,
-            color: rgb(0.9, 0.9, 0.92),
-          });
-          ty -= 18;
-
-          page.drawText("Year Level", {
-            x: margin,
-            y: ty,
-            size: 11,
-            font: fontBold,
-          });
-          page.drawText("Distinct Voters", {
-            x: pageW - margin - 140,
-            y: ty,
-            size: 11,
-            font: fontBold,
-          });
-          ty -= 14;
-
-          const totalYL = values.reduce((a, b) => a + b, 0);
-
-          for (const row of yearLevelRows.slice(0, 25)) {
-            const share = totalYL ? `(${pct(row.voter_count, totalYL)})` : "";
-            page.drawText(`${row.year_level}`, {
-              x: margin,
-              y: ty,
-              size: 10,
-              font,
-            });
-            page.drawText(`${row.voter_count} ${share}`, {
-              x: pageW - margin - 140,
-              y: ty,
-              size: 10,
-              font,
-            });
-            ty -= 14;
-            if (ty < 80) break;
+          const tallyRows = (tallies ?? []) as VoteTallyRow[];
+          if (!tallyRows.length) {
+            return new Response(
+              JSON.stringify({ error: "No tally data found for election_id" }),
+              {
+                status: 404,
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+              },
+            );
           }
 
-          // Interpretation line
-          const top = yearLevelRows.slice().sort((a, b) =>
-            b.voter_count - a.voter_count
-          )[0];
-          if (top) {
-            const note =
-              `Interpretation: The highest participation was recorded from ${top.year_level} with ${top.voter_count} distinct voters ${
-                totalYL ? pct(top.voter_count, totalYL) : ""
-              }.`;
+          const electionTitle =
+            election?.title ?? tallyRows[0]?.election_title ?? "Election";
+
+          // Year-level turnout (RPC)
+          let yearLevelRows: YearLevelRow[] = [];
+          const { data: ylData, error: ylErr } = await supabase.rpc(
+            "year_level_turnout_for_election",
+            { p_election_id: election_id },
+          );
+          if (!ylErr && Array.isArray(ylData)) {
+            yearLevelRows = ylData as YearLevelRow[];
+          }
+
+          // Turnout metrics
+          // selections recorded (count of vote rows) + distinct voters who cast at least one vote
+          const { count: totalBallots, error: totalBallotsErr } = await supabase
+            .from("votes")
+            .select("*", { count: "exact", head: true })
+            .eq("election_id", election_id);
+
+          if (totalBallotsErr) {
+            throw new Error(`votes count: ${totalBallotsErr.message}`);
+          }
+
+          const { data: voterIdRows, error: voterIdsErr } = await supabase
+            .from("votes")
+            .select("voter_id")
+            .eq("election_id", election_id);
+
+          if (voterIdsErr) throw new Error(`votes voter_id: ${voterIdsErr.message}`);
+
+          const distinctVoterIds = new Set<string>();
+          for (const r of (voterIdRows ?? []) as any[]) {
+            if (r?.voter_id) distinctVoterIds.add(String(r.voter_id));
+          }
+          const votersWhoVoted = distinctVoterIds.size;
+
+          // Eligible voters: if eligible_orgs empty => all voters; else overlap org_affiliations
+          let eligibleVoters = 0;
+          const eligibleOrgs = Array.isArray(election?.eligible_orgs)
+            ? election!.eligible_orgs!.filter(Boolean)
+            : [];
+
+          if (eligibleOrgs.length === 0) {
+            const { count, error } = await supabase
+              .from("voters")
+              .select("*", { count: "exact", head: true });
+            if (error) throw new Error(`voters count: ${error.message}`);
+            eligibleVoters = count ?? 0;
+          } else {
+            const { data, error } = await supabase
+              .from("voters")
+              .select("org_affiliations");
+            if (error) throw new Error(`voters org_affiliations: ${error.message}`);
+
+            let n = 0;
+            for (const row of (data ?? []) as any[]) {
+              const aff = row?.org_affiliations;
+              const list: string[] = Array.isArray(aff)
+                ? aff.map(String)
+                : typeof aff === "string"
+                ? (() => {
+                  // try parse JSON-stringified array
+                  try {
+                    const parsed = JSON.parse(aff);
+                    return Array.isArray(parsed) ? parsed.map(String) : [];
+                  } catch {
+                    return [];
+                  }
+                })()
+                : [];
+              if (eligibleOrgs.some((org) => list.includes(org))) n++;
+            }
+            eligibleVoters = n;
+          }
+
+          const turnoutRate = eligibleVoters
+            ? (votersWhoVoted / eligibleVoters) * 100
+            : 0;
+
+          const byPosition = groupBy(tallyRows, (r) => r.position || "General");
+
+          // Fetch logo bytes (optional)
+          let logoBytes: Uint8Array | null = null;
+          if (logo_url) {
+            try {
+              logoBytes = await fetchBytes(logo_url);
+            } catch {
+              logoBytes = null;
+            }
+          }
+
+          // PDF setup (A4)
+          const pdf = await PDFDocument.create();
+          const font = await pdf.embedFont(StandardFonts.Helvetica);
+          const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+          const pageW = 595.28;
+          const pageH = 841.89;
+          const margin = 48;
+
+          // -------------------------
+          // COVER PAGE (improved)
+          // -------------------------
+          {
+            const page = pdf.addPage([pageW, pageH]);
+
+            // Hero band
+            page.drawRectangle({
+              x: 0,
+              y: pageH - 240,
+              width: pageW,
+              height: 240,
+              color: rgb(0.98, 0.98, 0.985),
+            });
+
+            // Logo
+            if (logoBytes) {
+              try {
+                const img = await embedLogo(pdf, logoBytes);
+                const h = 46;
+                const w = (img.width / img.height) * h;
+                page.drawImage(img, {
+                  x: margin,
+                  y: pageH - 120,
+                  width: w,
+                  height: h,
+                });
+              } catch {}
+            }
+
+            page.drawText("BotoVeritas", {
+              x: margin,
+              y: pageH - 160,
+              size: 20,
+              font: fontBold,
+              color: rgb(0.12, 0.18, 0.14),
+            });
+
+            page.drawText("Election Results Report (PDF Export)", {
+              x: margin,
+              y: pageH - 188,
+              size: 12,
+              font,
+              color: rgb(0.35, 0.35, 0.35),
+            });
+
+            page.drawText(electionTitle, {
+              x: margin,
+              y: pageH - 270,
+              size: 22,
+              font: fontBold,
+              color: rgb(0.12, 0.18, 0.14),
+            });
+
+            const scheduleLine = election
+              ? `Election Window: ${fmtShortDate(election.start_date)}  to  ${
+                fmtShortDate(election.end_date)
+              }`
+              : "Election Window: —";
+
+            page.drawText(scheduleLine, {
+              x: margin,
+              y: pageH - 300,
+              size: 10.5,
+              font,
+              color: rgb(0.35, 0.35, 0.35),
+            });
+
+            page.drawText(`Generated: ${fmtDate(new Date())}`, {
+              x: margin,
+              y: pageH - 322,
+              size: 10.5,
+              font,
+              color: rgb(0.35, 0.35, 0.35),
+            });
+
+            // Contents
+            drawSectionTitle(page, fontBold, "Contents", margin, pageH - 380);
+
+            const items = [
+              "1. Executive Summary (Turnout & Methodology)",
+              "2. Turnout Distribution by Year Level",
+              "3. Results per Position (Pie Distribution + Ranked Table + Summary)",
+              "4. Blockchain Verification Summary",
+              "5. Certification / Signatures",
+            ];
+
+            let y = pageH - 410;
+            for (const it of items) {
+              page.drawText(`• ${it}`, {
+                x: margin,
+                y,
+                size: 11,
+                font,
+                color: rgb(0.2, 0.2, 0.2),
+              });
+              y -= 18;
+            }
+
+            // Footer note
+            const foot =
+              "Note: This report is generated from immutable vote records. Percentages are rounded to one decimal place.";
             drawParagraph(
               page,
               font,
-              note,
+              foot,
               margin,
-              clamp(ty - 10, 80, 200),
+              90,
               pageW - margin * 2,
+              9.2,
+              13,
+              rgb(0.45, 0.45, 0.45),
+            );
+          }
+
+          // -------------------------
+          // EXECUTIVE SUMMARY (turnout + explanation)
+          // -------------------------
+          {
+            const page = pdf.addPage([pageW, pageH]);
+            const yStart = await drawHeader({
+              pdf,
+              page,
+              fontBold,
+              font,
+              title: "Executive Summary",
+              subtitle: electionTitle,
+              logoBytes,
+            });
+
+            let y = yStart - 6;
+
+            drawParagraph(
+              page,
+              font,
+              "This section summarizes participation metrics and explains how turnout is computed for this election. The turnout rate helps contextualize results by showing the proportion of eligible voters who cast at least one ballot during the election window.",
+              margin,
+              y,
+              pageW - margin * 2,
+            );
+            y -= 70;
+
+            // Metric boxes
+            const boxW = (pageW - margin * 2 - 18) / 2;
+            const boxH = 80;
+
+            drawInfoBox({
+              page,
+              fontBold,
+              font,
+              x: margin,
+              y,
+              w: boxW,
+              h: boxH,
+              title: "Eligible Voters",
+              value: String(eligibleVoters),
+              footnote: eligibleOrgs.length
+                ? `Eligibility: ${eligibleOrgs.join(", ")}`
+                : "Eligibility: Open to all",
+            });
+
+            drawInfoBox({
+              page,
+              fontBold,
+              font,
+              x: margin + boxW + 18,
+              y,
+              w: boxW,
+              h: boxH,
+              title: "Voters Who Voted (Distinct)",
+              value: String(votersWhoVoted),
+              footnote: "Count of unique voter IDs with >= 1 vote row",
+            });
+
+            y -= boxH + 14;
+
+            drawInfoBox({
+              page,
+              fontBold,
+              font,
+              x: margin,
+              y,
+              w: boxW,
+              h: boxH,
+              title: "Turnout Rate",
+              value: `${turnoutRate.toFixed(1)}%`,
+              footnote: "Rounded to 1 decimal place",
+            });
+
+            drawInfoBox({
+              page,
+              fontBold,
+              font,
+              x: margin + boxW + 18,
+              y,
+              w: boxW,
+              h: boxH,
+              title: "Ballots Cast",
+              value: String(votersWhoVoted ?? 0),
+              footnote: "Distinct voters who cast at least one vote",
+            });
+
+            y -= boxH + 26;
+
+            drawSectionTitle(page, fontBold, "Turnout Rate Calculation", margin, y);
+            y -= 20;
+
+            const calcText =
+              "Turnout rate is computed as the percentage of eligible voters who participated in the election: " +
+              "Turnout Rate = (Distinct Voters Who Voted ÷ Eligible Voters) × 100. " +
+              "A voter is considered to have voted if their voter ID appears at least once in the vote records for this election.";
+            y = drawParagraph(page, font, calcText, margin, y, pageW - margin * 2);
+
+            y -= 10;
+            const example =
+              `For this election: Turnout Rate = (${votersWhoVoted} ÷ ${
+                eligibleVoters || 0
+              }) × 100 = ${turnoutRate.toFixed(1)}%.`;
+            drawParagraph(
+              page,
+              font,
+              example,
+              margin,
+              y,
+              pageW - margin * 2,
+              10.5,
+              14,
+              rgb(0.2, 0.2, 0.2),
+            );
+          }
+
+          // -------------------------
+          // TURNOUT BY YEAR LEVEL (donut + interpretation)
+          // -------------------------
+          {
+            const page = pdf.addPage([pageW, pageH]);
+            const yStart = await drawHeader({
+              pdf,
+              page,
+              fontBold,
+              font,
+              title: "Turnout Distribution by Year Level",
+              subtitle: `${electionTitle} • Overall Turnout: ${turnoutRate.toFixed(1)}%`,
+              logoBytes,
+            });
+
+            let y = yStart - 6;
+
+            drawParagraph(
+              page,
+              font,
+              "The donut chart below shows how participating voters are distributed across year levels. Counts represent distinct voters who cast at least one ballot in this election.",
+              margin,
+              y,
+              pageW - margin * 2,
+            );
+
+            y -= 58;
+
+            if (!yearLevelRows.length) {
+              page.drawText(
+                "No year-level turnout data available (ensure RPC year_level_turnout_for_election exists).",
+                {
+                  x: margin,
+                  y: y,
+                  size: 11,
+                  font,
+                  color: rgb(0.4, 0.2, 0.2),
+                },
+              );
+            } else {
+              const labels = yearLevelRows.map((r) => r.year_level);
+              const values = yearLevelRows.map((r) => r.voter_count);
+
+              const donutConfig = {
+                type: "doughnut",
+                data: { labels, datasets: [{ data: values }] },
+                options: {
+                  plugins: {
+                    legend: { position: "right" },
+                    title: { display: false },
+                  },
+                  cutout: "55%",
+                },
+              };
+
+              try {
+                const pngBytes = await quickChartPng(donutConfig);
+                const img = await pdf.embedPng(pngBytes);
+
+                const imgW = pageW - margin * 2;
+                const imgH = (img.height / img.width) * imgW;
+
+                page.drawImage(img, {
+                  x: margin,
+                  y: y - imgH,
+                  width: imgW,
+                  height: imgH,
+                });
+
+                // Table under chart
+                let ty = y - imgH - 18;
+
+                page.drawLine({
+                  start: { x: margin, y: ty },
+                  end: { x: pageW - margin, y: ty },
+                  thickness: 1,
+                  color: rgb(0.9, 0.9, 0.92),
+                });
+                ty -= 18;
+
+                page.drawText("Year Level", {
+                  x: margin,
+                  y: ty,
+                  size: 11,
+                  font: fontBold,
+                });
+                page.drawText("Distinct Voters", {
+                  x: pageW - margin - 140,
+                  y: ty,
+                  size: 11,
+                  font: fontBold,
+                });
+                ty -= 14;
+
+                const totalYL = values.reduce((a, b) => a + b, 0);
+
+                for (const row of yearLevelRows.slice(0, 25)) {
+                  const share = totalYL ? `(${pct(row.voter_count, totalYL)})` : "";
+                  page.drawText(`${row.year_level}`, {
+                    x: margin,
+                    y: ty,
+                    size: 10,
+                    font,
+                  });
+                  page.drawText(`${row.voter_count} ${share}`, {
+                    x: pageW - margin - 140,
+                    y: ty,
+                    size: 10,
+                    font,
+                  });
+                  ty -= 14;
+                  if (ty < 80) break;
+                }
+
+                // Interpretation line
+                const top = yearLevelRows.slice().sort((a, b) =>
+                  b.voter_count - a.voter_count
+                )[0];
+                if (top) {
+                  const note =
+                    `Interpretation: The highest participation was recorded from ${top.year_level} with ${top.voter_count} distinct voters ${
+                      totalYL ? pct(top.voter_count, totalYL) : ""
+                    }.`;
+                  drawParagraph(
+                    page,
+                    font,
+                    note,
+                    margin,
+                    clamp(ty - 10, 80, 200),
+                    pageW - margin * 2,
+                    10.2,
+                    14,
+                  );
+                }
+              } catch (err: any) {
+                page.drawText(`Chart error: ${err?.message ?? "Failed to render chart"}`, {
+                  x: margin,
+                  y,
+                  size: 11,
+                  font,
+                  color: rgb(0.4, 0.2, 0.2),
+                });
+              }
+            }
+          }
+
+          // -------------------------
+          // RESULTS PER POSITION (pie + ranked + narrative)
+          // -------------------------
+          const positionEntries = Array.from(byPosition.entries()).sort(([a], [b]) => {
+            const ra = positionRank(a);
+            const rb = positionRank(b);
+            if (ra !== rb) return ra - rb;
+            return String(a).localeCompare(String(b));
+          });
+
+          for (const [position, rows] of positionEntries) {
+            const page = pdf.addPage([pageW, pageH]);
+            const yStart = await drawHeader({
+              pdf,
+              page,
+              fontBold,
+              font,
+              title: `Results — ${position}`,
+              subtitle: electionTitle,
+              logoBytes,
+            });
+
+            let y = yStart - 6;
+
+            // totals for this position
+            const totalBallotsPos = rows[0]?.total_ballots_for_position ??
+              rows.reduce((a, r) => a + (r.vote_count || 0), 0);
+            const abstainCount = rows[0]?.abstain_count ?? 0;
+
+            // Determine leaders
+            const sorted = rows.slice().sort((a, b) => b.vote_count - a.vote_count);
+            const leaderVotes = sorted[0]?.vote_count ?? 0;
+            const leaders = sorted.filter((r) =>
+              r.vote_count === leaderVotes && leaderVotes > 0
+            );
+
+            // Ranked table uses an "effective" vote count so ABSTAIN reflects abstain_count
+            const effectiveVotes = (r: VoteTallyRow) => {
+              const name = (r.candidate_name || "").trim().toUpperCase();
+              return name === "ABSTAIN" ? (abstainCount || 0) : (r.vote_count || 0);
+            };
+
+            const tableSorted = rows.slice().sort((a, b) => {
+              const da = effectiveVotes(a);
+              const db = effectiveVotes(b);
+              if (db !== da) return db - da;
+              return String(a.candidate_name || "").localeCompare(
+                String(b.candidate_name || ""),
+              );
+            });
+
+            const leaderNames = leaders.map((l) =>
+              l.slate ? `${l.candidate_name} (${l.slate})` : l.candidate_name,
+            );
+
+            const leaderShare = totalBallotsPos ? pct(leaderVotes, totalBallotsPos) : "0.0%";
+            const abstainShare = totalBallotsPos ? pct(abstainCount, totalBallotsPos) : "0.0%";
+
+            // Intro paragraph
+            const intro =
+              "The pie chart summarizes the vote distribution for this position. " +
+              "The ranked table provides the vote counts per candidate. " +
+              "A brief interpretation is provided for reporting and documentation purposes.";
+            y = drawParagraph(page, font, intro, margin, y, pageW - margin * 2);
+            y -= 10;
+
+            // Chart
+            // NOTE: We exclude ABSTAIN from the pie chart when it has 0 votes.
+            // If there are abstentions recorded for this position, we include it as its own slice.
+            const pieLabels: string[] = [];
+            const pieValues: number[] = [];
+
+            for (const r of rows) {
+              const name = (r.candidate_name || "").trim();
+              if (name.toUpperCase() === "ABSTAIN") continue; // handled via abstainCount below
+              pieLabels.push(name);
+              pieValues.push(r.vote_count || 0);
+            }
+
+            if ((abstainCount || 0) > 0) {
+              pieLabels.push("ABSTAIN");
+              pieValues.push(abstainCount || 0);
+            }
+
+            const pieConfig = {
+              type: "pie",
+              data: { labels: pieLabels, datasets: [{ data: pieValues }] },
+              options: {
+                plugins: {
+                  legend: { position: "right" },
+                  title: { display: false },
+                },
+              },
+            };
+
+            let imgHUsed = 0;
+            try {
+              const pngBytes = await quickChartPng(pieConfig);
+              const img = await pdf.embedPng(pngBytes);
+
+              const imgW = pageW - margin * 2;
+              const imgH = (img.height / img.width) * imgW;
+              imgHUsed = imgH;
+
+              page.drawImage(img, {
+                x: margin,
+                y: y - imgH,
+                width: imgW,
+                height: imgH,
+              });
+            } catch (err: any) {
+              page.drawText(`Chart error: ${err?.message ?? "Failed to render chart"}`, {
+                x: margin,
+                y,
+                size: 11,
+                font,
+                color: rgb(0.4, 0.2, 0.2),
+              });
+            }
+
+            y = imgHUsed ? y - imgHUsed - 18 : y - 22;
+
+            // Summary box (interpretation)
+            page.drawRectangle({
+              x: margin,
+              y: y - 78,
+              width: pageW - margin * 2,
+              height: 78,
+              color: rgb(0.985, 0.985, 0.99),
+              borderColor: rgb(0.9, 0.9, 0.92),
+              borderWidth: 1,
+            });
+
+            page.drawText("Summary & Interpretation", {
+              x: margin + 12,
+              y: y - 18,
+              size: 11,
+              font: fontBold,
+              color: rgb(0.12, 0.18, 0.14),
+            });
+
+            const summaryText =
+              `Total ballots for this position: ${totalBallotsPos}. ` +
+              `Abstentions: ${abstainCount} (${abstainShare}). ` +
+              (leaders.length
+                ? (leaders.length > 1
+                  ? `Leading candidates (tie): ${leaderNames.join(" • ")} with ${leaderVotes} votes each (${leaderShare}).`
+                  : `Leading candidate: ${leaderNames[0]} with ${leaderVotes} votes (${leaderShare}).`)
+                : "No leading candidate identified (no votes recorded for any candidate).");
+
+            drawParagraph(
+              page,
+              font,
+              summaryText,
+              margin + 12,
+              y - 36,
+              pageW - margin * 2 - 24,
               10.2,
               14,
             );
+
+            y -= 92;
+
+            // Ranked table header
+            drawSectionTitle(page, fontBold, "Ranked Results", margin, y);
+            y -= 18;
+
+            const colRank = margin;
+            const colName = margin + 50;
+            const colSlate = pageW - margin - 190;
+            const colVotes = pageW - margin - 70;
+
+            page.drawText("Rank", { x: colRank, y, size: 11, font: fontBold });
+            page.drawText("Candidate", { x: colName, y, size: 11, font: fontBold });
+            page.drawText("Slate", { x: colSlate, y, size: 11, font: fontBold });
+            page.drawText("Votes", { x: colVotes, y, size: 11, font: fontBold });
+            y -= 12;
+
+            page.drawLine({
+              start: { x: margin, y },
+              end: { x: pageW - margin, y },
+              thickness: 1,
+              color: rgb(0.9, 0.9, 0.92),
+            });
+            y -= 14;
+
+            for (let i = 0; i < tableSorted.length; i++) {
+              const r = tableSorted[i];
+              const displayVotes = effectiveVotes(r);
+
+              page.drawText(String(i + 1), { x: colRank, y, size: 10, font });
+              page.drawText(String(r.candidate_name).slice(0, 36), {
+                x: colName,
+                y,
+                size: 10,
+                font,
+              });
+              page.drawText(String(r.slate ?? "").slice(0, 18), {
+                x: colSlate,
+                y,
+                size: 10,
+                font,
+              });
+              page.drawText(String(displayVotes), { x: colVotes, y, size: 10, font });
+
+              y -= 14;
+              if (y < 88) break;
+            }
+
+            // Small methodology note
+            const methodNote =
+              "Method note: Vote counts are derived from immutable vote records. Percentages in the summary use total ballots for the position as denominator.";
+            drawParagraph(
+              page,
+              font,
+              methodNote,
+              margin,
+              76,
+              pageW - margin * 2,
+              9.2,
+              13,
+              rgb(0.45, 0.45, 0.45),
+            );
           }
-        } catch (err: any) {
-          page.drawText(`Chart error: ${err?.message ?? "Failed to render chart"}`, {
-            x: margin,
-            y,
-            size: 11,
-            font,
-            color: rgb(0.4, 0.2, 0.2),
-          });
-        }
-      }
-    }
 
-    // -------------------------
-    // RESULTS PER POSITION (pie + ranked + narrative)
-    // -------------------------
-    const positionEntries = Array.from(byPosition.entries()).sort(([a], [b]) => {
-      const ra = positionRank(a);
-      const rb = positionRank(b);
-      if (ra !== rb) return ra - rb;
-      return String(a).localeCompare(String(b));
-    });
+          // -------------------------
+          // BLOCKCHAIN VERIFICATION SUMMARY PAGE (expanded)
+          // -------------------------
+          {
+            const page = pdf.addPage([pageW, pageH]);
+            const yStart = await drawHeader({
+              pdf,
+              page,
+              fontBold,
+              font,
+              title: "Blockchain Verification Summary",
+              subtitle: electionTitle,
+              logoBytes,
+            });
 
-    for (const [position, rows] of positionEntries) {
-      const page = pdf.addPage([pageW, pageH]);
-      const yStart = await drawHeader({
-        pdf,
-        page,
-        fontBold,
-        font,
-        title: `Results — ${position}`,
-        subtitle: electionTitle,
-        logoBytes,
-      });
+            let y = yStart - 6;
 
-      let y = yStart - 6;
+            drawParagraph(
+              page,
+              font,
+              "This section provides an audit-oriented summary of how vote submissions may be verified on a public blockchain explorer. The report intentionally does not include voter identity or any linkage between voter and selected candidates.",
+              margin,
+              y,
+              pageW - margin * 2,
+            );
+            y -= 72;
 
-      // totals for this position
-      const totalBallotsPos = rows[0]?.total_ballots_for_position ??
-        rows.reduce((a, r) => a + (r.vote_count || 0), 0);
-      const abstainCount = rows[0]?.abstain_count ?? 0;
+            // key-value blocks
+            const kv = (label: string, value: string) => {
+              page.drawText(label, {
+                x: margin,
+                y,
+                size: 10.5,
+                font: fontBold,
+                color: rgb(0.2, 0.2, 0.2),
+              });
+              page.drawText(value || "—", {
+                x: margin + 130,
+                y,
+                size: 10.5,
+                font,
+                color: rgb(0.2, 0.2, 0.2),
+              });
+              y -= 18;
+            };
 
-      // Determine leaders
-      const sorted = rows.slice().sort((a, b) => b.vote_count - a.vote_count);
-      const leaderVotes = sorted[0]?.vote_count ?? 0;
-      const leaders = sorted.filter((r) =>
-        r.vote_count === leaderVotes && leaderVotes > 0
-      );
+            kv("Network:", network);
+            kv("NFT Collection:", nft_collection);
+            if (contract_address) kv("Contract Address:", contract_address);
+            kv("Explorer Base URL:", explorer_base);
 
-      // Ranked table uses an "effective" vote count so ABSTAIN reflects abstain_count
-      const effectiveVotes = (r: VoteTallyRow) => {
-        const name = (r.candidate_name || "").trim().toUpperCase();
-        return name === "ABSTAIN" ? (abstainCount || 0) : (r.vote_count || 0);
-      };
+            y -= 10;
+            drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
+            y -= 18;
 
-      const tableSorted = rows.slice().sort((a, b) => {
-        const da = effectiveVotes(a);
-        const db = effectiveVotes(b);
-        if (db !== da) return db - da;
-        return String(a.candidate_name || "").localeCompare(
-          String(b.candidate_name || ""),
-        );
-      });
+            const bullets = [
+              "Each vote submission is represented by a blockchain transaction hash (Tx Hash).",
+              "A Tx Hash can be searched on the explorer to verify timestamp, immutability, and inclusion in the chain.",
+              "This report may include sample hashes for demonstration or audit. If hashes are not supplied, the verifier may refer to system logs or the on-chain record set.",
+            ];
 
-      const leaderNames = leaders.map((l) =>
-        l.slate ? `${l.candidate_name} (${l.slate})` : l.candidate_name,
-      );
+            for (const b of bullets) {
+              page.drawText(`• ${b}`, {
+                x: margin,
+                y,
+                size: 10.5,
+                font,
+                color: rgb(0.2, 0.2, 0.2),
+              });
+              y -= 14;
+            }
 
-      const leaderShare = totalBallotsPos ? pct(leaderVotes, totalBallotsPos) : "0.0%";
-      const abstainShare = totalBallotsPos ? pct(abstainCount, totalBallotsPos) : "0.0%";
+            y -= 12;
+            drawSectionTitle(
+              page,
+              fontBold,
+              "Included Transaction Hashes (Optional)",
+              margin,
+              y,
+            );
+            y -= 16;
 
-      // Intro paragraph
-      const intro =
-        "The pie chart summarizes the vote distribution for this position. " +
-        "The ranked table provides the vote counts per candidate. " +
-        "A brief interpretation is provided for reporting and documentation purposes.";
-      y = drawParagraph(page, font, intro, margin, y, pageW - margin * 2);
-      y -= 10;
+            if (!tx_hashes.length) {
+              drawParagraph(
+                page,
+                font,
+                "No transaction hashes were provided to the PDF generator. To include them, pass tx_hashes[] from the admin dashboard when generating this report.",
+                margin,
+                y,
+                pageW - margin * 2,
+                10.5,
+                14,
+                rgb(0.4, 0.2, 0.2),
+              );
+            } else {
+              for (const h of tx_hashes) {
+                if (y < 90) break;
+                const short = h.length > 66 ? `${h.slice(0, 12)}…${h.slice(-10)}` : h;
+                page.drawText(`• ${short}`, {
+                  x: margin,
+                  y,
+                  size: 10.5,
+                  font,
+                  color: rgb(0.2, 0.2, 0.2),
+                });
+                y -= 14;
+              }
 
-      // Chart
-      // NOTE: We exclude ABSTAIN from the pie chart when it has 0 votes.
-      // If there are abstentions recorded for this position, we include it as its own slice.
-      const pieLabels: string[] = [];
-      const pieValues: number[] = [];
+              y -= 10;
+              drawParagraph(
+                page,
+                font,
+                "Usage: append a hash to the Explorer Base URL above (base + hash) to open the transaction details page.",
+                margin,
+                y,
+                pageW - margin * 2,
+                10.2,
+                14,
+                rgb(0.35, 0.35, 0.35),
+              );
+            }
+          }
 
-      for (const r of rows) {
-        const name = (r.candidate_name || "").trim();
-        if (name.toUpperCase() === "ABSTAIN") continue; // handled via abstainCount below
-        pieLabels.push(name);
-        pieValues.push(r.vote_count || 0);
-      }
+          // -------------------------
+          // SIGNATURE / CERTIFICATION PAGE (grouped + clean layout)
+          // -------------------------
+          {
+            const list: Signatory[] = signatories.length > 0
+              ? signatories
+              : [
+                { label: "Prepared by", name: "__________________________", role: "Group Member" },
+                { label: "Noted by", name: "__________________________", role: "Thesis Adviser" },
+              ];
 
-      if ((abstainCount || 0) > 0) {
-        pieLabels.push("ABSTAIN");
-        pieValues.push(abstainCount || 0);
-      }
+            const isGroupMember = (s: Signatory) => {
+              const lbl = (s.label || "").toLowerCase();
+              const role = (s.role || "").toLowerCase();
+              return lbl.includes("prepared") && role.includes("group");
+            };
 
-      const pieConfig = {
-        type: "pie",
-        data: { labels: pieLabels, datasets: [{ data: pieValues }] },
-        options: {
-          plugins: {
-            legend: { position: "right" },
-            title: { display: false },
-          },
+            const groupMembers = list.filter(isGroupMember);
+            const others = list.filter((s) => !isGroupMember(s));
+
+            const makePage = async (title: string) => {
+              const p = pdf.addPage([pageW, pageH]);
+              const yStart = await drawHeader({
+                pdf,
+                page: p,
+                fontBold,
+                font,
+                title,
+                subtitle: electionTitle,
+                logoBytes,
+              });
+              return { page: p, yStart };
+            };
+
+            const drawSigLineBlock = (
+              page: any,
+              x: number,
+              topY: number,
+              w: number,
+              heading: string,
+              name: string,
+              role: string,
+            ) => {
+              // Heading (e.g., "Noted by:")
+              page.drawText(`${heading}:`, {
+                x,
+                y: topY,
+                size: 11,
+                font: fontBold,
+                color: rgb(0.12, 0.18, 0.14),
+              });
+
+              // Signature line
+              const lineY = topY - 30;
+              page.drawLine({
+                start: { x, y: lineY },
+                end: { x: x + w, y: lineY },
+                thickness: 1,
+                color: rgb(0.25, 0.25, 0.25),
+              });
+
+              // Name below line
+              page.drawText(name, {
+                x,
+                y: lineY - 16,
+                size: 11.5,
+                font: fontBold,
+                color: rgb(0.12, 0.12, 0.12),
+              });
+
+              // Role below name
+              page.drawText(role || "", {
+                x,
+                y: lineY - 32,
+                size: 10,
+                font,
+                color: rgb(0.45, 0.45, 0.45),
+              });
+            };
+
+            const drawGroupedMembers = (
+              page: any,
+              x: number,
+              topY: number,
+              w: number,
+              members: Signatory[],
+            ) => {
+              page.drawText("Prepared by (Group Members):", {
+                x,
+                y: topY,
+                size: 11,
+                font: fontBold,
+                color: rgb(0.12, 0.18, 0.14),
+              });
+
+              // two columns inside the group block
+              const colGap = 30;
+              const colW = (w - colGap) / 2;
+
+              let y = topY - 24;
+              for (let i = 0; i < members.length; i++) {
+                const m = members[i];
+                const col = i % 2; // 0 left, 1 right
+                const row = Math.floor(i / 2);
+
+                const bx = x + (col === 0 ? 0 : colW + colGap);
+                const by = y - row * 72;
+
+                // signature line
+                page.drawLine({
+                  start: { x: bx, y: by - 18 },
+                  end: { x: bx + colW, y: by - 18 },
+                  thickness: 1,
+                  color: rgb(0.25, 0.25, 0.25),
+                });
+
+                // name under line
+                page.drawText(m.name, {
+                  x: bx,
+                  y: by - 34,
+                  size: 11,
+                  font: fontBold,
+                  color: rgb(0.12, 0.12, 0.12),
+                });
+
+                // role (only once per name; no more repeated "Prepared by")
+                page.drawText(m.role || "Group Member", {
+                  x: bx,
+                  y: by - 50,
+                  size: 10,
+                  font,
+                  color: rgb(0.45, 0.45, 0.45),
+                });
+              }
+
+              // height consumed by grouped rows
+              const rows = Math.ceil(members.length / 2);
+              return topY - 24 - rows * 72;
+            };
+
+            let { page, yStart } = await makePage("Certification / Signatures");
+            let y = yStart - 6;
+
+            // Intro text
+            drawParagraph(
+              page,
+              font,
+              "The undersigned certify that this report was generated by the BotoVeritas system and is based on recorded vote data for the specified election. This certification page is intended for documentation and academic reporting purposes.",
+              margin,
+              y,
+              pageW - margin * 2,
+            );
+            y -= 70;
+
+
+            // Finalization block (auto)
+            if (election?.is_final) {
+              const needed = 86;
+              if (y - needed < 90) {
+                const next = await makePage("Certification / Signatures (cont.)");
+                page = next.page;
+                y = next.yStart - 6;
+              }
+
+              page.drawText("Election Finalization", {
+                x: margin,
+                y,
+                size: 12,
+                font: fontBold,
+                color: rgb(0.12, 0.18, 0.14),
+              });
+              y -= 18;
+
+              const finalizedBy =
+                election.finalized_by_email ||
+                election.finalized_by ||
+                "—";
+
+              page.drawText(`Finalized by: ${finalizedBy}`, {
+                x: margin,
+                y,
+                size: 11,
+                font,
+                color: rgb(0.2, 0.2, 0.2),
+              });
+              y -= 14;
+
+              page.drawText(`Finalized at: ${fmtShortDate(election.finalized_at)}`, {
+                x: margin,
+                y,
+                size: 11,
+                font,
+                color: rgb(0.2, 0.2, 0.2),
+              });
+              y -= 16;
+
+              // Divider
+              page.drawLine({
+                start: { x: margin, y },
+                end: { x: margin + contentW, y },
+                thickness: 1,
+                color: rgb(0.85, 0.87, 0.86),
+              });
+              y -= 14;
+            }
+
+            // Layout constants
+            const contentW = pageW - margin * 2;
+            const colGap = 40;
+            const colW = (contentW - colGap) / 2;
+
+            // 1) Group members block (full width)
+            if (groupMembers.length) {
+              // If not enough room, new page
+              const minNeeded = 120 + Math.ceil(groupMembers.length / 2) * 72;
+              if (y - minNeeded < 90) {
+                const next = await makePage("Certification / Signatures (cont.)");
+                page = next.page;
+                y = next.yStart - 6;
+              }
+
+              y = drawGroupedMembers(page, margin, y, contentW, groupMembers) - 18;
+            }
+
+            // 2) Other signatories as clean blocks, two columns
+            let i = 0;
+            while (i < others.length) {
+              // Need room for one row of two blocks
+              const rowNeeded = 92;
+              if (y - rowNeeded < 90) {
+                const next = await makePage("Certification / Signatures (cont.)");
+                page = next.page;
+                y = next.yStart - 6;
+              }
+
+              const left = others[i];
+              const right = others[i + 1];
+
+              // Left block
+              drawSigLineBlock(
+                page,
+                margin,
+                y,
+                colW,
+                left.label || "Signatory",
+                left.name || "__________________________",
+                left.role || "",
+              );
+
+              // Right block (if exists)
+              if (right) {
+                drawSigLineBlock(
+                  page,
+                  margin + colW + colGap,
+                  y,
+                  colW,
+                  right.label || "Signatory",
+                  right.name || "__________________________",
+                  right.role || "",
+                );
+              }
+
+              y -= 92;
+              i += 2;
+            }
+          }
+
+
+          // Add page numbers
+          const pages = pdf.getPages();
+          for (let i = 0; i < pages.length; i++) {
+            drawPageNumber(pages[i], font, i + 1, pages.length);
+          }
+
+          const pdfBytes = await pdf.save();
+
+      return { pdfBytes, electionTitle };
+    };
+
+    if (!isAllElections) {
+      const { pdfBytes, electionTitle } = await buildSingleElectionPdf(election_id!);
+      const filename = `${safeFilename(electionTitle)}_Results_Report.pdf`;
+      return new Response(pdfBytes, {
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `attachment; filename="${filename}"`,
         },
-      };
-
-      let imgHUsed = 0;
-      try {
-        const pngBytes = await quickChartPng(pieConfig);
-        const img = await pdf.embedPng(pngBytes);
-
-        const imgW = pageW - margin * 2;
-        const imgH = (img.height / img.width) * imgW;
-        imgHUsed = imgH;
-
-        page.drawImage(img, {
-          x: margin,
-          y: y - imgH,
-          width: imgW,
-          height: imgH,
-        });
-      } catch (err: any) {
-        page.drawText(`Chart error: ${err?.message ?? "Failed to render chart"}`, {
-          x: margin,
-          y,
-          size: 11,
-          font,
-          color: rgb(0.4, 0.2, 0.2),
-        });
-      }
-
-      y = imgHUsed ? y - imgHUsed - 18 : y - 22;
-
-      // Summary box (interpretation)
-      page.drawRectangle({
-        x: margin,
-        y: y - 78,
-        width: pageW - margin * 2,
-        height: 78,
-        color: rgb(0.985, 0.985, 0.99),
-        borderColor: rgb(0.9, 0.9, 0.92),
-        borderWidth: 1,
       });
-
-      page.drawText("Summary & Interpretation", {
-        x: margin + 12,
-        y: y - 18,
-        size: 11,
-        font: fontBold,
-        color: rgb(0.12, 0.18, 0.14),
-      });
-
-      const summaryText =
-        `Total ballots for this position: ${totalBallotsPos}. ` +
-        `Abstentions: ${abstainCount} (${abstainShare}). ` +
-        (leaders.length
-          ? (leaders.length > 1
-            ? `Leading candidates (tie): ${leaderNames.join(" • ")} with ${leaderVotes} votes each (${leaderShare}).`
-            : `Leading candidate: ${leaderNames[0]} with ${leaderVotes} votes (${leaderShare}).`)
-          : "No leading candidate identified (no votes recorded for any candidate).");
-
-      drawParagraph(
-        page,
-        font,
-        summaryText,
-        margin + 12,
-        y - 36,
-        pageW - margin * 2 - 24,
-        10.2,
-        14,
-      );
-
-      y -= 92;
-
-      // Ranked table header
-      drawSectionTitle(page, fontBold, "Ranked Results", margin, y);
-      y -= 18;
-
-      const colRank = margin;
-      const colName = margin + 50;
-      const colSlate = pageW - margin - 190;
-      const colVotes = pageW - margin - 70;
-
-      page.drawText("Rank", { x: colRank, y, size: 11, font: fontBold });
-      page.drawText("Candidate", { x: colName, y, size: 11, font: fontBold });
-      page.drawText("Slate", { x: colSlate, y, size: 11, font: fontBold });
-      page.drawText("Votes", { x: colVotes, y, size: 11, font: fontBold });
-      y -= 12;
-
-      page.drawLine({
-        start: { x: margin, y },
-        end: { x: pageW - margin, y },
-        thickness: 1,
-        color: rgb(0.9, 0.9, 0.92),
-      });
-      y -= 14;
-
-      for (let i = 0; i < tableSorted.length; i++) {
-        const r = tableSorted[i];
-        const displayVotes = effectiveVotes(r);
-
-        page.drawText(String(i + 1), { x: colRank, y, size: 10, font });
-        page.drawText(String(r.candidate_name).slice(0, 36), {
-          x: colName,
-          y,
-          size: 10,
-          font,
-        });
-        page.drawText(String(r.slate ?? "").slice(0, 18), {
-          x: colSlate,
-          y,
-          size: 10,
-          font,
-        });
-        page.drawText(String(displayVotes), { x: colVotes, y, size: 10, font });
-
-        y -= 14;
-        if (y < 88) break;
-      }
-
-      // Small methodology note
-      const methodNote =
-        "Method note: Vote counts are derived from immutable vote records. Percentages in the summary use total ballots for the position as denominator.";
-      drawParagraph(
-        page,
-        font,
-        methodNote,
-        margin,
-        76,
-        pageW - margin * 2,
-        9.2,
-        13,
-        rgb(0.45, 0.45, 0.45),
-      );
     }
 
-    // -------------------------
-    // BLOCKCHAIN VERIFICATION SUMMARY PAGE (expanded)
-    // -------------------------
-    {
-      const page = pdf.addPage([pageW, pageH]);
-      const yStart = await drawHeader({
-        pdf,
-        page,
-        fontBold,
-        font,
-        title: "Blockchain Verification Summary",
-        subtitle: electionTitle,
-        logoBytes,
+    // ALL ELECTIONS: generate a single combined PDF by merging per-election PDFs
+    const { data: electionsList, error: electionsListErr } = await supabase
+      .from("elections")
+      .select("id,start_date")
+      .order("start_date", { ascending: true });
+
+    if (electionsListErr) throw new Error(`elections list: ${electionsListErr.message}`);
+
+    const electionIds = (electionsList ?? [])
+      .map((e: any) => String(e.id))
+      .filter(Boolean);
+
+    if (!electionIds.length) {
+      return new Response(JSON.stringify({ error: "No elections found" }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
-
-      let y = yStart - 6;
-
-      drawParagraph(
-        page,
-        font,
-        "This section provides an audit-oriented summary of how vote submissions may be verified on a public blockchain explorer. The report intentionally does not include voter identity or any linkage between voter and selected candidates.",
-        margin,
-        y,
-        pageW - margin * 2,
-      );
-      y -= 72;
-
-      // key-value blocks
-      const kv = (label: string, value: string) => {
-        page.drawText(label, {
-          x: margin,
-          y,
-          size: 10.5,
-          font: fontBold,
-          color: rgb(0.2, 0.2, 0.2),
-        });
-        page.drawText(value || "—", {
-          x: margin + 130,
-          y,
-          size: 10.5,
-          font,
-          color: rgb(0.2, 0.2, 0.2),
-        });
-        y -= 18;
-      };
-
-      kv("Network:", network);
-      kv("NFT Collection:", nft_collection);
-      if (contract_address) kv("Contract Address:", contract_address);
-      kv("Explorer Base URL:", explorer_base);
-
-      y -= 10;
-      drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
-      y -= 18;
-
-      const bullets = [
-        "Each vote submission is represented by a blockchain transaction hash (Tx Hash).",
-        "A Tx Hash can be searched on the explorer to verify timestamp, immutability, and inclusion in the chain.",
-        "This report may include sample hashes for demonstration or audit. If hashes are not supplied, the verifier may refer to system logs or the on-chain record set.",
-      ];
-
-      for (const b of bullets) {
-        page.drawText(`• ${b}`, {
-          x: margin,
-          y,
-          size: 10.5,
-          font,
-          color: rgb(0.2, 0.2, 0.2),
-        });
-        y -= 14;
-      }
-
-      y -= 12;
-      drawSectionTitle(
-        page,
-        fontBold,
-        "Included Transaction Hashes (Optional)",
-        margin,
-        y,
-      );
-      y -= 16;
-
-      if (!tx_hashes.length) {
-        drawParagraph(
-          page,
-          font,
-          "No transaction hashes were provided to the PDF generator. To include them, pass tx_hashes[] from the admin dashboard when generating this report.",
-          margin,
-          y,
-          pageW - margin * 2,
-          10.5,
-          14,
-          rgb(0.4, 0.2, 0.2),
-        );
-      } else {
-        for (const h of tx_hashes) {
-          if (y < 90) break;
-          const short = h.length > 66 ? `${h.slice(0, 12)}…${h.slice(-10)}` : h;
-          page.drawText(`• ${short}`, {
-            x: margin,
-            y,
-            size: 10.5,
-            font,
-            color: rgb(0.2, 0.2, 0.2),
-          });
-          y -= 14;
-        }
-
-        y -= 10;
-        drawParagraph(
-          page,
-          font,
-          "Usage: append a hash to the Explorer Base URL above (base + hash) to open the transaction details page.",
-          margin,
-          y,
-          pageW - margin * 2,
-          10.2,
-          14,
-          rgb(0.35, 0.35, 0.35),
-        );
-      }
     }
 
-    // -------------------------
-    // SIGNATURE / CERTIFICATION PAGE (grouped + clean layout)
-    // -------------------------
-    {
-      const list: Signatory[] = signatories.length > 0
-        ? signatories
-        : [
-          { label: "Prepared by", name: "__________________________", role: "Group Member" },
-          { label: "Noted by", name: "__________________________", role: "Thesis Adviser" },
-        ];
-
-      const isGroupMember = (s: Signatory) => {
-        const lbl = (s.label || "").toLowerCase();
-        const role = (s.role || "").toLowerCase();
-        return lbl.includes("prepared") && role.includes("group");
-      };
-
-      const groupMembers = list.filter(isGroupMember);
-      const others = list.filter((s) => !isGroupMember(s));
-
-      const makePage = async (title: string) => {
-        const p = pdf.addPage([pageW, pageH]);
-        const yStart = await drawHeader({
-          pdf,
-          page: p,
-          fontBold,
-          font,
-          title,
-          subtitle: electionTitle,
-          logoBytes,
-        });
-        return { page: p, yStart };
-      };
-
-      const drawSigLineBlock = (
-        page: any,
-        x: number,
-        topY: number,
-        w: number,
-        heading: string,
-        name: string,
-        role: string,
-      ) => {
-        // Heading (e.g., "Noted by:")
-        page.drawText(`${heading}:`, {
-          x,
-          y: topY,
-          size: 11,
-          font: fontBold,
-          color: rgb(0.12, 0.18, 0.14),
-        });
-
-        // Signature line
-        const lineY = topY - 30;
-        page.drawLine({
-          start: { x, y: lineY },
-          end: { x: x + w, y: lineY },
-          thickness: 1,
-          color: rgb(0.25, 0.25, 0.25),
-        });
-
-        // Name below line
-        page.drawText(name, {
-          x,
-          y: lineY - 16,
-          size: 11.5,
-          font: fontBold,
-          color: rgb(0.12, 0.12, 0.12),
-        });
-
-        // Role below name
-        page.drawText(role || "", {
-          x,
-          y: lineY - 32,
-          size: 10,
-          font,
-          color: rgb(0.45, 0.45, 0.45),
-        });
-      };
-
-      const drawGroupedMembers = (
-        page: any,
-        x: number,
-        topY: number,
-        w: number,
-        members: Signatory[],
-      ) => {
-        page.drawText("Prepared by (Group Members):", {
-          x,
-          y: topY,
-          size: 11,
-          font: fontBold,
-          color: rgb(0.12, 0.18, 0.14),
-        });
-
-        // two columns inside the group block
-        const colGap = 30;
-        const colW = (w - colGap) / 2;
-
-        let y = topY - 24;
-        for (let i = 0; i < members.length; i++) {
-          const m = members[i];
-          const col = i % 2; // 0 left, 1 right
-          const row = Math.floor(i / 2);
-
-          const bx = x + (col === 0 ? 0 : colW + colGap);
-          const by = y - row * 72;
-
-          // signature line
-          page.drawLine({
-            start: { x: bx, y: by - 18 },
-            end: { x: bx + colW, y: by - 18 },
-            thickness: 1,
-            color: rgb(0.25, 0.25, 0.25),
-          });
-
-          // name under line
-          page.drawText(m.name, {
-            x: bx,
-            y: by - 34,
-            size: 11,
-            font: fontBold,
-            color: rgb(0.12, 0.12, 0.12),
-          });
-
-          // role (only once per name; no more repeated "Prepared by")
-          page.drawText(m.role || "Group Member", {
-            x: bx,
-            y: by - 50,
-            size: 10,
-            font,
-            color: rgb(0.45, 0.45, 0.45),
-          });
-        }
-
-        // height consumed by grouped rows
-        const rows = Math.ceil(members.length / 2);
-        return topY - 24 - rows * 72;
-      };
-
-      let { page, yStart } = await makePage("Certification / Signatures");
-      let y = yStart - 6;
-
-      // Intro text
-      drawParagraph(
-        page,
-        font,
-        "The undersigned certify that this report was generated by the BotoVeritas system and is based on recorded vote data for the specified election. This certification page is intended for documentation and academic reporting purposes.",
-        margin,
-        y,
-        pageW - margin * 2,
-      );
-      y -= 70;
-
-
-      // Finalization block (auto)
-      if (election?.is_final) {
-        const needed = 86;
-        if (y - needed < 90) {
-          const next = await makePage("Certification / Signatures (cont.)");
-          page = next.page;
-          y = next.yStart - 6;
-        }
-
-        page.drawText("Election Finalization", {
-          x: margin,
-          y,
-          size: 12,
-          font: fontBold,
-          color: rgb(0.12, 0.18, 0.14),
-        });
-        y -= 18;
-
-        const finalizedBy =
-          election.finalized_by_email ||
-          election.finalized_by ||
-          "—";
-
-        page.drawText(`Finalized by: ${finalizedBy}`, {
-          x: margin,
-          y,
-          size: 11,
-          font,
-          color: rgb(0.2, 0.2, 0.2),
-        });
-        y -= 14;
-
-        page.drawText(`Finalized at: ${fmtShortDate(election.finalized_at)}`, {
-          x: margin,
-          y,
-          size: 11,
-          font,
-          color: rgb(0.2, 0.2, 0.2),
-        });
-        y -= 16;
-
-        // Divider
-        page.drawLine({
-          start: { x: margin, y },
-          end: { x: margin + contentW, y },
-          thickness: 1,
-          color: rgb(0.85, 0.87, 0.86),
-        });
-        y -= 14;
-      }
-
-      // Layout constants
-      const contentW = pageW - margin * 2;
-      const colGap = 40;
-      const colW = (contentW - colGap) / 2;
-
-      // 1) Group members block (full width)
-      if (groupMembers.length) {
-        // If not enough room, new page
-        const minNeeded = 120 + Math.ceil(groupMembers.length / 2) * 72;
-        if (y - minNeeded < 90) {
-          const next = await makePage("Certification / Signatures (cont.)");
-          page = next.page;
-          y = next.yStart - 6;
-        }
-
-        y = drawGroupedMembers(page, margin, y, contentW, groupMembers) - 18;
-      }
-
-      // 2) Other signatories as clean blocks, two columns
-      let i = 0;
-      while (i < others.length) {
-        // Need room for one row of two blocks
-        const rowNeeded = 92;
-        if (y - rowNeeded < 90) {
-          const next = await makePage("Certification / Signatures (cont.)");
-          page = next.page;
-          y = next.yStart - 6;
-        }
-
-        const left = others[i];
-        const right = others[i + 1];
-
-        // Left block
-        drawSigLineBlock(
-          page,
-          margin,
-          y,
-          colW,
-          left.label || "Signatory",
-          left.name || "__________________________",
-          left.role || "",
-        );
-
-        // Right block (if exists)
-        if (right) {
-          drawSigLineBlock(
-            page,
-            margin + colW + colGap,
-            y,
-            colW,
-            right.label || "Signatory",
-            right.name || "__________________________",
-            right.role || "",
-          );
-        }
-
-        y -= 92;
-        i += 2;
-      }
+    const mergedPdf = await PDFDocument.create();
+    for (const id of electionIds) {
+      const { pdfBytes } = await buildSingleElectionPdf(id);
+      const doc = await PDFDocument.load(pdfBytes);
+      const pageCopies = await mergedPdf.copyPages(doc, doc.getPageIndices());
+      for (const p of pageCopies) mergedPdf.addPage(p);
     }
 
+    const mergedBytes = await mergedPdf.save();
+    const mergedFilename = "All_Elections_Results_Report.pdf";
 
-    // Add page numbers
-    const pages = pdf.getPages();
-    for (let i = 0; i < pages.length; i++) {
-      drawPageNumber(pages[i], font, i + 1, pages.length);
-    }
-
-    const pdfBytes = await pdf.save();
-
-    const filename = `${safeFilename(electionTitle)}_Results_Report.pdf`;
-
-    return new Response(pdfBytes, {
+    return new Response(mergedBytes, {
       headers: {
         ...corsHeaders,
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Disposition": `attachment; filename="${mergedFilename}"`,
       },
     });
   } catch (err: any) {
