@@ -28,6 +28,7 @@ type ConfirmationState = {
   lastName?: string;
   suffix?: string;
   orgAffiliations?: string[];
+  email?: string;
 };
 
 const ORG_REQUEST_OPTIONS = ["ICpEP", "HonSoc"] as const;
@@ -56,6 +57,7 @@ const RegistrationConfirmation = () => {
     lastName = "",
     suffix = "",
     orgAffiliations = [],
+    email = "",
   } = (location.state || {}) as ConfirmationState;
 
   const [elections, setElections] = useState<any[]>([]);
@@ -217,15 +219,41 @@ const RegistrationConfirmation = () => {
         </div>
 
         <h1 className="text-4xl font-extrabold mb-2 bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-          Registration Complete
+          Registration Submitted
         </h1>
 
-        <p className="text-muted-foreground mb-8 text-base">
-          Welcome,&nbsp;
-          <span className="font-semibold text-foreground">{fullName}</span>!
+        <p className="text-muted-foreground mb-5 text-base">
+          Thanks,&nbsp;
+          <span className="font-semibold text-foreground">{fullName}</span>.
           <br />
-          Your voting eligibility has been determined from official rosters.
+          To activate your registration, you must verify your email first.
         </p>
+
+        {/* ✅ Email verification required */}
+        <div className="mb-8 rounded-xl border border-primary/20 bg-muted/10 p-5 text-left">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center">
+              <ShieldCheck className="h-5 w-5 text-primary" />
+            </div>
+
+            <div className="flex-1">
+              <div className="font-semibold text-foreground">
+                Email verification required (expires in 72 hours)
+              </div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                We sent a verification link to{" "}
+                <span className="font-medium text-foreground">
+                  {email ? email : "your registered email"}
+                </span>
+                . Open the email and click the link to complete your registration.
+              </div>
+              <div className="mt-2 text-sm text-muted-foreground">
+                After verification, return to the kiosk and proceed to voting.
+              </div>
+            </div>
+          </div>
+        </div>
+
 
         {/* ✅ HERO: Eligible orgs */}
         <div className="mb-8">

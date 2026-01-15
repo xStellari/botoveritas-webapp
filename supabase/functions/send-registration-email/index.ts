@@ -454,17 +454,27 @@ serve(async (req) => {
 
     const { data: elections, error: electionsErr } = await supabase
       .from("elections")
-      .select("title, start_date, end_date, is_active");
+      .select("title, start_date, end_date, is_active, eligible_orgs");
 
     if (electionsErr) throw new Error(electionsErr.message);
 
     const eligibleElections = (elections || [])
-      .filter((e) => {
-        if (!orgAffiliations || orgAffiliations.length === 0) return true;
-        return orgAffiliations.some((org) =>
-          e.title.toLowerCase().includes(String(org).toLowerCase())
-        );
+      .filter((e: any) => {
+        const eligibleOrgs = Array.isArray(e.eligible_orgs) ? e.eligible_orgs : [];
+
+        // Open to all
+        if (eligibleOrgs.length === 0) return true;
+
+        // If voter has no orgs, they can only see open-to-all elections
+        if (!orgAffiliations || orgAffiliations.length === 0) return false;
+
+        // Overlap check (case-insensitive)
+        const voterOrgs = orgAffiliations.map((o) => String(o).toLowerCase());
+        const electionOrgs = eligibleOrgs.map((o: any) => String(o).toLowerCase());
+
+        return electionOrgs.some((org: string) => voterOrgs.includes(org));
       })
+
       .sort((a, b) => new Date(a.start_date).getTime() - new Date(b.start_date).getTime());
 
     const subject = "BotoVeritas — Voter Registration Confirmation & Election Schedule";

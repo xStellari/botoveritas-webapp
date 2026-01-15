@@ -16,6 +16,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { AdminRoute } from "@/components/AdminRoute";
 import RegisterVerify from "./pages/RegisterVerify";
 import RegistrationError from "./pages/RegistrationError";
+import VerifyEmail from "./pages/VerifyEmail";
 
 const queryClient = new QueryClient();
 
@@ -34,6 +35,8 @@ const App = () => (
           <Route path="/registration-confirmation" element={<RegistrationConfirmation />} />
           <Route path="/voting" element={<VotingKiosk />} />
           <Route path="/results" element={<Results />} />
+          <Route path="/verify-email" element={<VerifyEmail />} />
+
 
           {/* Admin routes */}
           <Route path="/login" element={<Login />} />

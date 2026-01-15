@@ -207,6 +207,20 @@ const VotingKiosk = () => {
       toast.error("Voter not found.");
       return;
     }
+    // ✅ EMAIL VERIFICATION GATE (block voting if not verified)
+    if (!voterRow.email_verified_at) {
+      navigate("/registration-error", {
+        state: {
+          title: "Email Verification Required",
+          message:
+            "Your registration is not yet verified.\n\n" +
+            "Please open the verification link sent to your school email " +
+            "(valid for 72 hours), then try again.",
+        },
+      });
+      return;
+    }
+
 
     // 2) Prevent simultaneous sessions (SERVER TIME via RPC)
     // OPTIONAL: best-effort delete any expired row for this voter (helps immediately even before cron cleanup)

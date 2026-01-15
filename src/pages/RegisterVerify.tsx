@@ -177,12 +177,25 @@ export default function RegisterVerify() {
       // 4) Send email (best effort; don't block success)
       // ✅ pass BOTH voter_id + email (fallback works even if id lookup fails)
       const { error: emailErr } = await supabase.functions.invoke(
-        "send-registration-email",
-        { body: { voter_id: user.id, email: data.fullEmail } }
+        "send-email-verification-link",
+        {
+          body: {
+            voter_id: user.id,
+            email: data.fullEmail,
+            fullName: [
+              data.firstName,
+              data.middleName ? `${data.middleName}.` : "",
+              data.lastName,
+              data.suffix || "",
+            ]
+              .filter(Boolean)
+              .join(" "),
+          },
+        }
       );
-
+      
       if (emailErr) {
-        console.warn("send-registration-email failed:", emailErr);
+        console.warn("send-email-verification-link failed:", emailErr);
       }
 
       // 5) Navigate to confirmation
@@ -192,6 +205,7 @@ export default function RegisterVerify() {
           middleName: data.middleName,
           lastName: data.lastName,
           orgAffiliations: finalOrgs,
+          email: data.fullEmail,
         },
       });
 
