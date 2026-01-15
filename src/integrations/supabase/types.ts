@@ -72,6 +72,7 @@ export type Database = {
           end_date: string
           id: string
           is_active: boolean | null
+          eligible_orgs: string[] | null
           start_date: string
           title: string
           updated_at: string
@@ -83,6 +84,7 @@ export type Database = {
           end_date: string
           id?: string
           is_active?: boolean | null
+          eligible_orgs?: string[] | null
           start_date: string
           title: string
           updated_at?: string
@@ -94,12 +96,41 @@ export type Database = {
           end_date?: string
           id?: string
           is_active?: boolean | null
+          eligible_orgs?: string[] | null
           start_date?: string
           title?: string
           updated_at?: string
         }
         Relationships: []
       }
+      org_membership_requests: {
+        Row: {
+          id: string
+          voter_id: string
+          requested_org: string
+          reason: string | null
+          status: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          voter_id: string
+          requested_org: string
+          reason?: string | null
+          status?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          voter_id?: string
+          requested_org?: string
+          reason?: string | null
+          status?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
+
       nft_transactions: {
         Row: {
           blockchain_network: string | null
