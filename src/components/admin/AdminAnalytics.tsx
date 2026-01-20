@@ -87,7 +87,6 @@ function downloadCSV(filename: string, rows: Array<Record<string, any>>) {
   URL.revokeObjectURL(url);
 }
 
-
 export default function AdminAnalytics() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -116,28 +115,6 @@ export default function AdminAnalytics() {
 
   useEffect(() => {
     loadAnalytics();
-
-    const channel = supabase
-      .channel("analytics-updates")
-      .on("postgres_changes", { event: "*", schema: "public", table: "votes" }, () =>
-        loadAnalytics()
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "voter_election_status" },
-        () => loadAnalytics()
-      )
-      .on("postgres_changes", { event: "*", schema: "public", table: "voters" }, () =>
-        loadAnalytics()
-      )
-      .on("postgres_changes", { event: "*", schema: "public", table: "elections" }, () =>
-        loadAnalytics()
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedElectionId]);
 
@@ -159,6 +136,7 @@ export default function AdminAnalytics() {
       const electionOptions =
         (electionsData || []).map((e) => ({ id: e.id, title: e.title })) ?? [];
       setElections(electionOptions);
+
       // 2) Registered voters (global count)
       const { count: registeredCount, error: regErr } = await supabase
         .from("voters")
@@ -189,7 +167,7 @@ export default function AdminAnalytics() {
         });
       }
 
-      // 3) Global voted count (scoped)
+      // 4) Global voted count (scoped)
       let votedCountScoped = 0;
 
       if (selectedElectionId === "ALL") {
@@ -205,7 +183,8 @@ export default function AdminAnalytics() {
       } else {
         votedCountScoped = eligMap.get(selectedElectionId)?.voted_eligible ?? 0;
       }
-      // 4) Compute eligible denominator for the current scope
+
+      // 5) Compute eligible denominator for the current scope
       // - ALL: uses total registered voters (SCC open-to-all baseline)
       // - Specific election: uses authoritative roster eligibility counts
       let scopeEligible = totalRegistered;
@@ -221,8 +200,7 @@ export default function AdminAnalytics() {
         totalRegistered,
       });
 
-      
-      // 5) Per-election stats (eligible turnout is authoritative name-based eligibility)
+      // 6) Per-election stats (eligible turnout is authoritative name-based eligibility)
       const perStats: ElectionStats[] = [];
       for (const e of electionsData || []) {
         const eligibleVoters = eligMap.get(e.id)?.eligible_voters ?? 0;
@@ -233,12 +211,14 @@ export default function AdminAnalytics() {
           title: e.title,
           eligibleVoters,
           votedCount,
-          turnoutRateVsEligible: eligibleVoters ? (votedCount / eligibleVoters) * 100 : 0,
+          turnoutRateVsEligible: eligibleVoters
+            ? (votedCount / eligibleVoters) * 100
+            : 0,
         });
       }
       setPerElectionStats(perStats);
 
-      // 6) Timeline chart (votes per hour) — good for monitoring stalls/spikes
+      // 7) Timeline chart (votes per hour) — good for monitoring stalls/spikes
       if (selectedElectionId === "ALL") {
         const { data: voteTimes, error: votesError } = await supabase
           .from("votes")
@@ -284,7 +264,7 @@ export default function AdminAnalytics() {
         );
       }
 
-      // 7) Operational metrics — intentionally NO candidate tallies (Results page owns that)
+      // 8) Operational metrics — intentionally NO candidate tallies (Results page owns that)
       const now = new Date();
       const isoNow = now.toISOString();
 
@@ -294,7 +274,9 @@ export default function AdminAnalytics() {
       const isoPlusMins = (mins: number) =>
         new Date(now.getTime() + mins * 60 * 1000).toISOString();
 
-      const votesBase = supabase.from("votes").select("id", { count: "exact", head: true });
+      const votesBase = supabase
+        .from("votes")
+        .select("id", { count: "exact", head: true });
 
       const votes60Query =
         selectedElectionId === "ALL"
@@ -315,7 +297,10 @@ export default function AdminAnalytics() {
               .eq("election_id", selectedElectionId)
               .gte("created_at", isoMinusMins(15));
 
-      const [{ count: v60 }, { count: v15 }] = await Promise.all([votes60Query, votes15Query]);
+      const [{ count: v60 }, { count: v15 }] = await Promise.all([
+        votes60Query,
+        votes15Query,
+      ]);
 
       // Active sessions / expiring sessions (global by design)
       const { count: activeSess } = await supabase
@@ -346,7 +331,10 @@ export default function AdminAnalytics() {
 
   const selectedElectionTitle = useMemo(() => {
     if (selectedElectionId === "ALL") return "All elections";
-    return elections.find((e) => e.id === selectedElectionId)?.title ?? "Selected election";
+    return (
+      elections.find((e) => e.id === selectedElectionId)?.title ??
+      "Selected election"
+    );
   }, [elections, selectedElectionId]);
 
   const scopeDenominatorLabel =
@@ -382,7 +370,9 @@ export default function AdminAnalytics() {
       votes: h.votes,
     }));
     downloadCSV(
-      `voting-timeline-${selectedElectionId === "ALL" ? "ALL" : selectedElectionId}.csv`,
+      `voting-timeline-${
+        selectedElectionId === "ALL" ? "ALL" : selectedElectionId
+      }.csv`,
       rows
     );
   };
@@ -435,14 +425,20 @@ export default function AdminAnalytics() {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm font-medium">
-                {selectedElectionId === "ALL" ? "Total Registered" : "Total Eligible"}
+                {selectedElectionId === "ALL"
+                  ? "Total Registered"
+                  : "Total Eligible"}
               </CardTitle>
               <Users className="h-4 w-4 text-muted-foreground" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{loading ? "…" : globalStats.totalEligible}</div>
-            <p className="text-xs text-muted-foreground mt-1">{totalEligibleLabel}</p>
+            <div className="text-2xl font-bold">
+              {loading ? "…" : globalStats.totalEligible}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {totalEligibleLabel}
+            </p>
 
             {selectedElectionId !== "ALL" ? (
               <p className="text-[11px] text-muted-foreground mt-1">
@@ -471,7 +467,9 @@ export default function AdminAnalytics() {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm font-medium">
-                {selectedElectionId === "ALL" ? "Overall Participation" : "Turnout vs Eligible"}
+                {selectedElectionId === "ALL"
+                  ? "Overall Participation"
+                  : "Turnout vs Eligible"}
               </CardTitle>
               <TrendingUp className="h-4 w-4 text-feu-green" />
             </div>
@@ -480,7 +478,9 @@ export default function AdminAnalytics() {
             <div className="text-2xl font-bold text-feu-green">
               {loading ? "…" : globalStats.turnoutRate.toFixed(1)}%
             </div>
-            <p className="text-xs text-muted-foreground mt-1">{scopeDenominatorLabel}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {scopeDenominatorLabel}
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -521,7 +521,9 @@ export default function AdminAnalytics() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{loading ? "…" : ops.activeSessions}</div>
-            <p className="text-xs text-muted-foreground mt-1">voter_sessions.expires_at &gt; now</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              voter_sessions.expires_at &gt; now
+            </p>
           </CardContent>
         </Card>
 
