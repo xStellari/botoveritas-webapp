@@ -1,20 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { CheckCircle2, AlertCircle, Clock, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
-type VerifyStatus = "idle" | "verifying" | "success" | "expired" | "used" | "invalid" | "error";
+type VerifyStatus =
+  | "idle"
+  | "verifying"
+  | "success"
+  | "expired"
+  | "used"
+  | "invalid"
+  | "error";
 
 export default function VerifyEmail() {
-  const navigate = useNavigate();
   const [params] = useSearchParams();
 
   const token = useMemo(() => params.get("token")?.trim() || "", [params]);
 
   const [status, setStatus] = useState<VerifyStatus>("idle");
+  const [autoCloseSeconds, setAutoCloseSeconds] = useState<number | null>(null);
 
   const runVerify = async () => {
     if (!token) {
@@ -24,9 +30,10 @@ export default function VerifyEmail() {
 
     setStatus("verifying");
     try {
-      const { data, error } = await supabase.rpc("verify_email_token" as any, {
-        p_token: token,
-      } as any);
+      const { data, error } = await supabase.rpc(
+        "verify_email_token" as any,
+        { p_token: token } as any
+      );
 
       if (error) {
         console.error("verify_email_token error:", error);
@@ -58,6 +65,43 @@ export default function VerifyEmail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  // ✅ Auto-close tab after 3 seconds once we reach a terminal status
+  useEffect(() => {
+    const terminal =
+      status === "success" ||
+      status === "expired" ||
+      status === "used" ||
+      status === "invalid" ||
+      status === "error";
+
+    if (!terminal) {
+      setAutoCloseSeconds(null);
+      return;
+    }
+
+    setAutoCloseSeconds(3);
+
+    const tick = setInterval(() => {
+      setAutoCloseSeconds((prev) => {
+        if (prev === null) return prev;
+        return Math.max(0, prev - 1);
+      });
+    }, 1000);
+
+    const closeTimer = setTimeout(() => {
+      try {
+        window.close();
+      } catch {
+        // Browser may block window.close() if tab wasn't opened via script.
+      }
+    }, 3000);
+
+    return () => {
+      clearInterval(tick);
+      clearTimeout(closeTimer);
+    };
+  }, [status]);
+
   const Title = () => {
     if (status === "verifying") return "Verifying your email…";
     if (status === "success") return "Email verified";
@@ -65,6 +109,17 @@ export default function VerifyEmail() {
     if (status === "used") return "Already verified";
     if (status === "invalid") return "Invalid link";
     return "Verification failed";
+  };
+
+  const AutoCloseNote = () => {
+    if (autoCloseSeconds === null) return null;
+
+    return (
+      <p className="text-xs text-muted-foreground mt-4">
+        This tab will close automatically in{" "}
+        <span className="font-mono font-semibold">{autoCloseSeconds}</span> seconds.
+      </p>
+    );
   };
 
   const Body = () => {
@@ -87,9 +142,7 @@ export default function VerifyEmail() {
           <p className="text-sm text-muted-foreground">
             You may now proceed to the voting kiosk.
           </p>
-          <Button className="w-full" onClick={() => navigate("/")}>
-            Go to Home
-          </Button>
+          <AutoCloseNote />
         </div>
       );
     }
@@ -104,9 +157,7 @@ export default function VerifyEmail() {
           <p className="text-sm text-muted-foreground">
             Please request a new verification email at the registration desk.
           </p>
-          <Button className="w-full" variant="outline" onClick={() => navigate("/")}>
-            Go to Home
-          </Button>
+          <AutoCloseNote />
         </div>
       );
     }
@@ -118,9 +169,7 @@ export default function VerifyEmail() {
             <CheckCircle2 className="h-5 w-5" />
             This link was already used.
           </div>
-          <Button className="w-full" onClick={() => navigate("/")}>
-            Go to Home
-          </Button>
+          <AutoCloseNote />
         </div>
       );
     }
@@ -135,9 +184,7 @@ export default function VerifyEmail() {
           <p className="text-sm text-muted-foreground">
             Please request a new verification email at the registration desk.
           </p>
-          <Button className="w-full" variant="outline" onClick={() => navigate("/")}>
-            Go to Home
-          </Button>
+          <AutoCloseNote />
         </div>
       );
     }
@@ -149,16 +196,9 @@ export default function VerifyEmail() {
           Verification failed.
         </div>
         <p className="text-sm text-muted-foreground">
-          Please try again or request a new verification email.
+          Please request a new verification email at the registration desk.
         </p>
-        <div className="flex gap-2">
-          <Button className="w-full" variant="outline" onClick={runVerify}>
-            Retry
-          </Button>
-          <Button className="w-full" onClick={() => navigate("/")}>
-            Home
-          </Button>
-        </div>
+        <AutoCloseNote />
       </div>
     );
   };
