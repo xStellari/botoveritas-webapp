@@ -197,7 +197,6 @@ export default function Results() {
     }
   };
 
-
   // ----------------------------
   // Load elections
   // ----------------------------
@@ -826,6 +825,26 @@ export default function Results() {
                         </div>
                       ))}
                   </div>
+
+                    {(sum?.abstain_count ?? 0) > 0 ? (
+                      <div className="flex items-center justify-between gap-3 p-3 rounded-lg border bg-white">
+                        <div className="flex items-start gap-3">
+                          <Badge variant="outline">ABSTAIN</Badge>
+                          <div>
+                            <p className="font-semibold leading-tight">ABSTAIN</p>
+                            <p className="text-xs text-muted-foreground">—</p>
+                          </div>
+                        </div>
+
+                        <div className="text-right">
+                          <p className="text-2xl font-bold text-feu-green">
+                            {sum?.abstain_count ?? 0}
+                          </p>
+                          <p className="text-xs text-muted-foreground">votes</p>
+                        </div>
+                      </div>
+                    ) : null}
+
                 </CardContent>
               </Card>
             );
