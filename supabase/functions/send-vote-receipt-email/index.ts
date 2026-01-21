@@ -17,6 +17,8 @@ type ReceiptTx = {
   tokenId?: string;
   reused?: boolean;
   mode?: string;
+
+  // Historically used for "View on Polygonscan" (tx link)
   explorerTxUrl?: string;
 };
 
@@ -100,6 +102,14 @@ function formatManila(iso: string) {
   });
 }
 
+function isLikelyTokenId(v?: string) {
+  if (!v) return false;
+  const s = v.trim();
+  if (!s) return false;
+  // Accept numeric strings only (ERC-721 tokenId)
+  return /^[0-9]+$/.test(s);
+}
+
 const AMOY_POLYGONSCAN_TX_BASE = "https://amoy.polygonscan.com/tx/";
 
 /* =========================
@@ -119,6 +129,9 @@ function buildReceiptEmailHtml(params: {
 
   // Multi-receipt
   receipts?: ReceiptTx[];
+
+  // Verification base URL (human-friendly page)
+  verifyBaseUrl: string;
 }) {
   const {
     subject,
@@ -130,6 +143,7 @@ function buildReceiptEmailHtml(params: {
     txHash,
     explorerUrl,
     receipts,
+    verifyBaseUrl,
   } = params;
 
   const votedAt = formatManila(votedAtIso);
@@ -165,6 +179,7 @@ function buildReceiptEmailHtml(params: {
         </tr>
       `;
 
+  // Normalize multi-receipts
   const normalizedReceipts: ReceiptTx[] = Array.isArray(receipts)
     ? receipts
         .filter((r) => typeof r?.txHash === "string" && r.txHash.startsWith("0x"))
@@ -177,14 +192,18 @@ function buildReceiptEmailHtml(params: {
           mode: safeStr(r.mode) || undefined,
           explorerTxUrl:
             safeStr(r.explorerTxUrl) ||
-            (safeStr(r.txHash).startsWith("0x") ? `${AMOY_POLYGONSCAN_TX_BASE}${safeStr(r.txHash)}` : undefined),
+            (safeStr(r.txHash).startsWith("0x")
+              ? `${AMOY_POLYGONSCAN_TX_BASE}${safeStr(r.txHash)}`
+              : undefined),
         }))
     : [];
 
   const hasMulti = normalizedReceipts.length > 1;
-  const hasAny = normalizedReceipts.length > 0 || (!!txHash && txHash.startsWith("0x"));
+  const hasAny =
+    normalizedReceipts.length > 0 || (!!txHash && txHash.startsWith("0x"));
 
-  const multiTxBlocks = normalizedReceipts.length
+  // Multi-receipt verification blocks (preferred)
+  const multiBlocks = normalizedReceipts.length
     ? `
       <div style="
         margin-top:16px;
@@ -198,7 +217,7 @@ function buildReceiptEmailHtml(params: {
         </div>
 
         <div style="margin-top:8px;font-size:12px;color:#475569;line-height:1.7;">
-          This confirms your vote receipt NFT${hasMulti ? "s exist" : " exists"} on the blockchain.
+          Tap the button below to confirm your vote receipt NFT${hasMulti ? "s exist" : " exists"} on the blockchain.
           No technical knowledge required.
         </div>
 
@@ -212,8 +231,16 @@ function buildReceiptEmailHtml(params: {
             .map((r) => {
               const title = escapeHtml(r.electionName || "Election");
               const proof = escapeHtml(r.txHash);
-              const href = r.explorerTxUrl ? escapeAttr(r.explorerTxUrl) : "";
-              const tokenBadge = r.tokenId
+              const tokenId = safeStr(r.tokenId) || "";
+              const hasToken = isLikelyTokenId(tokenId);
+
+              const verifyUrl = hasToken
+                ? `${verifyBaseUrl}${encodeURIComponent(tokenId)}`
+                : "";
+
+              const advancedTxUrl = r.explorerTxUrl ? escapeAttr(r.explorerTxUrl) : "";
+
+              const tokenBadge = hasToken
                 ? `<span style="
                     display:inline-block;
                     margin-left:8px;
@@ -223,7 +250,32 @@ function buildReceiptEmailHtml(params: {
                     border-radius:999px;
                     font-size:11px;
                     font-weight:700;
-                  ">Token #${escapeHtml(r.tokenId)}</span>`
+                  ">Token #${escapeHtml(tokenId)}</span>`
+                : "";
+
+              const primaryButton = verifyUrl
+                ? `<a href="${escapeAttr(verifyUrl)}" style="
+                     display:inline-block;
+                     background:#064e3b;
+                     color:#ffffff;
+                     text-decoration:none;
+                     padding:8px 10px;
+                     border-radius:10px;
+                     font-size:12px;
+                     font-weight:800;
+                     letter-spacing:.2px;
+                   ">Verify Vote Receipt</a>`
+                : "";
+
+              const advancedLink = advancedTxUrl
+                ? `<a href="${advancedTxUrl}" style="
+                     display:inline-block;
+                     margin-left:8px;
+                     color:#064e3b;
+                     text-decoration:none;
+                     font-size:12px;
+                     font-weight:800;
+                   ">Advanced</a>`
                 : "";
 
               return `
@@ -234,25 +286,14 @@ function buildReceiptEmailHtml(params: {
                   border-radius:12px;
                   padding:12px;
                 ">
-                  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
                     <div style="font-size:13px;font-weight:800;color:#0f172a;">
                       ${title}${tokenBadge}
                     </div>
-                    ${
-                      href
-                        ? `<a href="${href}" style="
-                             display:inline-block;
-                             background:#064e3b;
-                             color:#ffffff;
-                             text-decoration:none;
-                             padding:8px 10px;
-                             border-radius:10px;
-                             font-size:12px;
-                             font-weight:800;
-                             letter-spacing:.2px;
-                           ">Verify Vote Receipt</a>`
-                        : ""
-                    }
+                    <div style="display:flex;align-items:center;gap:0;">
+                      ${primaryButton}
+                      ${advancedLink}
+                    </div>
                   </div>
 
                   <div style="
@@ -266,6 +307,17 @@ function buildReceiptEmailHtml(params: {
                     border-radius:10px;
                     color:#0f172a;
                   "><span style="font-weight:800;color:#0f172a;">Proof ID:</span> ${proof}</div>
+
+                  ${
+                    verifyUrl
+                      ? `<div style="margin-top:8px;font-size:11px;color:#64748b;line-height:1.6;">
+                           If the button doesn't open, copy this link:
+                           <span style="word-break:break-all;">${escapeHtml(verifyUrl)}</span>
+                         </div>`
+                      : `<div style="margin-top:8px;font-size:11px;color:#64748b;line-height:1.6;">
+                           Verification link unavailable (missing token ID). You may still use the Advanced link.
+                         </div>`
+                  }
                 </div>
               `;
             })
@@ -279,7 +331,8 @@ function buildReceiptEmailHtml(params: {
     `
     : "";
 
-  const singleTxBlock =
+  // Single receipt fallback (older clients)
+  const singleBlock =
     !normalizedReceipts.length && txHash
       ? `
       <div style="
@@ -292,8 +345,9 @@ function buildReceiptEmailHtml(params: {
         <div style="font-size:12px;font-weight:800;color:#0f172a;letter-spacing:.08em;text-transform:uppercase;">
           Verify Vote Receipt
         </div>
+
         <div style="margin-top:8px;font-size:12px;color:#475569;line-height:1.7;">
-          This link confirms your vote receipt NFT exists on the blockchain. No technical knowledge required.
+          This email includes a proof reference. Your vote choices remain private.
         </div>
 
         <ul style="margin:10px 0 0 0;padding:0 0 0 18px;color:#475569;font-size:12px;line-height:1.7;">
@@ -326,7 +380,7 @@ function buildReceiptEmailHtml(params: {
                    font-size:12px;
                    font-weight:800;
                    letter-spacing:.2px;
-                 ">Verify Vote Receipt</a>
+                 ">Advanced: View on Polygonscan</a>
                </div>
                <div style="margin-top:8px;font-size:11px;color:#64748b;line-height:1.6;">
                  Tip: You can open this on your phone or personal device anytime.
@@ -337,8 +391,11 @@ function buildReceiptEmailHtml(params: {
     `
       : "";
 
-  const verificationSection =
-    hasAny ? (normalizedReceipts.length ? multiTxBlocks : singleTxBlock) : "";
+  const verificationSection = hasAny
+    ? normalizedReceipts.length
+      ? multiBlocks
+      : singleBlock
+    : "";
 
   return `<!DOCTYPE html>
 <html>
@@ -361,7 +418,9 @@ function buildReceiptEmailHtml(params: {
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td style="width:56px;vertical-align:middle;">
-                    <img src="${escapeAttr(logoUrl)}" width="44" alt="FEU" style="display:block;border-radius:8px;" />
+                    <img src="${escapeAttr(
+                      logoUrl
+                    )}" width="44" alt="FEU" style="display:block;border-radius:8px;" />
                   </td>
 
                   <td style="vertical-align:middle;">
@@ -534,20 +593,21 @@ serve(async (req) => {
       Deno.env.get("FROM_EMAIL") || "BotoVeritas <no-reply@botoveritas.info>";
 
     const appUrl = Deno.env.get("APP_URL") || "https://botoveritas.info";
-    const logoUrl =
-      Deno.env.get("LOGO_URL") || `${appUrl}/FEU_Alabang_logo.png`;
+    const logoUrl = Deno.env.get("LOGO_URL") || `${appUrl}/FEU_Alabang_logo.png`;
+
+    // Human-friendly verification page base
+    const verifyBaseUrl = `${appUrl}/api/verify/nft/`;
 
     const votedAtIso = body.votedAt || new Date().toISOString();
     const subject = `Vote Receipt — ${safeStr(body.electionTitle, "Election")}`;
 
     const txHash = safeStr(body.txHash) || undefined;
 
-    // Prefer the caller-provided explorerUrl. If missing, default to Amoy Polygonscan.
+    // Prefer caller-provided explorerUrl; else default to Amoy Polygonscan tx link
     const explorerUrl =
       safeStr(body.explorerUrl) ||
       (txHash ? `${AMOY_POLYGONSCAN_TX_BASE}${txHash}` : undefined);
 
-    // Normalize multi-receipts (if present). If not present, template will fall back to single.
     const receipts = Array.isArray(body.receipts) ? body.receipts : undefined;
 
     const html = buildReceiptEmailHtml({
@@ -560,6 +620,7 @@ serve(async (req) => {
       txHash,
       explorerUrl,
       receipts,
+      verifyBaseUrl,
     });
 
     const resendResp = await fetch("https://api.resend.com/emails", {
