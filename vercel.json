@@ -5,14 +5,11 @@
     { "src": "package.json", "use": "@vercel/static-build", "config": { "distDir": "dist" } }
   ],
   "routes": [
-    { "src": "^/api/nft/([^/]+)$", "dest": "/api/nft/[tokenId].ts?tokenId=$1" },
-
-    { "src": "^/nft/(.*)$", "dest": "/nft/$1" },
+    { "handle": "filesystem" },
 
     { "src": "^/kiosk$", "dest": "/" },
     { "src": "^/kiosk/(.*)$", "dest": "/" },
 
-    { "handle": "filesystem" },
     { "src": "^/(.*)$", "dest": "/" }
   ]
 }
