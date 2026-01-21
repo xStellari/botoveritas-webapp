@@ -1,64 +1,41 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-function getBaseUrl(req: VercelRequest) {
-  // Prefer your canonical domain in production
-  // (but still works on preview deployments)
-  const host = (req.headers["x-forwarded-host"] ?? req.headers.host ?? "").toString();
-  const proto = (req.headers["x-forwarded-proto"] ?? "https").toString();
-
-  // If request is already coming from botoveritas.info, use it
-  if (host.includes("botoveritas.info")) return "https://botoveritas.info";
-
-  // Otherwise fall back to the current host (preview domains)
-  return `${proto}://${host}`;
-}
-
-function asIntTokenId(raw: unknown) {
-  const s = Array.isArray(raw) ? raw[0] : raw;
-  const str = (s ?? "").toString().trim();
-
-  // tokenId must be a positive integer
-  if (!/^[0-9]+$/.test(str)) return null;
-
-  // guard against huge numbers; still allow big token IDs, but keep sanity
-  // (JS number is fine for typical NFT ranges)
-  const n = Number(str);
-  if (!Number.isFinite(n) || n < 1) return null;
-
-  return str; // keep as string to avoid precision issues
+function asInt(v: string) {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
-  const tokenId = asIntTokenId(req.query.tokenId);
+  // Allow simple testing from anywhere; safe because this endpoint is public by design
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
+  const raw = (req.query.tokenId ?? "").toString();
+  const tokenId = asInt(raw);
 
   if (!tokenId) {
-    res.status(400).json({
-      error: "Invalid tokenId. Expected a positive integer.",
-    });
-    return;
+    return res.status(400).json({ error: "Invalid tokenId" });
   }
 
-  const baseUrl = getBaseUrl(req);
-
-  // Important: OpenSea/Polygonscan generally re-fetch metadata,
-  // but caching helps performance. Keep short while iterating.
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Cache-Control", "public, s-maxage=60, stale-while-revalidate=600");
+  // ✅ Minimal, non-flashy receipt metadata
+  // NOTE: image must be a publicly accessible URL
+  const base = "https://botoveritas.info";
 
   const metadata = {
-    name: `BotoVeritas Vote Receipt #${tokenId}`,
+    name: `BotoVeritas Participation Receipt #${tokenId}`,
     description:
-      "This NFT is a vote receipt proof minted by BotoVeritas. It is privacy-safe and does not reveal voter identity or ballot selections. It exists to provide immutable, verifiable proof that a receipt was minted on-chain.",
-    image: `${baseUrl}/nft/receipt.png`,
-    external_url: `${baseUrl}/verify-receipt/${tokenId}`,
+      "Proof-of-participation receipt NFT for BotoVeritas. This NFT confirms that a vote submission was recorded and a receipt token was minted on-chain. No ballot choices are stored in this metadata.",
+    image: `${base}/nft/receipt.png`,
+    external_url: `${base}`,
     attributes: [
-      { trait_type: "Type", value: "Vote Receipt" },
-      { trait_type: "Token ID", value: tokenId },
-      { trait_type: "Network", value: "Polygon Amoy" },
-      { trait_type: "Standard", value: "ERC-721" },
-      { trait_type: "Project", value: "BotoVeritas" }
-    ]
+      { trait_type: "Type", value: "Participation Receipt" },
+      { trait_type: "System", value: "BotoVeritas" },
+      { trait_type: "Network", value: "Polygon Amoy (Testnet)" },
+      { trait_type: "Token ID", value: tokenId.toString() },
+    ],
   };
 
-  res.status(200).json(metadata);
+  // OpenSea + explorers expect JSON
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "public, max-age=60"); // short cache while iterating
+  return res.status(200).json(metadata);
 }
