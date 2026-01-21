@@ -10,14 +10,29 @@ type ReceiptItem = {
   isAbstain?: boolean;
 };
 
+type ReceiptTx = {
+  electionId: string;
+  electionName?: string;
+  txHash: string;
+  tokenId?: string;
+  reused?: boolean;
+  mode?: string;
+  explorerTxUrl?: string;
+};
+
 type Body = {
   toEmail: string;
   voterName?: string;
   electionTitle: string;
   votedAt?: string;
   receiptItems: ReceiptItem[];
+
+  // Backward-compatible single receipt
   txHash?: string;
   explorerUrl?: string;
+
+  // Forward-compatible multi-receipt (per-election minting)
+  receipts?: ReceiptTx[];
 };
 
 /* =========================
@@ -85,6 +100,8 @@ function formatManila(iso: string) {
   });
 }
 
+const AMOY_POLYGONSCAN_TX_BASE = "https://amoy.polygonscan.com/tx/";
+
 /* =========================
    Email Template
 ========================= */
@@ -95,8 +112,13 @@ function buildReceiptEmailHtml(params: {
   electionTitle: string;
   votedAtIso: string;
   receiptItems: ReceiptItem[];
+
+  // Backward-compatible single receipt
   txHash?: string;
   explorerUrl?: string;
+
+  // Multi-receipt
+  receipts?: ReceiptTx[];
 }) {
   const {
     subject,
@@ -107,6 +129,7 @@ function buildReceiptEmailHtml(params: {
     receiptItems,
     txHash,
     explorerUrl,
+    receipts,
   } = params;
 
   const votedAt = formatManila(votedAtIso);
@@ -142,7 +165,26 @@ function buildReceiptEmailHtml(params: {
         </tr>
       `;
 
-  const txBlock = txHash
+  const normalizedReceipts: ReceiptTx[] = Array.isArray(receipts)
+    ? receipts
+        .filter((r) => typeof r?.txHash === "string" && r.txHash.startsWith("0x"))
+        .map((r) => ({
+          electionId: safeStr(r.electionId),
+          electionName: safeStr(r.electionName) || undefined,
+          txHash: safeStr(r.txHash),
+          tokenId: safeStr(r.tokenId) || undefined,
+          reused: typeof r.reused === "boolean" ? r.reused : undefined,
+          mode: safeStr(r.mode) || undefined,
+          explorerTxUrl:
+            safeStr(r.explorerTxUrl) ||
+            (safeStr(r.txHash).startsWith("0x") ? `${AMOY_POLYGONSCAN_TX_BASE}${safeStr(r.txHash)}` : undefined),
+        }))
+    : [];
+
+  const hasMulti = normalizedReceipts.length > 1;
+  const hasAny = normalizedReceipts.length > 0 || (!!txHash && txHash.startsWith("0x"));
+
+  const multiTxBlocks = normalizedReceipts.length
     ? `
       <div style="
         margin-top:16px;
@@ -152,15 +194,115 @@ function buildReceiptEmailHtml(params: {
         background:#f8fafc;
       ">
         <div style="font-size:12px;font-weight:800;color:#0f172a;letter-spacing:.08em;text-transform:uppercase;">
-          Verification Reference
-        </div>
-        <div style="margin-top:6px;font-size:12px;color:#475569;line-height:1.6;">
-          Use this transaction hash to verify that your vote was recorded on the blockchain.
-          This reference does not reveal your selections.
+          Verify Vote Receipt${hasMulti ? "s" : ""}
         </div>
 
+        <div style="margin-top:8px;font-size:12px;color:#475569;line-height:1.7;">
+          This confirms your vote receipt NFT${hasMulti ? "s exist" : " exists"} on the blockchain.
+          No technical knowledge required.
+        </div>
+
+        <ul style="margin:10px 0 0 0;padding:0 0 0 18px;color:#475569;font-size:12px;line-height:1.7;">
+          <li>This record cannot be altered once recorded.</li>
+          <li>This verification does <strong>not</strong> reveal your selections.</li>
+        </ul>
+
+        <div style="margin-top:12px;">
+          ${normalizedReceipts
+            .map((r) => {
+              const title = escapeHtml(r.electionName || "Election");
+              const proof = escapeHtml(r.txHash);
+              const href = r.explorerTxUrl ? escapeAttr(r.explorerTxUrl) : "";
+              const tokenBadge = r.tokenId
+                ? `<span style="
+                    display:inline-block;
+                    margin-left:8px;
+                    background:#e2e8f0;
+                    color:#0f172a;
+                    padding:2px 8px;
+                    border-radius:999px;
+                    font-size:11px;
+                    font-weight:700;
+                  ">Token #${escapeHtml(r.tokenId)}</span>`
+                : "";
+
+              return `
+                <div style="
+                  margin-top:10px;
+                  background:#ffffff;
+                  border:1px solid #e2e8f0;
+                  border-radius:12px;
+                  padding:12px;
+                ">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                    <div style="font-size:13px;font-weight:800;color:#0f172a;">
+                      ${title}${tokenBadge}
+                    </div>
+                    ${
+                      href
+                        ? `<a href="${href}" style="
+                             display:inline-block;
+                             background:#064e3b;
+                             color:#ffffff;
+                             text-decoration:none;
+                             padding:8px 10px;
+                             border-radius:10px;
+                             font-size:12px;
+                             font-weight:800;
+                             letter-spacing:.2px;
+                           ">Verify Vote Receipt</a>`
+                        : ""
+                    }
+                  </div>
+
+                  <div style="
+                    margin-top:10px;
+                    font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+                    font-size:12px;
+                    word-break:break-all;
+                    background:#ffffff;
+                    border:1px dashed #cbd5e1;
+                    padding:10px;
+                    border-radius:10px;
+                    color:#0f172a;
+                  "><span style="font-weight:800;color:#0f172a;">Proof ID:</span> ${proof}</div>
+                </div>
+              `;
+            })
+            .join("")}
+        </div>
+
+        <div style="margin-top:10px;font-size:11px;color:#64748b;line-height:1.6;">
+          Tip: You can open these links on your phone or personal device anytime.
+        </div>
+      </div>
+    `
+    : "";
+
+  const singleTxBlock =
+    !normalizedReceipts.length && txHash
+      ? `
+      <div style="
+        margin-top:16px;
+        padding:14px;
+        border:1px solid #e2e8f0;
+        border-radius:12px;
+        background:#f8fafc;
+      ">
+        <div style="font-size:12px;font-weight:800;color:#0f172a;letter-spacing:.08em;text-transform:uppercase;">
+          Verify Vote Receipt
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:#475569;line-height:1.7;">
+          This link confirms your vote receipt NFT exists on the blockchain. No technical knowledge required.
+        </div>
+
+        <ul style="margin:10px 0 0 0;padding:0 0 0 18px;color:#475569;font-size:12px;line-height:1.7;">
+          <li>This record cannot be altered once recorded.</li>
+          <li>This verification does <strong>not</strong> reveal your selections.</li>
+        </ul>
+
         <div style="
-          margin-top:10px;
+          margin-top:12px;
           font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
           font-size:12px;
           word-break:break-all;
@@ -169,11 +311,11 @@ function buildReceiptEmailHtml(params: {
           padding:10px;
           border-radius:10px;
           color:#0f172a;
-        ">${escapeHtml(txHash)}</div>
+        "><span style="font-weight:800;color:#0f172a;">Proof ID:</span> ${escapeHtml(txHash)}</div>
 
         ${
           explorerUrl
-            ? `<div style="margin-top:10px;">
+            ? `<div style="margin-top:12px;">
                  <a href="${escapeAttr(explorerUrl)}" style="
                    display:inline-block;
                    background:#064e3b;
@@ -184,13 +326,19 @@ function buildReceiptEmailHtml(params: {
                    font-size:12px;
                    font-weight:800;
                    letter-spacing:.2px;
-                 ">View transaction</a>
+                 ">Verify Vote Receipt</a>
+               </div>
+               <div style="margin-top:8px;font-size:11px;color:#64748b;line-height:1.6;">
+                 Tip: You can open this on your phone or personal device anytime.
                </div>`
             : ""
         }
       </div>
     `
-    : "";
+      : "";
+
+  const verificationSection =
+    hasAny ? (normalizedReceipts.length ? multiTxBlocks : singleTxBlock) : "";
 
   return `<!DOCTYPE html>
 <html>
@@ -262,6 +410,29 @@ function buildReceiptEmailHtml(params: {
                 }
               </div>
 
+              <!-- Verification explainer -->
+              <div style="
+                border:1px solid #e2e8f0;
+                border-radius:12px;
+                padding:14px;
+                background:#ffffff;
+                margin:0 0 14px 0;
+              ">
+                <div style="font-size:12px;font-weight:800;color:#0f172a;letter-spacing:.08em;text-transform:uppercase;">
+                  What this receipt means
+                </div>
+                <div style="margin-top:8px;font-size:12px;color:#475569;line-height:1.7;">
+                  This email includes verification link${hasMulti ? "s" : ""} that prove your vote receipt NFT${
+                    hasMulti ? "s exist" : " exists"
+                  } on the blockchain.
+                </div>
+                <ul style="margin:10px 0 0 0;padding:0 0 0 18px;color:#475569;font-size:12px;line-height:1.7;">
+                  <li>No technical knowledge required — just open the link.</li>
+                  <li>The record cannot be altered once recorded.</li>
+                  <li>Your vote choices remain private (only proof is shown).</li>
+                </ul>
+              </div>
+
               <!-- Details -->
               <div style="
                 border:1px solid #e2e8f0;
@@ -313,7 +484,7 @@ function buildReceiptEmailHtml(params: {
                 </table>
               </div>
 
-              ${txBlock}
+              ${verificationSection}
 
               <div style="margin-top:16px;font-size:12px;color:#64748b;line-height:1.6;">
                 This is an automated message. Please do not reply.
@@ -370,9 +541,14 @@ serve(async (req) => {
     const subject = `Vote Receipt — ${safeStr(body.electionTitle, "Election")}`;
 
     const txHash = safeStr(body.txHash) || undefined;
+
+    // Prefer the caller-provided explorerUrl. If missing, default to Amoy Polygonscan.
     const explorerUrl =
       safeStr(body.explorerUrl) ||
-      (txHash ? `https://polygonscan.com/tx/${txHash}` : undefined);
+      (txHash ? `${AMOY_POLYGONSCAN_TX_BASE}${txHash}` : undefined);
+
+    // Normalize multi-receipts (if present). If not present, template will fall back to single.
+    const receipts = Array.isArray(body.receipts) ? body.receipts : undefined;
 
     const html = buildReceiptEmailHtml({
       subject,
@@ -383,6 +559,7 @@ serve(async (req) => {
       receiptItems: body.receiptItems,
       txHash,
       explorerUrl,
+      receipts,
     });
 
     const resendResp = await fetch("https://api.resend.com/emails", {
@@ -405,7 +582,8 @@ serve(async (req) => {
     }
 
     return json(200, { ok: true });
-  } catch (e) {
-    return json(500, { ok: false, message: e?.message ?? "Server error" });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return json(500, { ok: false, message: message || "Server error" });
   }
 });
