@@ -37,8 +37,8 @@ type MintReceiptResult = {
 };
 
 const AMOY_POLYGONSCAN_TX_BASE = "https://amoy.polygonscan.com/tx/";
-const RESET_SECONDS = 30;
-const SUCCESS_SCREEN_DELAY_MS = 1800; // ✅ delay before showing the final success screen
+// Give voters enough time to read receipt details on-screen before auto-reset.
+const RESET_SECONDS = 60;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const maskWord = (word: string) => {
@@ -95,8 +95,10 @@ const SubmissionScreen = ({
 
   const startedRef = useRef(false);
 
-  // ✅ NEW: gate the final success screen so it doesn't appear instantly
+  // ✅ Gate the final success screen so it doesn't appear unless voter taps Continue
   const [showSuccess, setShowSuccess] = useState(false);
+  // ✅ Prevent accidental taps by briefly disabling Continue once it appears
+  const [canContinue, setCanContinue] = useState(false);
 
   const uniqueElections = useMemo(() => {
     const map = new Map<string, string | undefined>();
@@ -155,6 +157,7 @@ const SubmissionScreen = ({
       setMintedReceipts([]);
       setReceiptStatus("idle");
       setShowSuccess(false);
+      setCanContinue(false);
 
       try {
         setCurrentStep("encrypting");
@@ -262,21 +265,27 @@ const SubmissionScreen = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isComplete]);
 
-  // ✅ NEW: do not show the success screen instantly once isComplete flips true
+  // -------------------------------
+  // Continue safety gate
+  // -------------------------------
   useEffect(() => {
-    if (!isComplete) {
-      setShowSuccess(false);
-      return;
-    }
-    const t = window.setTimeout(() => setShowSuccess(true), SUCCESS_SCREEN_DELAY_MS);
-    return () => window.clearTimeout(t);
-  }, [isComplete]);
+    if (!isComplete) return;
+    if (showSuccess) return;
+
+    // Briefly disable the Continue button to avoid accidental taps.
+    setCanContinue(false);
+    const t = setTimeout(() => setCanContinue(true), 2000);
+    return () => clearTimeout(t);
+  }, [isComplete, showSuccess]);
 
   // -------------------------------
   // Auto-reset (kiosk safe)
   // -------------------------------
+  // ✅ Start the countdown ONLY after the success screen is visible.
+  // This prevents the kiosk from feeling like it "rushes" past the receipt details.
   useEffect(() => {
     if (!isComplete) return;
+    if (!showSuccess) return;
 
     setCountdown(RESET_SECONDS);
 
@@ -298,7 +307,7 @@ const SubmissionScreen = ({
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isComplete, onReset]);
+  }, [isComplete, showSuccess, onReset]);
 
   const getStepStatus = (step: SubmissionStep) => {
     const steps: SubmissionStep[] = ["encrypting", "recording", "minting", "email", "complete"];
@@ -359,12 +368,19 @@ const SubmissionScreen = ({
     return (
       <div className={compact ? "mt-3" : "mt-4"}>
         <div className={compact ? "text-xs text-muted-foreground" : "text-sm text-muted-foreground"}>
-          Blockchain receipt transaction hash{receipts.length > 1 ? "es" : ""} (read-only)
+          Vote Receipt Proof ID{receipts.length > 1 ? "s" : ""} (read-only)
         </div>
 
-        <div className={compact ? "mt-2 space-y-2" : "mt-3 space-y-3"}>
+        <div className={compact ? "mt-2 space-y-2" : "mt-3 space-y-4"}>
           {receipts.map((r) => (
-            <div key={r.electionId} className="rounded-lg border border-border bg-background/60 p-3">
+            <div
+              key={r.electionId}
+              className={
+                compact
+                  ? "rounded-lg border border-border bg-background/60 p-3"
+                  : "rounded-lg border border-border bg-background/60 p-4"
+              }
+            >
               <div className="flex flex-wrap items-center gap-2 justify-between">
                 <div className="font-medium text-sm">{r.electionName || "Election"}</div>
                 <div className="flex items-center gap-2">
@@ -379,26 +395,42 @@ const SubmissionScreen = ({
                 </div>
               </div>
 
-              <div className="mt-2 font-mono text-xs break-all select-text">{r.txHash}</div>
+              <div className={compact ? "mt-2" : "mt-3"}>
+                <div className="text-[11px] text-muted-foreground">Proof ID</div>
+                <div
+                  className={
+                    compact
+                      ? "mt-1 font-mono text-xs break-all select-text"
+                      : "mt-1 font-mono text-sm break-all select-text"
+                  }
+                >
+                  {r.txHash}
+                </div>
+              </div>
             </div>
           ))}
         </div>
 
         <div className="mt-3 text-xs text-muted-foreground">
-          External links are disabled on this kiosk. Full verification links were sent to your email.
+          External links are disabled on this kiosk. To verify later, open your email and tap "Verify Vote Receipt".
         </div>
       </div>
     );
   };
 
-  const headerTitle =
-    isComplete && showSuccess ? "Vote Recorded Successfully" : "Finalizing Your Vote";
+  const headerTitle = isComplete
+    ? showSuccess
+      ? "Vote Recorded Successfully"
+      : "Review Your Receipt"
+    : "Finalizing Your Vote";
 
-  const headerSubtitle = isComplete && showSuccess
-    ? "Your session is complete. A verification receipt was sent to your email."
+  const headerSubtitle = isComplete
+    ? showSuccess
+      ? "Your session is complete. A vote receipt was sent to your email."
+      : "Please review the receipt proof IDs below, then tap Continue to finish."
     : `Please wait. We are generating ${uniqueElections.length || 1} blockchain receipt${
         uniqueElections.length === 1 ? "" : "s"
-      }.`; // ✅ same as before, but doesn't instantly flip to the success copy
+      }.`;
 
   return (
     <div className="min-h-screen p-6 flex items-center justify-center relative">
@@ -457,7 +489,17 @@ const SubmissionScreen = ({
                       <div>
                         Creating one ERC-721 participation receipt per election on Polygon Amoy.
                       </div>
-                      <ReceiptList receipts={mintedReceipts} compact />
+                      {isComplete && !showSuccess ? (
+                        <div className="rounded-lg border border-border bg-background/60 p-4">
+                          <div className="font-semibold text-sm">What this receipt means</div>
+                          <ul className="mt-2 space-y-1 text-xs text-muted-foreground list-disc pl-4">
+                            <li>It proves your receipt NFT exists on the blockchain.</li>
+                            <li>No technical knowledge needed — just keep the email we sent.</li>
+                            <li>Once recorded, this proof cannot be altered.</li>
+                          </ul>
+                        </div>
+                      ) : null}
+                      <ReceiptList receipts={mintedReceipts} compact={!isComplete} />
                     </div>
                   }
                 />
@@ -488,8 +530,31 @@ const SubmissionScreen = ({
 
                 {/* ✅ subtle "wrapping up" text once complete but before the success screen */}
                 {isComplete && !showSuccess ? (
-                  <div className="pt-2 text-sm text-muted-foreground">
-                    Wrapping up and securing your session…
+                  <div className="pt-2">
+                    <div className="text-sm text-muted-foreground">
+                      Please review your receipt details above.
+                    </div>
+
+                    <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+                      <div className="text-xs text-muted-foreground text-center sm:text-left">
+                        Please read this screen before continuing.
+                        {!canContinue ? (
+                          <span className="block mt-1">Continue will be available in a moment.</span>
+                        ) : null}
+                      </div>
+
+                      <Button
+                        type="button"
+                        className="bg-gradient-primary hover:opacity-90"
+                        disabled={!canContinue}
+                        onClick={() => {
+                          if (!canContinue) return;
+                          setShowSuccess(true);
+                        }}
+                      >
+                        Continue
+                      </Button>
+                    </div>
                   </div>
                 ) : null}
               </div>
@@ -510,8 +575,7 @@ const SubmissionScreen = ({
 
                 <h2 className="text-2xl font-bold mb-3">Vote Submitted</h2>
                 <p className="text-muted-foreground mb-6">
-                  Your vote has been securely recorded. Verification links were sent to your email for
-                  later viewing on your personal device.
+                  Your vote has been securely recorded. Verification details were sent to your email for later viewing on your personal device.
                 </p>
 
                 {/* Transactions (read-only) */}
@@ -522,7 +586,7 @@ const SubmissionScreen = ({
                 ) : transactionHash ? (
                   <div className="text-left rounded-lg border border-border bg-background/60 p-4">
                     <div className="text-sm text-muted-foreground">
-                      Blockchain receipt transaction hash (read-only)
+                      Vote Receipt Proof ID (read-only)
                     </div>
                     <div className="mt-2 font-mono text-xs break-all select-text">{transactionHash}</div>
                     <div className="mt-3 text-xs text-muted-foreground">
@@ -531,6 +595,35 @@ const SubmissionScreen = ({
                     </div>
                   </div>
                 ) : null}
+
+
+                {/* ✅ Voter-friendly verification (non-technical) */}
+                <div className="mt-6 rounded-lg border border-border bg-card p-5 text-left">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <h3 className="font-semibold">Verify Vote Receipt</h3>
+                      <p className="text-sm text-muted-foreground">
+                        This confirms your receipt NFT exists on the blockchain — no technical knowledge required.
+                      </p>
+                    </div>
+
+                    <Button type="button" variant="outline" disabled>
+                      Verify Vote Receipt
+                    </Button>
+                  </div>
+
+                  <ul className="mt-4 space-y-1 text-xs text-muted-foreground list-disc pl-4">
+                    <li>This proves your receipt NFT was minted and recorded.</li>
+                    <li>The blockchain record cannot be altered after it’s created.</li>
+                    <li>Your vote choices remain private; only the receipt proof can be checked.</li>
+                  </ul>
+
+                  <div className="mt-3 text-xs text-muted-foreground">
+                    You can verify later using your personal device: open the email we sent and tap{" "}
+                    <span className="font-medium">Verify Vote Receipt</span>.
+                  </div>
+                </div>
+
 
                 {/* Highlights */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
