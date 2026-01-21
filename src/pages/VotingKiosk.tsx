@@ -433,50 +433,33 @@ const VotingKiosk = () => {
     selections: CandidateSelection[]
   ) => {
     for (const sel of selections) {
-      const { error } = await supabase.from("votes").insert({
+      await supabase.from("votes").insert({
         voter_id: voterId,
         election_id: electionId,
         position: sel.position,
         candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
         is_abstain: sel.candidateId === "ABSTAIN",
       });
-
-      if (error) {
-        console.error("Failed to insert vote:", error);
-        toast.error("Failed to submit vote. Please ask a facilitator.");
-        throw error;
-      }
     }
   };
 
-  const handleElectionSubmissionComplete = async () => {
-    if (!voterData || !selectedElection?.id) return;
+  const handleSubmissionComplete = async (txHash: string) => {
+    setTransactionHash(txHash);
 
-    const { error } = await supabase
-      .from("voter_election_status")
-      .upsert(
-        {
-          voter_id: voterData.id,
-          election_id: selectedElection.id,
-          has_voted: true,
-          voted_at: new Date().toISOString(),
+    await supabase.from("voter_election_status").upsert({
+      voter_id: voterData?.id,
+      election_id: selectedElection?.id,
+      has_voted: true,
+      voted_at: new Date().toISOString(),
 
-          // Keep denormalized voter info consistent with final-review flow
-          voter_first_name: voterData.first_name,
-          voter_middle_name: voterData.middle_name,
-          voter_last_name: voterData.last_name,
-          voter_suffix: voterData.suffix,
-          voter_email: voterData.email,
-          year_level: voterData.year_level,
-        },
-        { onConflict: "voter_id,election_id" }
-      );
-
-    if (error) {
-      console.error("Failed to upsert voter_election_status:", error);
-      toast.error("Failed to update voting status. Please ask a facilitator.");
-      throw error;
-    }
+      // Keep denormalized voter info consistent with final-review flow
+      voter_first_name: voterData?.first_name,
+      voter_middle_name: voterData?.middle_name,
+      voter_last_name: voterData?.last_name,
+      voter_suffix: voterData?.suffix,
+      voter_email: voterData?.email,
+      year_level: voterData?.year_level,
+    });
 
     const updated = [...completedElections, selectedElection.id];
     setCompletedElections(updated);
@@ -603,7 +586,7 @@ const VotingKiosk = () => {
             }
 
             await persistVotesForElection(voterData.id, selectedElection.id, currentSelections);
-            await handleElectionSubmissionComplete();
+            await handleSubmissionComplete("pending-hash");
           }}
           onEdit={() => setCurrentStep("ballot")}
           showAll={false}
@@ -619,8 +602,32 @@ const VotingKiosk = () => {
           voterData={voterData}
           selections={allSelections}
           onConfirm={async () => {
-            // Votes + per-election status are already persisted at each election confirmation.
-            // Final review proceeds to minting proof + receipt.
+            for (const sel of allSelections) {
+              await supabase.from("votes").insert({
+                voter_id: voterData.id,
+                election_id: sel.electionId,
+                position: sel.position,
+                candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
+                is_abstain: sel.candidateId === "ABSTAIN",
+              });
+            }
+
+            for (const sel of allSelections) {
+              await supabase.from("voter_election_status").upsert({
+                voter_id: voterData.id,
+                election_id: sel.electionId,
+                has_voted: true,
+                voted_at: new Date().toISOString(),
+
+                voter_first_name: voterData.first_name,
+                voter_middle_name: voterData.middle_name,
+                voter_last_name: voterData.last_name,
+                voter_suffix: voterData.suffix,
+                voter_email: voterData.email,
+                year_level: voterData.year_level,
+              });
+            }
+
             setCurrentStep("submitting");
           }}
           onEdit={() => setCurrentStep("election-select")}
@@ -631,30 +638,20 @@ const VotingKiosk = () => {
         />
       )}
 
-      {/* SUBMISSION */}
-      {currentStep === "submitting" && (
+      {/* SUBMISSION / COMPLETE (single instance to prevent UI reset) */}
+      {(currentStep === "submitting" || currentStep === "complete") && voterData && (
         <SubmissionScreen
           voterData={voterData}
           selections={allSelections}
           transactionHash={transactionHash}
           onComplete={(tx) => {
+            // ✅ IMPORTANT: Keep the same SubmissionScreen instance mounted.
+            // This prevents state (mintedReceipts, receiptStatus, currentStep) from resetting.
             setTransactionHash(tx);
-            setCurrentStep("complete");
+            setCurrentStep((prev) => (prev === "complete" ? prev : "complete"));
           }}
           onReset={handleReset}
-          isComplete={false}
-        />
-      )}
-
-      {/* COMPLETE */}
-      {currentStep === "complete" && (
-        <SubmissionScreen
-          voterData={voterData}
-          selections={allSelections}
-          transactionHash={transactionHash}
-          onComplete={() => {}}
-          onReset={handleReset}
-          isComplete={true}
+          isComplete={currentStep === "complete"}
         />
       )}
 
