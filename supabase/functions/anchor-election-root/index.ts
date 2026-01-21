@@ -6,6 +6,9 @@ type Body = {
   electionId: string; // UUID string
 };
 
+// ✅ Chunking constant (LOCKED BY STEP 3)
+const CHUNK_SIZE = 512;
+
 type VoteRow = {
   id: string;
   voter_id: string;
@@ -13,6 +16,14 @@ type VoteRow = {
   candidate_id: string | null;
   is_abstain: boolean | null;
   election_id: string;
+};
+
+type ChunkRowUpsert = {
+  election_id: string;
+  chunk_index: number;
+  leaf_count: number;
+  chunk_root: string;
+  spec_version: string;
 };
 
 const corsHeaders: Record<string, string> = {
@@ -70,7 +81,7 @@ function bytes32Zero(): string {
 }
 
 /**
- * Leaf hash spec:
+ * Leaf hash spec (V1):
  * leaf = keccak256( concat(
  *   "BotoVeritasVoteV1",
  *   keccak(electionId),
@@ -142,7 +153,6 @@ const ELECTION_ROOT_ANCHOR_ABI = [
   "function anchorElectionBallotsRoot(bytes32 electionId, bytes32 merkleRoot) external",
   "function isElectionRootAnchored(bytes32 electionId) external view returns (bool)",
   "function electionBallotsRoot(bytes32 electionId) external view returns (bytes32)",
-  "event ElectionBallotsRootAnchored(bytes32 indexed electionId, bytes32 indexed merkleRoot, address indexed anchoredBy)",
 ];
 
 serve(async (req: Request) => {
@@ -168,7 +178,7 @@ serve(async (req: Request) => {
       return json(400, { error: "Invalid electionId" });
     }
 
-    // 1) Ensure election is final (locks votes via your triggers)
+    // 1) Ensure election is final (votes should be frozen by your triggers)
     const { data: electionRow, error: electionErr } = await supabase
       .from("elections")
       .select("id, is_final")
@@ -188,30 +198,31 @@ serve(async (req: Request) => {
       });
     }
 
-    // 2) Load all votes in a deterministic order (typed)
-    const { data: votes, error: votesErr } = await supabase
+    // 2) Load all votes in canonical deterministic order
+    const { data: votesRaw, error: votesErr } = await supabase
       .from("votes")
       .select("id, voter_id, position, candidate_id, is_abstain, election_id")
       .eq("election_id", electionId)
       .order("voter_id", { ascending: true })
       .order("position", { ascending: true })
       .order("candidate_id", { ascending: true, nullsFirst: true })
-      .order("id", { ascending: true }) as { data: VoteRow[] | null; error: unknown };
+      .order("id", { ascending: true });
 
     if (votesErr) {
-      const msg = votesErr instanceof Error ? votesErr.message : String(votesErr);
-      return json(500, { error: "Failed to load votes", details: msg });
+      return json(500, { error: "Failed to load votes", details: votesErr.message });
     }
 
-    if (!votes || votes.length === 0) {
+    const votes = (votesRaw ?? []) as VoteRow[];
+
+    if (votes.length === 0) {
       return json(409, {
         error: "No votes found for this election",
         hint: "Cannot anchor an empty election. Ensure vote rows exist.",
       });
     }
 
-    // 3) Compute leaves + root
-    const leaves = votes.map((v: VoteRow) =>
+    // 3) Convert votes -> leaves
+    const leaves = votes.map((v) =>
       computeVoteLeaf({
         electionId: v.election_id,
         voterId: v.voter_id,
@@ -221,9 +232,43 @@ serve(async (req: Request) => {
       })
     );
 
-    const root = merkleRootSortedPairs(leaves);
+    // 4) Chunk leaves -> chunkRoots
+    const chunkRoots: string[] = [];
+    const chunkRows: ChunkRowUpsert[] = [];
 
-    // 4) Anchor on-chain
+    for (let i = 0; i < leaves.length; i += CHUNK_SIZE) {
+      const chunkIndex = Math.floor(i / CHUNK_SIZE);
+      const chunkLeaves = leaves.slice(i, i + CHUNK_SIZE);
+      const chunkRoot = merkleRootSortedPairs(chunkLeaves);
+
+      chunkRoots.push(chunkRoot);
+
+      chunkRows.push({
+        election_id: electionId,
+        chunk_index: chunkIndex,
+        leaf_count: chunkLeaves.length,
+        chunk_root: chunkRoot,
+        spec_version: "BV_VOTE_LEAF_V1__CHUNKED_ROOT_V1",
+      });
+    }
+
+    // 5) ElectionRoot = MerkleRoot(chunkRoots)
+    const electionRoot = merkleRootSortedPairs(chunkRoots);
+
+    // 6) Persist chunk metadata (so later ZK prover can fetch chunkRoots + ordering)
+    const { error: chunkUpsertErr } = await supabase
+      .from("election_vote_chunks")
+      .upsert(chunkRows, { onConflict: "election_id,chunk_index" });
+
+    if (chunkUpsertErr) {
+      return json(500, {
+        error: "Failed to persist election vote chunks",
+        details: chunkUpsertErr.message,
+        hint: "Ensure public.election_vote_chunks table exists (Step 4.1 SQL).",
+      });
+    }
+
+    // 7) Anchor ElectionRoot on-chain
     const rpcUrl = requireEnvAny("AMOY_RPC_URL");
     const ownerPk = requireEnvAny("ANCHOR_OWNER_PRIVATE_KEY", "MINTER_PRIVATE_KEY");
     const anchorAddress = requireEnvAny("ELECTION_ROOT_ANCHOR_ADDRESS");
@@ -234,27 +279,30 @@ serve(async (req: Request) => {
 
     const electionIdBytes32 = hashUtf8ToBytes32(electionId);
 
-    // Idempotency: if already anchored, return existing root (and verify it matches)
+    // Idempotency: if already anchored, return existing root + compare
     const alreadyAnchored: boolean = await contract.isElectionRootAnchored(electionIdBytes32);
     if (alreadyAnchored) {
       const onchainRoot: string = await contract.electionBallotsRoot(electionIdBytes32);
-      const matches = onchainRoot.toLowerCase() === root.toLowerCase();
+      const matches = onchainRoot.toLowerCase() === electionRoot.toLowerCase();
 
       return json(200, {
         status: "already_anchored",
+        mode: "root_of_roots",
         electionId,
         electionIdBytes32,
-        computedRoot: root,
-        onchainRoot,
+        chunkSize: CHUNK_SIZE,
+        totalLeaves: leaves.length,
+        chunkCount: chunkRoots.length,
+        computedElectionRoot: electionRoot,
+        onchainElectionRoot: onchainRoot,
         matches,
-        leafCount: leaves.length,
         warning: matches
           ? null
-          : "On-chain root differs from computed root. This indicates different leaf rules/order were used previously.",
+          : "On-chain root differs from computed root. This indicates different anchoring rules were used previously.",
       });
     }
 
-    const tx = await contract.anchorElectionBallotsRoot(electionIdBytes32, root);
+    const tx = await contract.anchorElectionBallotsRoot(electionIdBytes32, electionRoot);
     const receipt = await tx.wait();
 
     const explorerBase = envAny("AMOY_EXPLORER_BASE") || "https://amoy.polygonscan.com";
@@ -262,10 +310,13 @@ serve(async (req: Request) => {
 
     return json(200, {
       status: "anchored",
+      mode: "root_of_roots",
       electionId,
       electionIdBytes32,
-      merkleRoot: root,
-      leafCount: leaves.length,
+      chunkSize: CHUNK_SIZE,
+      totalLeaves: leaves.length,
+      chunkCount: chunkRoots.length,
+      electionRoot,
       txHash,
       explorerTxUrl: `${explorerBase}/tx/${txHash}`,
     });
