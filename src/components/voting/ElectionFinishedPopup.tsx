@@ -15,8 +15,8 @@ const ElectionFinishedPopup = ({ onContinue, hasRemaining }: ElectionFinishedPop
         </h2>
         <p className="text-muted-foreground mb-6">
           {hasRemaining
-            ? "You’ve successfully cast your vote for this organization. Please continue to vote in your other eligible elections."
-            : "You’ve successfully voted in all eligible elections. Please review your selections before final submission."}
+            ? "Your vote for this organization has been saved. Please continue to vote in your other eligible elections. Blockchain receipt NFTs will be minted during final submission."
+            : "All your votes have been saved. Please review your selections before final submission. Blockchain receipt NFTs will be minted after you submit."}
         </p>
         <Button
           onClick={onContinue}

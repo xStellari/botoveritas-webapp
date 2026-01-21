@@ -207,20 +207,6 @@ const VotingKiosk = () => {
       toast.error("Voter not found.");
       return;
     }
-    // ✅ EMAIL VERIFICATION GATE (block voting if not verified)
-    if (!voterRow.email_verified_at) {
-      navigate("/registration-error", {
-        state: {
-          title: "Email Verification Required",
-          message:
-            "Your registration is not yet verified.\n\n" +
-            "Please open the verification link sent to your school email " +
-            "(valid for 72 hours), then try again.",
-        },
-      });
-      return;
-    }
-
 
     // 2) Prevent simultaneous sessions (SERVER TIME via RPC)
     // OPTIONAL: best-effort delete any expired row for this voter (helps immediately even before cron cleanup)
@@ -441,15 +427,56 @@ const VotingKiosk = () => {
   // -----------------------------------------------------
   // FINAL SUBMISSION COMPLETE
   // -----------------------------------------------------
-  const handleSubmissionComplete = async (txHash: string) => {
-    setTransactionHash(txHash);
+  const persistVotesForElection = async (
+    voterId: string,
+    electionId: string,
+    selections: CandidateSelection[]
+  ) => {
+    for (const sel of selections) {
+      const { error } = await supabase.from("votes").insert({
+        voter_id: voterId,
+        election_id: electionId,
+        position: sel.position,
+        candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
+        is_abstain: sel.candidateId === "ABSTAIN",
+      });
 
-    await supabase.from("voter_election_status").upsert({
-      voter_id: voterData?.id,
-      election_id: selectedElection?.id,
-      has_voted: true,
-      voted_at: new Date().toISOString(),
-    });
+      if (error) {
+        console.error("Failed to insert vote:", error);
+        toast.error("Failed to submit vote. Please ask a facilitator.");
+        throw error;
+      }
+    }
+  };
+
+  const handleElectionSubmissionComplete = async () => {
+    if (!voterData || !selectedElection?.id) return;
+
+    const { error } = await supabase
+      .from("voter_election_status")
+      .upsert(
+        {
+          voter_id: voterData.id,
+          election_id: selectedElection.id,
+          has_voted: true,
+          voted_at: new Date().toISOString(),
+
+          // Keep denormalized voter info consistent with final-review flow
+          voter_first_name: voterData.first_name,
+          voter_middle_name: voterData.middle_name,
+          voter_last_name: voterData.last_name,
+          voter_suffix: voterData.suffix,
+          voter_email: voterData.email,
+          year_level: voterData.year_level,
+        },
+        { onConflict: "voter_id,election_id" }
+      );
+
+    if (error) {
+      console.error("Failed to upsert voter_election_status:", error);
+      toast.error("Failed to update voting status. Please ask a facilitator.");
+      throw error;
+    }
 
     const updated = [...completedElections, selectedElection.id];
     setCompletedElections(updated);
@@ -569,7 +596,15 @@ const VotingKiosk = () => {
         <ReviewScreen
           voterData={voterData}
           selections={currentSelections}
-          onConfirm={() => handleSubmissionComplete("pending-hash")}
+          onConfirm={async () => {
+            if (!selectedElection?.id) {
+              toast.error("Missing election.");
+              return;
+            }
+
+            await persistVotesForElection(voterData.id, selectedElection.id, currentSelections);
+            await handleElectionSubmissionComplete();
+          }}
           onEdit={() => setCurrentStep("ballot")}
           showAll={false}
           timeLeft={timeLeft ?? 0}
@@ -584,32 +619,8 @@ const VotingKiosk = () => {
           voterData={voterData}
           selections={allSelections}
           onConfirm={async () => {
-            for (const sel of allSelections) {
-              await supabase.from("votes").insert({
-                voter_id: voterData.id,
-                election_id: sel.electionId,
-                position: sel.position,
-                candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
-                is_abstain: sel.candidateId === "ABSTAIN",
-              });
-            }
-
-            for (const sel of allSelections) {
-              await supabase.from("voter_election_status").upsert({
-                voter_id: voterData.id,
-                election_id: sel.electionId,
-                has_voted: true,
-                voted_at: new Date().toISOString(),
-
-                voter_first_name: voterData.first_name,
-                voter_middle_name: voterData.middle_name,
-                voter_last_name: voterData.last_name,
-                voter_suffix: voterData.suffix,
-                voter_email: voterData.email,
-                year_level: voterData.year_level,
-              });
-            }
-
+            // Votes + per-election status are already persisted at each election confirmation.
+            // Final review proceeds to minting proof + receipt.
             setCurrentStep("submitting");
           }}
           onEdit={() => setCurrentStep("election-select")}

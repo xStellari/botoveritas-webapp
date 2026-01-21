@@ -192,6 +192,9 @@ const ReviewScreen = ({
                     ? "Review your selections across all elections before submitting."
                     : "Please review your selections before confirming."}
                 </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  At final submission, the kiosk will mint <strong>one blockchain receipt NFT per election</strong> you participated in.
+                </p>
                 {photosLoading ? (
                   <p className="text-xs text-muted-foreground mt-1">
                     Loading candidate photos…
@@ -225,8 +228,8 @@ const ReviewScreen = ({
             <div>
               <h3 className="font-semibold text-lg mb-2">Important Notice</h3>
               <p className="text-sm text-muted-foreground">
-                Once you confirm your vote, it <strong>cannot be changed</strong>.
-                Your vote will be permanently stored on the blockchain.
+                Once you confirm, your selections for this election <strong>cannot be changed</strong>.
+                We will generate a blockchain participation receipt (NFT) during <strong>final submission</strong> — one receipt per election you vote in.
               </p>
             </div>
           </div>
@@ -427,7 +430,7 @@ const ReviewScreen = ({
             ) : (
               <>
                 <CheckCircle2 className="mr-2 h-6 w-6" />
-                {showAll ? "Confirm & Submit All Votes" : "Confirm Vote"}
+                {showAll ? "Confirm & Proceed to Final Submission" : "Confirm Vote"}
               </>
             )}
           </Button>
