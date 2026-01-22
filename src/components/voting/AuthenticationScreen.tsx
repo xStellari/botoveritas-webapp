@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
-import { AlertCircle, Camera, CheckCircle2, Loader2, Scan, ShieldCheck } from "lucide-react";
+import {
+  AlertCircle,
+  Camera,
+  CheckCircle2,
+  Loader2,
+  Scan,
+  ShieldCheck,
+} from "lucide-react";
 import feuLogo from "@/assets/feu-logo.png";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -42,13 +48,19 @@ const StepCard = ({
   meta?: ReactNode;
 }) => {
   const statusLabel =
-    status === "complete" ? "Completed" : status === "active" ? "In progress" : "Locked";
+    status === "complete"
+      ? "Completed"
+      : status === "active"
+      ? "In progress"
+      : "Locked";
 
   return (
     <div
       className={[
         "h-fit w-full overflow-hidden rounded-2xl border bg-white/90 backdrop-blur-sm shadow-sm",
-        status === "active" ? "border-primary/40 ring-2 ring-primary/10" : "border-border/70",
+        status === "active"
+          ? "border-primary/40 ring-2 ring-primary/10"
+          : "border-border/70",
       ].join(" ")}
       aria-label={`${title} - ${statusLabel}`}
     >
@@ -70,7 +82,9 @@ const StepCard = ({
 
           <div className="min-w-0">
             <div className="text-sm font-semibold leading-tight">{title}</div>
-            <div className="mt-1 text-xs text-muted-foreground leading-snug">{subtitle}</div>
+            <div className="mt-1 text-xs text-muted-foreground leading-snug">
+              {subtitle}
+            </div>
           </div>
         </div>
 
@@ -94,11 +108,17 @@ const StepCard = ({
 
       {/* Expandable body: ONLY render when expanded to avoid blank-space cards */}
       {expanded ? (
-        <div className="border-t border-border/60 bg-white/70 px-5 py-4">{children}</div>
+        <div className="border-t border-border/60 bg-white/70 px-5 py-4">
+          {children}
+        </div>
       ) : null}
 
       {/* Meta (mobile) */}
-      {meta ? <div className="sm:hidden px-5 pb-4 -mt-2 text-xs text-muted-foreground">{meta}</div> : null}
+      {meta ? (
+        <div className="sm:hidden px-5 pb-4 -mt-2 text-xs text-muted-foreground">
+          {meta}
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -109,19 +129,26 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   const [voterId, setVoterId] = useState<string | null>(null);
   const [step, setStep] = useState<Step>("rfid");
 
-  const [statusMessage, setStatusMessage] = useState<string>("Ready. Please tap your Student ID.");
+  const [statusMessage, setStatusMessage] = useState<string>(
+    "Ready. Please tap your Student ID."
+  );
   const [rfidTag, setRfidTag] = useState<string>("");
   const [rfidVerified, setRfidVerified] = useState<boolean>(false);
 
   const [faceVerified, setFaceVerified] = useState<boolean>(false);
-  const [storedDescriptor, setStoredDescriptor] = useState<Float32Array | null>(null);
+  const [storedDescriptor, setStoredDescriptor] =
+    useState<Float32Array | null>(null);
+
+  const [warningMessage, setWarningMessage] = useState<string | null>(null);
+
+  const ERROR_RESET_MS = 10000;
 
   useEffect(() => {
     if (step !== "error") return;
 
     const timer = setTimeout(() => {
       window.location.reload();
-    }, 5000);
+    }, ERROR_RESET_MS);
 
     return () => clearTimeout(timer);
   }, [step]);
@@ -143,7 +170,9 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 
     if (error) {
       console.error("auth_logs insert failed:", error);
-      toast.error(`auth_logs insert failed: ${error.message}`);
+      setWarningMessage(
+        "Warning: Security logging is currently unavailable. Please inform election staff."
+      );
     }
 
     return { error };
@@ -155,6 +184,8 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   const handleRFID = async (uid: string) => {
     const normalized = uid?.trim();
     if (!normalized) return;
+
+    setWarningMessage(null);
 
     setStep("rfid");
     setStatusMessage("Checking RFID in database...");
@@ -199,7 +230,6 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 
     await logAttempt("RFID_VERIFIED", normalized, undefined, data.id);
 
-    // Move to Step 2; Step 1 collapses automatically (no blank space)
     setStep("face");
     setStatusMessage("RFID verified. Please align your face with the camera.");
   };
@@ -214,7 +244,10 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
       return;
     }
 
-    const { match, distance } = compareDescriptors(storedDescriptor, liveDescriptor);
+    const { match, distance } = compareDescriptors(
+      storedDescriptor,
+      liveDescriptor
+    );
     console.log("Face match distance:", distance);
 
     if (match) {
@@ -245,7 +278,8 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 
   const step1Status: StepStatus = useMemo(() => {
     if (rfidVerified) return "complete";
-    if (step === "rfid") return "active";
+    // ✅ Keep Step 1 “active” while error so the status box remains the main focus.
+    if (step === "rfid" || step === "error") return "active";
     return "locked";
   }, [rfidVerified, step]);
 
@@ -263,19 +297,25 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
     return "bg-muted/40 text-foreground";
   }, [step]);
 
-  const step1Expanded = step === "rfid";
+  // ✅ KEY FIX:
+  // Keep Step 1 expanded on error so the real message (email verification required, etc.)
+  // stays visible in the same place.
+  const step1Expanded = step === "rfid" || step === "error";
   const step2Expanded = step === "face";
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-gradient-to-br from-feu-green/10 via-background to-feu-gold/10">
       <Card className="w-full max-w-5xl border border-primary/15 bg-white/90 backdrop-blur-sm shadow-2xl">
         <div className="p-8 sm:p-10">
-          {/* RFID Listener (auto) */}
           <RFIDScanner onScan={handleRFID} />
 
           {/* Header */}
           <div className="flex flex-col items-center">
-            <img src={feuLogo} alt="FEU Alabang" className="h-16 sm:h-20 w-auto mb-4" />
+            <img
+              src={feuLogo}
+              alt="FEU Alabang"
+              className="h-16 sm:h-20 w-auto mb-4"
+            />
             <h1 className="text-3xl sm:text-4xl font-bold text-center bg-gradient-hero bg-clip-text text-transparent">
               BotoVeritas
             </h1>
@@ -284,26 +324,80 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
             </p>
           </div>
 
+          {/* Warnings (non-blocking) */}
+          <div className="mt-6 space-y-3">
+            {warningMessage ? (
+              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl bg-amber-500/15 text-amber-700">
+                    <AlertCircle className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-amber-900">
+                      System notice
+                    </div>
+                    <div className="mt-1 text-xs text-amber-900/80">
+                      {warningMessage}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {rfidVerified && step !== "error" ? (
+              <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-700">
+                      <CheckCircle2 className="h-5 w-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-emerald-900">
+                        RFID verified
+                      </div>
+                      <div className="mt-0.5 text-xs text-emerald-900/70">
+                        Student ID accepted — proceed to facial recognition.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="shrink-0 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-mono text-emerald-900">
+                    {maskRfid(rfidTag)}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
           {/* Steps */}
-          <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+          <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
             <StepCard
               icon={<Scan className="h-5 w-5" />}
               title="Step 1: RFID Authentication"
               subtitle="Tap your Student ID on the reader"
               status={step1Status}
               expanded={step1Expanded}
-              meta={rfidVerified ? <span className="font-mono">{maskRfid(rfidTag)}</span> : null}
+              meta={
+                rfidTag ? (
+                  <span className="font-mono">{maskRfid(rfidTag)}</span>
+                ) : null
+              }
             >
-              {/* Expanded content (ONLY while active) */}
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
                   <ShieldCheck className="h-5 w-5" />
                 </div>
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold">Waiting for RFID scan</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    Hold your Student ID close to the reader until it registers.
+                  <div className="text-sm font-semibold">
+                    {step === "error" ? "Action required" : "Waiting for RFID scan"}
                   </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {step === "error"
+                      ? "Please follow the instruction below before trying again."
+                      : "Hold your Student ID close to the reader until it registers."}
+                  </div>
+
+                  {/* ✅ This is the message you care about — it now stays visible even on error */}
                   <div className={`mt-3 rounded-xl px-4 py-3 text-sm font-medium ${statusTone}`}>
                     {statusMessage}
                   </div>
@@ -317,12 +411,11 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
               subtitle="Align your face with the camera"
               status={step2Status}
               expanded={step2Expanded}
-              
             >
-              {/* Expanded content (ONLY while active) */}
               <div className="space-y-3">
                 <div className="text-xs text-muted-foreground">
-                  Tip: face the camera, avoid strong backlight, and keep your head level.
+                  Tip: face the camera, avoid strong backlight, and keep your head
+                  level.
                 </div>
 
                 <div className="inline-flex items-center gap-2 rounded-full bg-muted/40 px-3 py-1 text-xs font-medium text-muted-foreground w-fit">
@@ -341,7 +434,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
             </StepCard>
           </div>
 
-          {/* Done / Error cards below (compact) */}
+          {/* Done */}
           {step === "done" ? (
             <div className="mt-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-5">
               <div className="flex items-start gap-3">
@@ -349,25 +442,29 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
                   <CheckCircle2 className="h-5 w-5" />
                 </div>
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold text-emerald-800">Authenticated</div>
-                  <div className="mt-1 text-xs text-muted-foreground">Loading ballot…</div>
+                  <div className="text-sm font-semibold text-emerald-800">
+                    Authenticated
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Loading ballot…
+                  </div>
                 </div>
               </div>
             </div>
           ) : null}
 
+          {/* ✅ Error becomes a compact banner instead of a huge block */}
           {step === "error" ? (
-            <div className="mt-6 rounded-2xl border border-destructive/30 bg-destructive/5 p-5">
-              <div className="flex items-start gap-3">
+            <div className="mt-4 rounded-2xl border border-destructive/25 bg-destructive/5 px-4 py-3">
+              <div className="flex items-center gap-3">
                 <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-destructive/10 text-destructive">
                   <AlertCircle className="h-5 w-5" />
                 </div>
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold">Authentication failed</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    Please contact election staff. This kiosk will reset automatically.
+                  <div className="text-sm font-semibold">Authentication halted</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    This kiosk will reset in ~{Math.ceil(ERROR_RESET_MS / 1000)} seconds…
                   </div>
-                  <div className="mt-2 text-xs text-muted-foreground">Returning to main in ~5 seconds…</div>
                 </div>
               </div>
             </div>
@@ -375,7 +472,9 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 
           {/* Footer */}
           <div className="mt-10 pt-6 border-t border-border/50">
-            <p className="text-sm text-center text-muted-foreground">Secure • Transparent • Verifiable</p>
+            <p className="text-sm text-center text-muted-foreground">
+              Secure • Transparent • Verifiable
+            </p>
             <p className="text-xs text-center text-muted-foreground mt-2">
               Powered by Blockchain Technology &amp; NFT Proof of Vote
             </p>
