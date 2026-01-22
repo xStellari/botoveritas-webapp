@@ -726,7 +726,7 @@ export default function EnhancedElectionManagement() {
   const saveCandidate = async () => {
     if (!selectedElectionId) return toast.error("Select an election first.");
     if (isSelectedFinal) return toast.error("This election is finalized. Candidates are locked.");
-        if (!cForm.last_name.trim()) return toast.error("Last name is required.");
+    if (!cForm.last_name.trim()) return toast.error("Last name is required.");
     const displayName = `${cForm.first_name.trim()} ${cForm.last_name.trim()}`.trim();
     if (!displayName) return toast.error("Candidate name is required.");
     if (!cForm.position.trim()) return toast.error("Position is required.");
@@ -741,7 +741,7 @@ export default function EnhancedElectionManagement() {
           .from("candidates")
           .insert({
             election_id: selectedElectionId,
-                        first_name: cForm.first_name.trim(),
+            first_name: cForm.first_name.trim(),
             last_name: cForm.last_name.trim(),
             name: `${cForm.first_name.trim()} ${cForm.last_name.trim()}`.trim(),
             position: cForm.position.trim(),
@@ -1101,7 +1101,6 @@ export default function EnhancedElectionManagement() {
                           onCheckedChange={() => toggleElectionActive(e)}
                         />
                       </div>
-
 
                       {Boolean(e.is_final) ? (
                         <>
