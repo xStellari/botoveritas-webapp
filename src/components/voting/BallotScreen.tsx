@@ -31,6 +31,115 @@ interface BallotScreenProps {
   timeLeft: number; // ⬅ NEW — time passed from VotingKiosk
 }
 
+type CandidateRow = {
+  id: string;
+  election_id: string;
+  name: string; // display-only (kept for backward compatibility)
+  first_name?: string | null;
+  last_name?: string | null;
+  position: string;
+  slate?: string | null;
+  photo_url?: string | null;
+  bio?: string | null;
+  display_order?: number | null;
+};
+
+type PositionBlock = {
+  id: string; // derived from title
+  title: string; // raw DB position label (shown on screen)
+  candidates: CandidateRow[];
+};
+
+const positionIdFromTitle = (title: string) =>
+  title.toLowerCase().trim().replace(/\s+/g, "-");
+
+const getCandidateDisplayName = (c: CandidateRow) => {
+  const first = (c.first_name ?? "").trim();
+  const last = (c.last_name ?? "").trim();
+  const composed = `${first} ${last}`.trim();
+  return composed || (c.name ?? "").trim();
+};
+
+// Fallback for legacy candidates (or partially filled data)
+const splitLegacyName = (name: string) => {
+  const cleaned = name.trim().replace(/\s+/g, " ");
+  if (!cleaned) return { first_name: "", last_name: "" };
+  const parts = cleaned.split(" ");
+  if (parts.length === 1) return { first_name: "", last_name: parts[0] };
+  return {
+    first_name: parts.slice(0, -1).join(" "),
+    last_name: parts[parts.length - 1],
+  };
+};
+
+const getCandidateSortKey = (c: CandidateRow) => {
+  const last = (c.last_name ?? "").trim();
+  const first = (c.first_name ?? "").trim();
+
+  if (last || first) {
+    return { last: last.toLowerCase(), first: first.toLowerCase() };
+  }
+
+  const legacy = splitLegacyName(c.name ?? "");
+  return { last: legacy.last_name.toLowerCase(), first: legacy.first_name.toLowerCase() };
+};
+
+const normalizePosition = (raw: string) => {
+  const s = (raw ?? "").trim().replace(/\s+/g, " ");
+  const lower = s.toLowerCase();
+
+  // Normalize VP variants (common patterns)
+  if (lower.includes("vp") || lower.includes("vice president")) {
+    if (lower.includes("internal")) return "Vice President - Internal";
+    if (lower.includes("external")) return "Vice President - External";
+    // generic VP
+    return "Vice President";
+  }
+
+  // Normalize PRO variants
+  if (lower === "pro" || lower.includes("public relations")) {
+    return "Public Relations Officer";
+  }
+
+  // Keep canonical casing for key roles if you want, otherwise return original
+  if (lower === "president") return "President";
+  if (lower === "secretary") return "Secretary";
+  if (lower === "treasurer") return "Treasurer";
+  if (lower === "auditor") return "Auditor";
+
+  return s;
+};
+
+const positionPriority = (normalized: string) => {
+  // Your required order:
+  // President
+  // Vice President (or VP-Internal and VP-External)
+  // Secretary
+  // Treasurer
+  // Auditor
+  // Public Relations Officer
+  switch (normalized) {
+    case "President":
+      return 10;
+    case "Vice President - Internal":
+      return 20;
+    case "Vice President - External":
+      return 21;
+    case "Vice President":
+      return 22;
+    case "Secretary":
+      return 30;
+    case "Treasurer":
+      return 40;
+    case "Auditor":
+      return 50;
+    case "Public Relations Officer":
+      return 60;
+    default:
+      return 1000;
+  }
+};
+
 const BallotScreenWithAbstain = ({
   voterData,
   electionId,
@@ -39,15 +148,10 @@ const BallotScreenWithAbstain = ({
   initialSelections = [],
   timeLeft, // ⬅ NEW
 }: BallotScreenProps) => {
-
   const { toast } = useToast();
   const [selections, setSelections] = useState<{ [positionId: string]: string }>({});
-  const [positions, setPositions] = useState<any[]>([]);
+  const [positions, setPositions] = useState<PositionBlock[]>([]);
   const [loading, setLoading] = useState(true);
-
-  // ❌ Removed internal timer — BallotScreen must not track time
-  // const voting_duration = 300;
-  // const [timeRemaining, setTimeRemaining] = useState(voting_duration);
 
   const [abstainConfirm, setAbstainConfirm] = useState<{ show: boolean; positionId: string }>({
     show: false,
@@ -57,6 +161,7 @@ const BallotScreenWithAbstain = ({
   useEffect(() => {
     loadPositionsAndCandidates();
     initializeSelections();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadPositionsAndCandidates = async () => {
@@ -65,9 +170,7 @@ const BallotScreenWithAbstain = ({
     const { data: candidatesData, error } = await supabase
       .from("candidates")
       .select("*")
-      .eq("election_id", electionId)
-      .order("position", { ascending: true })
-      .order("display_order", { ascending: true });
+      .eq("election_id", electionId);
 
     if (error) {
       toast({
@@ -79,43 +182,78 @@ const BallotScreenWithAbstain = ({
       return;
     }
 
-    const filteredCandidates = candidatesData?.filter(
-      (c) => c.name.toLowerCase() !== "abstain"
+    // Remove any candidate literally named "abstain" (legacy hack)
+    const filteredCandidates = (candidatesData as CandidateRow[] | null)?.filter(
+      (c) => (c.name ?? "").toLowerCase() !== "abstain"
     );
 
-    const positionsMap = new Map<string, any[]>();
+    // Group by raw position label (shown to users)
+    const positionsMap = new Map<string, CandidateRow[]>();
     filteredCandidates?.forEach((candidate) => {
-      if (!positionsMap.has(candidate.position)) {
-        positionsMap.set(candidate.position, []);
+      const posTitle = candidate.position;
+      if (!positionsMap.has(posTitle)) {
+        positionsMap.set(posTitle, []);
       }
-      positionsMap.get(candidate.position)!.push(candidate);
+      positionsMap.get(posTitle)!.push(candidate);
     });
 
-    const positionsArray = Array.from(positionsMap.entries()).map(
+    // Build positions array
+    let positionsArray: PositionBlock[] = Array.from(positionsMap.entries()).map(
       ([position, candidates]) => ({
-        id: position.toLowerCase().replace(/\s+/g, "-"),
+        id: positionIdFromTitle(position),
         title: position,
         candidates,
       })
     );
 
+    // Sort candidates by last name (then first name)
+    positionsArray = positionsArray.map((p) => {
+      const sorted = [...p.candidates].sort((a, b) => {
+        const ak = getCandidateSortKey(a);
+        const bk = getCandidateSortKey(b);
+
+        if (ak.last !== bk.last) return ak.last.localeCompare(bk.last);
+        if (ak.first !== bk.first) return ak.first.localeCompare(bk.first);
+
+        // stable deterministic tiebreaker
+        return a.id.localeCompare(b.id);
+      });
+
+      return { ...p, candidates: sorted };
+    });
+
+    // Sort positions using your fixed order, with fallback A–Z for unknown positions
+    positionsArray.sort((a, b) => {
+      const an = normalizePosition(a.title);
+      const bn = normalizePosition(b.title);
+
+      const ap = positionPriority(an);
+      const bp = positionPriority(bn);
+
+      if (ap !== bp) return ap - bp;
+
+      // If both are unknown (or tied), sort alphabetically by title
+      return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+    });
+
     setPositions(positionsArray);
 
-    setSelections(prev => {
+    // Clean selections for removed positions
+    setSelections((prev) => {
       const cleaned: { [key: string]: string } = {};
-      positionsArray.forEach(pos => {
+      positionsArray.forEach((pos) => {
         if (prev[pos.id]) cleaned[pos.id] = prev[pos.id];
       });
       return cleaned;
     });
-    
+
     setLoading(false);
   };
 
   const initializeSelections = () => {
     const initialState: { [key: string]: string } = {};
     initialSelections.forEach((sel) => {
-      const posId = sel.position.toLowerCase().replace(/\s+/g, "-");
+      const posId = positionIdFromTitle(sel.position);
       initialState[posId] = sel.candidateId;
     });
     setSelections(initialState);
@@ -153,11 +291,9 @@ const BallotScreenWithAbstain = ({
   };
 
   const handleSubmit = () => {
-    const unfilledPositions = positions.filter(
-      (pos) => !selections[pos.id]
-    );
+    const unfilledPositions = positions.filter((pos) => !selections[pos.id]);
 
-    if (unfilledPositions.length > 0){
+    if (unfilledPositions.length > 0) {
       toast({
         title: "Incomplete Ballot",
         description: "You must select a candidate or abstain for ALL positions before reviewing.",
@@ -166,33 +302,31 @@ const BallotScreenWithAbstain = ({
       return;
     }
 
-    const candidateSelections = Object.entries(selections).map(
-      ([positionId, candidateId]) => {
-        const position = positions.find((p) => p.id === positionId);
+    const candidateSelections = Object.entries(selections).map(([positionId, candidateId]) => {
+      const position = positions.find((p) => p.id === positionId);
 
-        if (candidateId === "ABSTAIN") {
-          return {
-            position: position?.title,
-            candidateId: "ABSTAIN",
-            candidateName: "ABSTAIN",
-            slate: "N/A",
-            electionId,
-            electionName: electionData.title,
-          };
-        }
-
-        const candidate = position?.candidates.find((c: any) => c.id === candidateId);
-
+      if (candidateId === "ABSTAIN") {
         return {
           position: position?.title,
-          candidateId: candidate.id,
-          candidateName: candidate.name,
-          slate: candidate.slate || "N/A",
+          candidateId: "ABSTAIN",
+          candidateName: "ABSTAIN",
+          slate: "N/A",
           electionId,
           electionName: electionData.title,
         };
       }
-    );
+
+      const candidate = position?.candidates.find((c) => c.id === candidateId);
+
+      return {
+        position: position?.title,
+        candidateId: candidate?.id,
+        candidateName: candidate ? getCandidateDisplayName(candidate) : "",
+        slate: candidate?.slate || "N/A",
+        electionId,
+        electionName: electionData.title,
+      };
+    });
 
     onComplete(candidateSelections);
   };
@@ -208,7 +342,6 @@ const BallotScreenWithAbstain = ({
   return (
     <div className="min-h-screen p-6">
       <div className="max-w-6xl mx-auto">
-
         {/* Header */}
         <Card className="mb-6 border-2 border-primary/20 bg-card/95 backdrop-blur-sm">
           <div className="p-6 flex items-center justify-between flex-wrap gap-4">
@@ -235,15 +368,11 @@ const BallotScreenWithAbstain = ({
               {/* ⏳ DYNAMIC TIMER (from VotingKiosk) */}
               <div
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-                  timeLeft < 60000
-                    ? "bg-destructive/10 text-destructive"
-                    : "bg-primary/10 text-primary"
+                  timeLeft < 60000 ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary"
                 }`}
               >
                 <Clock className="h-5 w-5" />
-                <span className="font-mono text-lg font-bold">
-                  {formatTime(timeLeft)}
-                </span>
+                <span className="font-mono text-lg font-bold">{formatTime(timeLeft)}</span>
               </div>
             </div>
           </div>
@@ -252,8 +381,8 @@ const BallotScreenWithAbstain = ({
         {/* Info Card */}
         <Card className="mb-6 p-4 bg-info/5 border-info/20">
           <p className="text-sm text-center">
-            <strong>Note:</strong> You may abstain from any position by selecting
-            the "Abstain" option.
+            <strong>Note:</strong> You may abstain from any position by selecting the "Abstain"
+            option.
           </p>
         </Card>
 
@@ -273,9 +402,7 @@ const BallotScreenWithAbstain = ({
                         {electionData.title}
                       </Badge>
                     </div>
-                    {selections[position.id] && (
-                      <CheckCircle2 className="h-6 w-6 text-success" />
-                    )}
+                    {selections[position.id] && <CheckCircle2 className="h-6 w-6 text-success" />}
                   </div>
 
                   <RadioGroup
@@ -283,58 +410,54 @@ const BallotScreenWithAbstain = ({
                     onValueChange={(value) => handleSelection(position.id, value)}
                   >
                     <div className="space-y-4">
-
                       {/* Candidate List */}
-                      {position.candidates.map((candidate: any) => (
-                        <div
-                          key={candidate.id}
-                          className={`flex items-start gap-4 p-4 rounded-lg border-2 transition-all cursor-pointer hover:border-primary/50 ${
-                            selections[position.id] === candidate.id
-                              ? "border-primary bg-primary/5"
-                              : "border-border bg-background"
-                          }`}
-                          onClick={() => handleSelection(position.id, candidate.id)}
-                        >
-                          <RadioGroupItem
-                            value={candidate.id}
-                            id={candidate.id}
-                            className="mt-1"
-                          />
-                          <Label htmlFor={candidate.id} className="flex-1 cursor-pointer">
-                            <div className="flex items-start gap-4">
-                              <div className= "w-24 h-24 rounded-lg overflow-hidden border bg-muted flex items-center justify-center">
-                                {candidate.photo_url ? (
-                                  <img
-                                    src={candidate.photo_url}
-                                    alt={candidate.name}
-                                    className="w-full h-full object-cover"
-                                    onError={(e) => {
-                                      // fallback if URL is broken
-                                      (e.currentTarget as HTMLImageElement).src = "";
-                                    }}
-                                  />
+                      {position.candidates.map((candidate: CandidateRow) => {
+                        const candidateName = getCandidateDisplayName(candidate);
+
+                        return (
+                          <div
+                            key={candidate.id}
+                            className={`flex items-start gap-4 p-4 rounded-lg border-2 transition-all cursor-pointer hover:border-primary/50 ${
+                              selections[position.id] === candidate.id
+                                ? "border-primary bg-primary/5"
+                                : "border-border bg-background"
+                            }`}
+                            onClick={() => handleSelection(position.id, candidate.id)}
+                          >
+                            <RadioGroupItem value={candidate.id} id={candidate.id} className="mt-1" />
+                            <Label htmlFor={candidate.id} className="flex-1 cursor-pointer">
+                              <div className="flex items-start gap-4">
+                                <div className="w-24 h-24 rounded-lg overflow-hidden border bg-muted flex items-center justify-center">
+                                  {candidate.photo_url ? (
+                                    <img
+                                      src={candidate.photo_url}
+                                      alt={candidateName}
+                                      className="w-full h-full object-cover"
+                                      onError={(e) => {
+                                        (e.currentTarget as HTMLImageElement).src = "";
+                                      }}
+                                    />
                                   ) : (
                                     <User className="h-12 w-12 text-muted-foreground" />
                                   )}
-                              </div>
+                                </div>
 
-                              <div className="flex-1">
-                                <h3 className="font-semibold text-lg">{candidate.name}</h3>
-                                {candidate.slate && (
-                                  <p className="text-sm text-secondary font-medium mb-2">
-                                    {candidate.slate}
-                                  </p>
-                                )}
-                                {candidate.bio && (
-                                  <p className="text-sm text-muted-foreground">
-                                    {candidate.bio}
-                                  </p>
-                                )}
+                                <div className="flex-1">
+                                  <h3 className="font-semibold text-lg">{candidateName}</h3>
+                                  {candidate.slate && (
+                                    <p className="text-sm text-secondary font-medium mb-2">
+                                      {candidate.slate}
+                                    </p>
+                                  )}
+                                  {candidate.bio && (
+                                    <p className="text-sm text-muted-foreground">{candidate.bio}</p>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          </Label>
-                        </div>
-                      ))}
+                            </Label>
+                          </div>
+                        );
+                      })}
 
                       {/* ABSTAIN OPTION */}
                       <div
@@ -351,7 +474,10 @@ const BallotScreenWithAbstain = ({
                           className="mt-1"
                         />
 
-                        <Label htmlFor={`${position.id}-abstain`} className="flex-1 cursor-pointer">
+                        <Label
+                          htmlFor={`${position.id}-abstain`}
+                          className="flex-1 cursor-pointer"
+                        >
                           <div className="flex items-center gap-3">
                             <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-warning/20 flex items-center justify-center">
                               <Ban className="h-6 w-6 text-warning" />
@@ -395,9 +521,7 @@ const BallotScreenWithAbstain = ({
       {/* Abstain Confirm Dialog */}
       <AlertDialog
         open={abstainConfirm.show}
-        onOpenChange={(open) =>
-          setAbstainConfirm({ ...abstainConfirm, show: open })
-        }
+        onOpenChange={(open) => setAbstainConfirm({ ...abstainConfirm, show: open })}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -418,7 +542,6 @@ const BallotScreenWithAbstain = ({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
     </div>
   );
 };
