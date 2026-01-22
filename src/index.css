@@ -118,3 +118,14 @@ All colors MUST be HSL.
     @apply bg-background text-foreground;
   }
 }
+
+/* ✅ Utility: hide scrollbar (still scrollable) — perfect for kiosks/touchscreens */
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
