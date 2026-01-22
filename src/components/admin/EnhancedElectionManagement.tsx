@@ -62,7 +62,9 @@ type ElectionRow = {
 type CandidateRow = {
   id: string;
   election_id: string;
-  name: string;
+  name: string; // display-only (DB trigger syncs from first/last)
+  first_name?: string | null;
+  last_name?: string | null;
   position: string;
   slate: string | null;
   photo_url: string | null;
@@ -71,6 +73,24 @@ type CandidateRow = {
   vote_count: number | null;
   created_at?: string;
   updated_at?: string;
+};
+
+const getCandidateDisplayName = (c: CandidateRow) => {
+  const first = (c.first_name ?? "").trim();
+  const last = (c.last_name ?? "").trim();
+  const composed = `${first} ${last}`.trim();
+  return composed || (c.name ?? "").trim();
+};
+
+const splitLegacyName = (name: string) => {
+  const cleaned = name.trim().replace(/\s+/g, " ");
+  if (!cleaned) return { first_name: "", last_name: "" };
+  const parts = cleaned.split(" ");
+  if (parts.length === 1) return { first_name: "", last_name: parts[0] };
+  return {
+    first_name: parts.slice(0, -1).join(" "),
+    last_name: parts[parts.length - 1],
+  };
 };
 
 const CANDIDATE_PHOTO_BUCKET = "candidate-photos";
@@ -214,7 +234,8 @@ export default function EnhancedElectionManagement() {
     null
   );
   const [cForm, setCForm] = useState({
-    name: "",
+    first_name: "",
+    last_name: "",
     position: "",
     slate: "",
     bio: "",
@@ -646,7 +667,8 @@ export default function EnhancedElectionManagement() {
     if (isSelectedFinal) return toast.error("This election is finalized. Candidates are locked.");
     setEditingCandidate(null);
     setCForm({
-      name: "",
+      first_name: "",
+      last_name: "",
       position: prefillPosition ?? "",
       slate: "",
       bio: "",
@@ -659,8 +681,10 @@ export default function EnhancedElectionManagement() {
   const openEditCandidate = (c: CandidateRow) => {
     if (isSelectedFinal) return toast.error("This election is finalized. Candidates are locked.");
     setEditingCandidate(c);
+    const legacy = splitLegacyName(c.name ?? "");
     setCForm({
-      name: c.name ?? "",
+      first_name: (c.first_name ?? legacy.first_name) ?? "",
+      last_name: (c.last_name ?? legacy.last_name) ?? "",
       position: c.position ?? "",
       slate: c.slate ?? "",
       bio: c.bio ?? "",
@@ -702,7 +726,9 @@ export default function EnhancedElectionManagement() {
   const saveCandidate = async () => {
     if (!selectedElectionId) return toast.error("Select an election first.");
     if (isSelectedFinal) return toast.error("This election is finalized. Candidates are locked.");
-    if (!cForm.name.trim()) return toast.error("Candidate name is required.");
+        if (!cForm.last_name.trim()) return toast.error("Last name is required.");
+    const displayName = `${cForm.first_name.trim()} ${cForm.last_name.trim()}`.trim();
+    if (!displayName) return toast.error("Candidate name is required.");
     if (!cForm.position.trim()) return toast.error("Position is required.");
 
     setSaving(true);
@@ -715,7 +741,9 @@ export default function EnhancedElectionManagement() {
           .from("candidates")
           .insert({
             election_id: selectedElectionId,
-            name: cForm.name.trim(),
+                        first_name: cForm.first_name.trim(),
+            last_name: cForm.last_name.trim(),
+            name: `${cForm.first_name.trim()} ${cForm.last_name.trim()}`.trim(),
             position: cForm.position.trim(),
             slate: cForm.slate.trim() || null,
             bio: cForm.bio.trim() || null,
@@ -767,7 +795,9 @@ export default function EnhancedElectionManagement() {
       const { error } = await supabase
         .from("candidates")
         .update({
-          name: cForm.name.trim(),
+                    first_name: cForm.first_name.trim(),
+          last_name: cForm.last_name.trim(),
+          name: `${cForm.first_name.trim()} ${cForm.last_name.trim()}`.trim(),
           position: cForm.position.trim(),
           slate: cForm.slate.trim() || null,
           bio: cForm.bio.trim() || null,
@@ -1072,6 +1102,7 @@ export default function EnhancedElectionManagement() {
                         />
                       </div>
 
+
                       {Boolean(e.is_final) ? (
                         <>
                           <div className="rounded-md border px-3 py-2">
@@ -1332,7 +1363,7 @@ export default function EnhancedElectionManagement() {
                                 {/* Candidate info */}
                                 <div className="min-w-0">
                                   <div className="flex items-center gap-2 flex-wrap">
-                                    <div className="font-semibold truncate">{c.name}</div>
+                                    <div className="font-semibold truncate">{getCandidateDisplayName(c)}</div>
                                     {c.slate ? (
                                       <Badge variant="secondary">{c.slate}</Badge>
                                     ) : null}
@@ -1575,13 +1606,28 @@ export default function EnhancedElectionManagement() {
               </div>
             </div>
 
-            <div className="grid gap-2">
-              <Label>Name</Label>
-              <Input
-                value={cForm.name}
-                onChange={(e) => setCForm((p) => ({ ...p, name: e.target.value }))}
-                placeholder="e.g., Juan Dela Cruz"
-              />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-2">
+                <Label>First name</Label>
+                <Input
+                  value={cForm.first_name}
+                  onChange={(e) =>
+                    setCForm((p) => ({ ...p, first_name: e.target.value }))
+                  }
+                  placeholder="e.g., Juan"
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label>Last name</Label>
+                <Input
+                  value={cForm.last_name}
+                  onChange={(e) =>
+                    setCForm((p) => ({ ...p, last_name: e.target.value }))
+                  }
+                  placeholder="e.g., Dela Cruz"
+                />
+              </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
