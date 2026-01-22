@@ -76,6 +76,16 @@ const extractTxHash = (payload: any): string | null => {
   return null;
 };
 
+// ✅ Normalize tokenId so email verification links always work (string numeric expected)
+const normalizeTokenId = (v: unknown): string | undefined => {
+  if (typeof v === "string") {
+    const s = v.trim();
+    return s ? s : undefined;
+  }
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return undefined;
+};
+
 const SubmissionScreen = ({
   voterData,
   selections,
@@ -209,11 +219,14 @@ const SubmissionScreen = ({
 
           const explorerTxUrl = (data as any)?.explorerTxUrl || `${AMOY_POLYGONSCAN_TX_BASE}${txHash}`;
 
+          // ✅ Ensure tokenId is always string (email verification expects numeric string)
+          const tokenId = normalizeTokenId((data as any)?.tokenId);
+
           minted.push({
             electionId: e.electionId,
             electionName: e.electionName,
             txHash,
-            tokenId: (data as any)?.tokenId,
+            tokenId,
             reused: (data as any)?.reused,
             mode: (data as any)?.mode,
             explorerTxUrl,
@@ -237,10 +250,15 @@ const SubmissionScreen = ({
               electionTitle: computedElectionTitle,
               votedAt: new Date().toISOString(),
               receiptItems,
+
               // Backward compatible (single)
               txHash: primary?.txHash,
               explorerUrl: primary?.explorerTxUrl,
-              // Forward compatible (multi) - safe if function ignores
+
+              // ✅ NEW: single tokenId fallback (so "Verify Vote Receipt" never depends on receipts[])
+              tokenId: primary?.tokenId,
+
+              // Forward compatible (multi) - preferred path
               receipts: minted,
             },
           });
@@ -596,7 +614,6 @@ const SubmissionScreen = ({
                   </div>
                 ) : null}
 
-
                 {/* ✅ Voter-friendly verification (non-technical) */}
                 <div className="mt-6 rounded-lg border border-border bg-card p-5 text-left">
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -623,7 +640,6 @@ const SubmissionScreen = ({
                     <span className="font-medium">Verify Vote Receipt</span>.
                   </div>
                 </div>
-
 
                 {/* Highlights */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
