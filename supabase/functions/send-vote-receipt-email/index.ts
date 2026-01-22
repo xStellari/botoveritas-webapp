@@ -33,6 +33,9 @@ type Body = {
   txHash?: string;
   explorerUrl?: string;
 
+  // ✅ NEW: optional tokenId for single-receipt (older clients)
+  tokenId?: string;
+
   // Forward-compatible multi-receipt (per-election minting)
   receipts?: ReceiptTx[];
 };
@@ -127,6 +130,9 @@ function buildReceiptEmailHtml(params: {
   txHash?: string;
   explorerUrl?: string;
 
+  // ✅ NEW: single tokenId (older clients)
+  singleTokenId?: string;
+
   // Multi-receipt
   receipts?: ReceiptTx[];
 
@@ -142,6 +148,7 @@ function buildReceiptEmailHtml(params: {
     receiptItems,
     txHash,
     explorerUrl,
+    singleTokenId,
     receipts,
     verifyBaseUrl,
   } = params;
@@ -199,6 +206,17 @@ function buildReceiptEmailHtml(params: {
     : [];
 
   const hasMulti = normalizedReceipts.length > 1;
+
+  // ✅ Prefer tokenId from receipts[0] if only one receipt exists
+  const effectiveSingleTokenId =
+    safeStr(singleTokenId) ||
+    (normalizedReceipts.length === 1 ? safeStr(normalizedReceipts[0]?.tokenId) : "");
+
+  const hasSingleToken = isLikelyTokenId(effectiveSingleTokenId);
+  const singleVerifyUrl = hasSingleToken
+    ? `${verifyBaseUrl}${encodeURIComponent(effectiveSingleTokenId)}`
+    : "";
+
   const hasAny =
     normalizedReceipts.length > 0 || (!!txHash && txHash.startsWith("0x"));
 
@@ -234,10 +252,12 @@ function buildReceiptEmailHtml(params: {
               const tokenId = safeStr(r.tokenId) || "";
               const hasToken = isLikelyTokenId(tokenId);
 
+              // ✅ PRIMARY: your verifier page (NOT polygonscan)
               const verifyUrl = hasToken
                 ? `${verifyBaseUrl}${encodeURIComponent(tokenId)}`
                 : "";
 
+              // ✅ OPTIONAL: polygonscan as Advanced
               const advancedTxUrl = r.explorerTxUrl ? escapeAttr(r.explorerTxUrl) : "";
 
               const tokenBadge = hasToken
@@ -331,7 +351,8 @@ function buildReceiptEmailHtml(params: {
     `
     : "";
 
-  // Single receipt fallback (older clients)
+  // ✅ Single receipt fallback (older clients)
+  // FIX: show "Verify Vote Receipt" to your verifier page if tokenId exists.
   const singleBlock =
     !normalizedReceipts.length && txHash
       ? `
@@ -368,25 +389,67 @@ function buildReceiptEmailHtml(params: {
         "><span style="font-weight:800;color:#0f172a;">Proof ID:</span> ${escapeHtml(txHash)}</div>
 
         ${
-          explorerUrl
-            ? `<div style="margin-top:12px;">
-                 <a href="${escapeAttr(explorerUrl)}" style="
-                   display:inline-block;
-                   background:#064e3b;
-                   color:#ffffff;
-                   text-decoration:none;
-                   padding:10px 12px;
-                   border-radius:10px;
-                   font-size:12px;
-                   font-weight:800;
-                   letter-spacing:.2px;
-                 ">Advanced: View on Polygonscan</a>
-               </div>
-               <div style="margin-top:8px;font-size:11px;color:#64748b;line-height:1.6;">
-                 Tip: You can open this on your phone or personal device anytime.
-               </div>`
-            : ""
+          singleVerifyUrl
+            ? `
+              <div style="margin-top:12px;">
+                <a href="${escapeAttr(singleVerifyUrl)}" style="
+                  display:inline-block;
+                  background:#064e3b;
+                  color:#ffffff;
+                  text-decoration:none;
+                  padding:10px 12px;
+                  border-radius:10px;
+                  font-size:12px;
+                  font-weight:800;
+                  letter-spacing:.2px;
+                ">Verify Vote Receipt</a>
+                ${
+                  explorerUrl
+                    ? `<a href="${escapeAttr(explorerUrl)}" style="
+                         display:inline-block;
+                         margin-left:8px;
+                         color:#064e3b;
+                         text-decoration:none;
+                         font-size:12px;
+                         font-weight:800;
+                       ">Advanced</a>`
+                    : ""
+                }
+              </div>
+              <div style="margin-top:8px;font-size:11px;color:#64748b;line-height:1.6;">
+                If the button doesn't open, copy this link:
+                <span style="word-break:break-all;">${escapeHtml(singleVerifyUrl)}</span>
+              </div>
+            `
+            : `
+              ${
+                explorerUrl
+                  ? `<div style="margin-top:12px;">
+                       <a href="${escapeAttr(explorerUrl)}" style="
+                         display:inline-block;
+                         background:#064e3b;
+                         color:#ffffff;
+                         text-decoration:none;
+                         padding:10px 12px;
+                         border-radius:10px;
+                         font-size:12px;
+                         font-weight:800;
+                         letter-spacing:.2px;
+                       ">Advanced: View on Polygonscan</a>
+                     </div>
+                     <div style="margin-top:8px;font-size:11px;color:#64748b;line-height:1.6;">
+                       Verification link unavailable (missing token ID). You may still use the Advanced link.
+                     </div>`
+                  : `<div style="margin-top:8px;font-size:11px;color:#64748b;line-height:1.6;">
+                       Verification link unavailable (missing token ID).
+                     </div>`
+              }
+            `
         }
+
+        <div style="margin-top:8px;font-size:11px;color:#64748b;line-height:1.6;">
+          Tip: You can open these links on your phone or personal device anytime.
+        </div>
       </div>
     `
       : "";
@@ -595,7 +658,7 @@ serve(async (req) => {
     const appUrl = Deno.env.get("APP_URL") || "https://botoveritas.info";
     const logoUrl = Deno.env.get("LOGO_URL") || `${appUrl}/FEU_Alabang_logo.png`;
 
-    // Human-friendly verification page base
+    // ✅ Verification page base (your route)
     const verifyBaseUrl = `${appUrl}/api/verify/nft/`;
 
     const votedAtIso = body.votedAt || new Date().toISOString();
@@ -610,6 +673,9 @@ serve(async (req) => {
 
     const receipts = Array.isArray(body.receipts) ? body.receipts : undefined;
 
+    // ✅ NEW: allow single tokenId for older clients
+    const singleTokenId = safeStr(body.tokenId) || undefined;
+
     const html = buildReceiptEmailHtml({
       subject,
       logoUrl,
@@ -620,6 +686,7 @@ serve(async (req) => {
       txHash,
       explorerUrl,
       receipts,
+      singleTokenId,
       verifyBaseUrl,
     });
 
