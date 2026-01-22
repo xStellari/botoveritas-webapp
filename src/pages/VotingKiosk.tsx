@@ -9,6 +9,8 @@
 // 7) ✅ UPDATED: Session check uses SERVER TIME via RPC (prevents kiosk clock skew issues)
 // 8) ✅ OPTIONAL: Best-effort delete of expired session row for this voter before checking
 // 9) ✅ OPTIONAL: Make election visibility authoritative by using server-side RPC eligibility checks (not just org_affiliations UI filter)
+// 10) ✅ NEW: Finalized or archived elections are NEVER treated as "active/ongoing" even if end_date hasn't passed yet.
+// 11) ✅ NEW: Safeguard against voting if election is finalized/archived mid-flow (before persisting votes / status)
 
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -74,6 +76,46 @@ const VotingKiosk = () => {
   const [showTimeoutModal, setShowTimeoutModal] = useState(false);
 
   // -----------------------------------------------------
+  // ✅ NEW: Centralized lifecycle guard
+  // Finalized or archived elections must NEVER be treated as "active/ongoing".
+  // -----------------------------------------------------
+  const isOperationalElection = (e: any) => !e?.is_final && !e?.is_archived;
+
+  // -----------------------------------------------------
+  // ✅ NEW: Re-check election lifecycle state from DB (for mid-flow safety)
+  // -----------------------------------------------------
+  const assertElectionStillOperational = async (electionId: string) => {
+    const { data, error } = await supabase
+      .from("elections")
+      .select("id, is_final, is_archived, is_active, start_date, end_date")
+      .eq("id", electionId)
+      .single();
+
+    if (error || !data) {
+      toast.error("Failed to verify election status. Please refresh.");
+      return false;
+    }
+
+    // If finalized/archived, it's not voteable even if within end_date.
+    if (Boolean((data as any).is_final) || Boolean((data as any).is_archived)) {
+      toast.error("This election was finalized/archived and is no longer available for voting.");
+      return false;
+    }
+
+    // Also ensure it's actually active + within time window (extra safety)
+    const now = new Date();
+    const start = new Date((data as any).start_date);
+    const end = new Date((data as any).end_date);
+
+    if (!Boolean((data as any).is_active) || start > now || end <= now) {
+      toast.error("This election is no longer active.");
+      return false;
+    }
+
+    return true;
+  };
+
+  // -----------------------------------------------------
   // ✅ OPTIONAL: Authoritative eligibility is now handled via RPC (name-based membership lists)
   // -----------------------------------------------------
 
@@ -128,15 +170,21 @@ const VotingKiosk = () => {
 
     const now = new Date();
 
+    // ✅ NEW: "Active" must exclude finalized/archived even if time window is valid
     const activeTimeWindow = elections.filter((e) => {
       const start = new Date(e.start_date);
       const end = new Date(e.end_date);
-      return e.is_active && start <= now && end > now;
+      return Boolean(e.is_active) && isOperationalElection(e) && start <= now && end > now;
     });
 
+    // ✅ NEW: "Expired/Closed" should include:
+    // - ended by time
+    // - OR ended early due to lifecycle (finalized/archived)
     const expiredTimeWindow = elections.filter((e) => {
       const end = new Date(e.end_date);
-      return e.is_active && end <= now;
+      const endedByTime = end <= now;
+      const endedByLifecycle = !isOperationalElection(e); // finalized or archived
+      return Boolean(e.is_active) && (endedByTime || endedByLifecycle);
     });
 
     // ✅ OPTIONAL: Authoritative eligibility (server-side)
@@ -274,18 +322,24 @@ const VotingKiosk = () => {
 
     // ✅ FIX: Election is "active" only if:
     // - is_active = true
+    // - NOT finalized
+    // - NOT archived
     // - start_date <= now
     // - end_date > now
     const activeTimeWindow = elections.filter((e) => {
       const start = new Date(e.start_date);
       const end = new Date(e.end_date);
-      return e.is_active && start <= now && end > now;
+      return Boolean(e.is_active) && isOperationalElection(e) && start <= now && end > now;
     });
 
-    // Expired = was active but end_date <= now
+    // ✅ "Expired/Closed" includes:
+    // - ended by time
+    // - OR ended early due to finalize/archive
     const expiredTimeWindow = elections.filter((e) => {
       const end = new Date(e.end_date);
-      return e.is_active && end <= now;
+      const endedByTime = end <= now;
+      const endedByLifecycle = !isOperationalElection(e);
+      return Boolean(e.is_active) && (endedByTime || endedByLifecycle);
     });
 
     // ✅ OPTIONAL: Authoritative eligibility (server-side)
@@ -356,6 +410,13 @@ const VotingKiosk = () => {
     const voterId = voterData?.id ?? voterIdOverride;
     if (!voterId) {
       toast.error("Missing voter session.");
+      return;
+    }
+
+    // ✅ NEW: Defensive guard (prevents edge-cases / stale UI selection)
+    if (electionData?.is_final || electionData?.is_archived) {
+      toast.error("This election is already finalized/archived and is no longer available for voting.");
+      await refreshElectionsAndStatus();
       return;
     }
 
@@ -432,6 +493,16 @@ const VotingKiosk = () => {
     electionId: string,
     selections: CandidateSelection[]
   ) => {
+    // ✅ NEW: mid-flow safety check
+    const ok = await assertElectionStillOperational(electionId);
+    if (!ok) {
+      await refreshElectionsAndStatus();
+      setSelectedElection(null);
+      setCurrentSelections([]);
+      setCurrentStep("election-select");
+      return;
+    }
+
     for (const sel of selections) {
       await supabase.from("votes").insert({
         voter_id: voterId,
@@ -446,9 +517,25 @@ const VotingKiosk = () => {
   const handleSubmissionComplete = async (txHash: string) => {
     setTransactionHash(txHash);
 
+    // ✅ NEW: mid-flow safety check before marking has_voted
+    const electionId = selectedElection?.id;
+    if (!electionId) {
+      toast.error("Missing election.");
+      return;
+    }
+
+    const ok = await assertElectionStillOperational(electionId);
+    if (!ok) {
+      await refreshElectionsAndStatus();
+      setSelectedElection(null);
+      setCurrentSelections([]);
+      setCurrentStep("election-select");
+      return;
+    }
+
     await supabase.from("voter_election_status").upsert({
       voter_id: voterData?.id,
-      election_id: selectedElection?.id,
+      election_id: electionId,
       has_voted: true,
       voted_at: new Date().toISOString(),
 

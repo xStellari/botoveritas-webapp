@@ -79,7 +79,9 @@ const ElectionSelection = ({
 
   const eligibleActiveElections = useMemo(() => {
     return (localActive ?? []).filter((e) => {
-      const eligibleOrgs: string[] = Array.isArray(e?.eligible_orgs) ? e.eligible_orgs : [];
+      const eligibleOrgs: string[] = Array.isArray(e?.eligible_orgs)
+        ? e.eligible_orgs
+        : [];
       if (eligibleOrgs.length === 0) return true; // open election fallback
       return eligibleOrgs.some((org) => voterOrgs.includes(org));
     });
@@ -113,6 +115,39 @@ const ElectionSelection = ({
     "Some elections are restricted to specific organizations (e.g., ICpEP, HonSoc). " +
     "If you’re not eligible, that election won’t appear on this kiosk.";
 
+  // ✅ lifecycle-aware label helpers (kept for finalized vs plain closed)
+  // NOTE: archived elections are now hidden entirely from Closed Elections UI.
+  const getClosedBadgeLabel = (e: any) => {
+    if (Boolean(e?.is_final)) return "Closed (Finalized)";
+    return "Closed";
+  };
+
+  const getClosedReasonText = (e: any) => {
+    const now = new Date();
+    const end = e?.end_date ? new Date(e.end_date) : null;
+
+    const endedByLifecycle = Boolean(e?.is_final);
+    const endedByTime = end ? end <= now : true;
+
+    // If lifecycle ended it while time window might still be open
+    if (endedByLifecycle && end && end > now) {
+      return "Election finalized (ended early)";
+    }
+
+    // Default time-ended
+    if (endedByTime) return "Voting period closed";
+
+    // Fallback
+    if (endedByLifecycle) return "Election finalized";
+
+    return "Voting closed";
+  };
+
+  // ✅ NEW: Hide archived elections from Closed Elections list entirely
+  const visibleClosedElections = useMemo(() => {
+    return (localExpired ?? []).filter((e) => !Boolean(e?.is_archived));
+  }, [localExpired]);
+
   return (
     <div className="min-h-screen flex flex-col bg-neutral-50">
       {/* NAVBAR (match Index.tsx) */}
@@ -122,7 +157,9 @@ const ElectionSelection = ({
             <img src={feuLogo} className="h-12" alt="FEU Logo" />
           </div>
 
-          <div className="text-xs text-muted-foreground hidden md:block">Voting Kiosk</div>
+          <div className="text-xs text-muted-foreground hidden md:block">
+            Voting Kiosk
+          </div>
         </div>
       </header>
 
@@ -140,18 +177,29 @@ const ElectionSelection = ({
 
             <p className="text-xs md:text-sm text-muted-foreground">
               Logged in as{" "}
-              <span className="font-semibold text-foreground">{voterFullName}</span>
+              <span className="font-semibold text-foreground">
+                {voterFullName}
+              </span>
             </p>
 
             <div className="flex justify-center items-center gap-2 mt-4 flex-wrap">
-              <Badge variant="outline" className="border-emerald-500 text-emerald-700">
+              <Badge
+                variant="outline"
+                className="border-emerald-500 text-emerald-700"
+              >
                 Active: {eligibleActiveElections.length}
               </Badge>
-              <Badge variant="outline" className="border-amber-500 text-amber-700">
+              <Badge
+                variant="outline"
+                className="border-amber-500 text-amber-700"
+              >
                 Voted: {completedElections.length}
               </Badge>
-              <Badge variant="outline" className="border-gray-300 text-gray-700">
-                Closed: {localExpired.length}
+              <Badge
+                variant="outline"
+                className="border-gray-300 text-gray-700"
+              >
+                Closed: {visibleClosedElections.length}
               </Badge>
 
               {/* Refresh button */}
@@ -161,7 +209,11 @@ const ElectionSelection = ({
                 onClick={doRefresh}
                 disabled={refreshing}
               >
-                <RefreshCw className={`h-3.5 w-3.5 mr-1 ${refreshing ? "animate-spin" : ""}`} />
+                <RefreshCw
+                  className={`h-3.5 w-3.5 mr-1 ${
+                    refreshing ? "animate-spin" : ""
+                  }`}
+                />
                 Refresh
               </Button>
             </div>
@@ -198,7 +250,10 @@ const ElectionSelection = ({
                 {/* keep the hint visible even in empty state */}
                 <p className="text-xs text-muted-foreground mt-2">
                   Some elections may not appear if you’re not eligible.{" "}
-                  <span className="font-medium text-emerald-800 cursor-help" title={whyTooltip}>
+                  <span
+                    className="font-medium text-emerald-800 cursor-help"
+                    title={whyTooltip}
+                  >
                     Why?
                   </span>
                 </p>
@@ -210,7 +265,11 @@ const ElectionSelection = ({
                     onClick={doRefresh}
                     disabled={refreshing}
                   >
-                    <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
+                    <RefreshCw
+                      className={`h-4 w-4 mr-2 ${
+                        refreshing ? "animate-spin" : ""
+                      }`}
+                    />
                     {refreshing ? "Refreshing…" : "Refresh"}
                   </Button>
                 </div>
@@ -242,7 +301,9 @@ const ElectionSelection = ({
                             >
                               <Vote
                                 className={`h-5 w-5 ${
-                                  hasVoted ? "text-amber-700" : "text-emerald-700"
+                                  hasVoted
+                                    ? "text-amber-700"
+                                    : "text-emerald-700"
                                 }`}
                               />
                             </div>
@@ -253,14 +314,18 @@ const ElectionSelection = ({
                           </div>
 
                           {election.description ? (
-                            <p className="text-sm text-muted-foreground">{election.description}</p>
+                            <p className="text-sm text-muted-foreground">
+                              {election.description}
+                            </p>
                           ) : null}
 
                           <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
                             <p className="flex items-center gap-1">
                               <CalendarDays className="h-3 w-3" />
                               {election.start_date
-                                ? new Date(election.start_date).toLocaleString()
+                                ? new Date(
+                                    election.start_date
+                                  ).toLocaleString()
                                 : "—"}{" "}
                               →{" "}
                               {election.end_date
@@ -298,7 +363,9 @@ const ElectionSelection = ({
                       <div className="mt-5">
                         <Button
                           className={`w-full mt-2 ${
-                            hasVoted ? "" : "bg-gradient-gold text-black hover:opacity-90"
+                            hasVoted
+                              ? ""
+                              : "bg-gradient-gold text-black hover:opacity-90"
                           }`}
                           disabled={hasVoted}
                           onClick={(e) => {
@@ -316,8 +383,8 @@ const ElectionSelection = ({
             )}
           </section>
 
-          {/* CLOSED ELECTIONS */}
-          {localExpired.length > 0 && (
+          {/* CLOSED ELECTIONS (archived hidden) */}
+          {visibleClosedElections.length > 0 && (
             <section className="space-y-4">
               <h2 className="text-xl font-bold text-red-500 flex items-center gap-2">
                 <CheckCircle className="h-5 w-5 text-red-500" />
@@ -325,26 +392,42 @@ const ElectionSelection = ({
               </h2>
 
               <div className="space-y-4">
-                {localExpired.map((election) => (
-                  <Card key={election.id} className="p-6 border hover:bg-red-50/50 transition">
+                {visibleClosedElections.map((election) => (
+                  <Card
+                    key={election.id}
+                    className="p-6 border hover:bg-red-50/50 transition"
+                  >
                     <div className="flex items-center justify-between mb-1">
                       <h3 className="font-semibold">{election.title}</h3>
-                      <Badge variant="outline" className="border-gray-300 text-gray-700">
-                        Closed
+
+                      <Badge
+                        variant="outline"
+                        className="border-gray-300 text-gray-700"
+                      >
+                        {getClosedBadgeLabel(election)}
                       </Badge>
                     </div>
 
                     {election.description ? (
-                      <p className="text-sm text-muted-foreground">{election.description}</p>
+                      <p className="text-sm text-muted-foreground">
+                        {election.description}
+                      </p>
                     ) : null}
 
                     <p className="text-xs text-muted-foreground flex items-center gap-1 mt-2">
                       <CalendarDays className="h-3 w-3" />
-                      {election.start_date ? new Date(election.start_date).toLocaleString() : "—"}{" "}
-                      → {election.end_date ? new Date(election.end_date).toLocaleString() : "—"}
+                      {election.start_date
+                        ? new Date(election.start_date).toLocaleString()
+                        : "—"}{" "}
+                      →{" "}
+                      {election.end_date
+                        ? new Date(election.end_date).toLocaleString()
+                        : "—"}
                     </p>
 
-                    <p className="text-xs text-red-500 mt-1 font-medium">Voting period closed</p>
+                    <p className="text-xs text-red-500 mt-1 font-medium">
+                      {getClosedReasonText(election)}
+                    </p>
                   </Card>
                 ))}
               </div>

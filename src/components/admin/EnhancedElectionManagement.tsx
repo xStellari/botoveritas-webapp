@@ -111,10 +111,21 @@ function inputToISO(value: string) {
   return d.toISOString();
 }
 
-function getElectionState(e: ElectionRow) {
+/**
+ * IMPORTANT BUSINESS RULE:
+ * - If election is finalized OR archived, it must NOT be treated as "ongoing"
+ *   even if end_date hasn't passed yet.
+ *
+ * This lifecycle state is what we use for status badges in admin.
+ */
+function getElectionLifecycleState(e: ElectionRow) {
+  if (Boolean(e.is_archived)) return "ARCHIVED" as const;
+  if (Boolean(e.is_final)) return "FINALIZED" as const;
+
   const now = Date.now();
   const start = new Date(e.start_date).getTime();
   const end = new Date(e.end_date).getTime();
+
   if (now < start) return "UPCOMING" as const;
   if (now > end) return "CLOSED" as const;
   return "ONGOING" as const;
@@ -227,7 +238,6 @@ export default function EnhancedElectionManagement() {
   const [restoreTarget, setRestoreTarget] = useState<ElectionRow | null>(null);
   const [restoreConfirmText, setRestoreConfirmText] = useState("");
 
-
   // Candidate dialog
   const [candidateDialogOpen, setCandidateDialogOpen] = useState(false);
   const [editingCandidate, setEditingCandidate] = useState<CandidateRow | null>(
@@ -270,6 +280,7 @@ export default function EnhancedElectionManagement() {
 
   useEffect(() => {
     loadElections();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -278,6 +289,7 @@ export default function EnhancedElectionManagement() {
       return;
     }
     loadCandidates(selectedElectionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedElectionId]);
 
   useEffect(() => {
@@ -293,7 +305,6 @@ export default function EnhancedElectionManagement() {
     const { data, error } = await supabase
       .from("elections")
       .select("*")
-      // ✅ change: order by start_date (ascending)
       .order("start_date", { ascending: true });
 
     if (error) {
@@ -306,7 +317,8 @@ export default function EnhancedElectionManagement() {
     setLoading(false);
 
     if (!selectedElectionId && data && data.length > 0) {
-      const firstNonArchived = (data as any[]).find((x) => !x.is_archived) ?? (data as any[])[0];
+      const firstNonArchived =
+        (data as any[]).find((x) => !x.is_archived) ?? (data as any[])[0];
       setSelectedElectionId(firstNonArchived?.id ?? null);
     }
   };
@@ -382,14 +394,18 @@ export default function EnhancedElectionManagement() {
         data: { user },
       } = await supabase.auth.getUser();
 
+      // IMPORTANT RULE:
+      // Once finalized, election must no longer be considered active (even if end_date is in the future).
+      // So we force is_active=false at finalize-time.
       const { error } = await supabase
         .from("elections")
         .update({
           is_final: true,
-          // Optional but recommended: store who finalized
+          is_active: false,
+          finalized_at: new Date().toISOString(),
           finalized_by: user?.id ?? null,
           finalized_by_email: user?.email ?? null,
-        })
+        } as any)
         .eq("id", finalizeTarget.id);
 
       if (error) throw error;
@@ -401,12 +417,10 @@ export default function EnhancedElectionManagement() {
 
       await loadElections();
 
-      // If currently selected, refresh candidates too (read-only view)
       if (selectedElectionId) {
         await loadCandidates(selectedElectionId);
       }
 
-      // Close any open edit dialogs (they may now be invalid)
       setElectionDialogOpen(false);
       setCandidateDialogOpen(false);
     } catch (err: any) {
@@ -415,7 +429,6 @@ export default function EnhancedElectionManagement() {
       setSaving(false);
     }
   };
-
 
   const openArchiveElection = (e: ElectionRow) => {
     if (!Boolean(e.is_final)) {
@@ -442,10 +455,12 @@ export default function EnhancedElectionManagement() {
         data: { user },
       } = await supabase.auth.getUser();
 
+      // Safety: archived elections should never be active.
       const { error } = await supabase
         .from("elections")
         .update({
           is_archived: true,
+          is_active: false,
           archived_at: new Date().toISOString(),
           archived_by: user?.id ?? null,
           archived_by_email: user?.email ?? null,
@@ -488,6 +503,7 @@ export default function EnhancedElectionManagement() {
         .from("elections")
         .update({
           is_archived: false,
+          is_active: false, // remains inactive after restore (still finalized/read-only)
           archived_at: null,
           archived_by: null,
           archived_by_email: null,
@@ -508,7 +524,6 @@ export default function EnhancedElectionManagement() {
       setSaving(false);
     }
   };
-
 
   const saveElection = async () => {
     if (editingElection && Boolean(editingElection.is_final)) {
@@ -586,6 +601,10 @@ export default function EnhancedElectionManagement() {
       toast.error("This election is finalized and cannot be modified.");
       return;
     }
+    if (Boolean(e.is_archived)) {
+      toast.error("This election is archived and cannot be activated.");
+      return;
+    }
     if (saving) return;
 
     const next = !Boolean(e.is_active);
@@ -599,14 +618,12 @@ export default function EnhancedElectionManagement() {
     try {
       const { error } = await supabase
         .from("elections")
-        // ✅ change: do NOT update updated_at here (prevents reorder side-effects)
         .update({ is_active: next })
         .eq("id", e.id);
 
       if (error) throw error;
 
       toast.success(next ? "Election activated." : "Election deactivated.");
-      // ✅ change: removed loadElections() here to avoid reordering/jumping
     } catch (err: any) {
       // rollback on error
       setElections((prev) =>
@@ -664,7 +681,8 @@ export default function EnhancedElectionManagement() {
 
   const openCreateCandidate = (prefillPosition?: string) => {
     if (!selectedElectionId) return toast.error("Select an election first.");
-    if (isSelectedFinal) return toast.error("This election is finalized. Candidates are locked.");
+    if (isSelectedFinal)
+      return toast.error("This election is finalized. Candidates are locked.");
     setEditingCandidate(null);
     setCForm({
       first_name: "",
@@ -679,7 +697,8 @@ export default function EnhancedElectionManagement() {
   };
 
   const openEditCandidate = (c: CandidateRow) => {
-    if (isSelectedFinal) return toast.error("This election is finalized. Candidates are locked.");
+    if (isSelectedFinal)
+      return toast.error("This election is finalized. Candidates are locked.");
     setEditingCandidate(c);
     const legacy = splitLegacyName(c.name ?? "");
     setCForm({
@@ -725,7 +744,8 @@ export default function EnhancedElectionManagement() {
 
   const saveCandidate = async () => {
     if (!selectedElectionId) return toast.error("Select an election first.");
-    if (isSelectedFinal) return toast.error("This election is finalized. Candidates are locked.");
+    if (isSelectedFinal)
+      return toast.error("This election is finalized. Candidates are locked.");
     if (!cForm.last_name.trim()) return toast.error("Last name is required.");
     const displayName = `${cForm.first_name.trim()} ${cForm.last_name.trim()}`.trim();
     if (!displayName) return toast.error("Candidate name is required.");
@@ -795,7 +815,7 @@ export default function EnhancedElectionManagement() {
       const { error } = await supabase
         .from("candidates")
         .update({
-                    first_name: cForm.first_name.trim(),
+          first_name: cForm.first_name.trim(),
           last_name: cForm.last_name.trim(),
           name: `${cForm.first_name.trim()} ${cForm.last_name.trim()}`.trim(),
           position: cForm.position.trim(),
@@ -845,7 +865,24 @@ export default function EnhancedElectionManagement() {
   };
 
   const statusBadge = (e: ElectionRow) => {
-    const state = getElectionState(e);
+    const state = getElectionLifecycleState(e);
+
+    if (state === "ARCHIVED") {
+      return (
+        <Badge className="border-amber-600 text-amber-700 bg-amber-600/10">
+          Archived
+        </Badge>
+      );
+    }
+
+    if (state === "FINALIZED") {
+      return (
+        <Badge className="border-violet-600 text-violet-700 bg-violet-600/10">
+          Finalized
+        </Badge>
+      );
+    }
+
     if (state === "ONGOING") {
       return (
         <Badge className="border-green-600 text-green-700 bg-green-600/10">
@@ -861,9 +898,7 @@ export default function EnhancedElectionManagement() {
       );
     }
     return (
-      <Badge className="border-red-600 text-red-700 bg-red-600/10">
-        Closed
-      </Badge>
+      <Badge className="border-red-600 text-red-700 bg-red-600/10">Closed</Badge>
     );
   };
 
@@ -898,9 +933,11 @@ export default function EnhancedElectionManagement() {
     ) : null;
   };
 
-
   // --- Drag & Drop reorder (per position) ---
-  const persistOrderForPosition = async (position: string, orderedIds: string[]) => {
+  const persistOrderForPosition = async (
+    position: string,
+    orderedIds: string[]
+  ) => {
     if (!selectedElectionId) return;
     if (isSelectedFinal) {
       toast.error("This election is finalized. Candidate order is locked.");
@@ -1006,7 +1043,7 @@ export default function EnhancedElectionManagement() {
               <RefreshCcw className="h-4 w-4 mr-2" />
               Refresh
             </Button>
-            
+
             <div className="flex items-center gap-2 rounded-md border px-3 py-2">
               <span className="text-xs font-medium">Show Archived</span>
               <Switch checked={showArchived} onCheckedChange={setShowArchived} />
@@ -1021,7 +1058,9 @@ export default function EnhancedElectionManagement() {
 
         <CardContent className="space-y-3">
           {loading ? (
-            <div className="text-sm text-muted-foreground">Loading elections…</div>
+            <div className="text-sm text-muted-foreground">
+              Loading elections…
+            </div>
           ) : operationalElections.length === 0 ? (
             <div className="text-sm text-muted-foreground">
               No elections yet. Click <b>New</b>.
@@ -1056,7 +1095,6 @@ export default function EnhancedElectionManagement() {
                         </div>
                       ) : null}
 
-                      {/* ✅ change: shorter time display */}
                       <div className="text-xs text-muted-foreground mt-2">
                         {formatDateTimeShort(e.start_date)} —{" "}
                         {formatDateTimeShort(e.end_date)}
@@ -1097,7 +1135,9 @@ export default function EnhancedElectionManagement() {
                         <span className="text-xs font-medium">Active</span>
                         <Switch
                           checked={Boolean(e.is_active)}
-                          disabled={saving || Boolean(e.is_final)}
+                          disabled={
+                            saving || Boolean(e.is_final) || Boolean(e.is_archived)
+                          }
                           onCheckedChange={() => toggleElectionActive(e)}
                         />
                       </div>
@@ -1105,20 +1145,23 @@ export default function EnhancedElectionManagement() {
                       {Boolean(e.is_final) ? (
                         <>
                           <div className="rounded-md border px-3 py-2">
-
-                          <div className="text-xs font-medium flex items-center gap-2">
-                            <Lock className="h-3.5 w-3.5 text-muted-foreground" />
-                            Finalized
+                            <div className="text-xs font-medium flex items-center gap-2">
+                              <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+                              Finalized
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-1">
+                              {e.finalized_at
+                                ? formatDateTimeShort(e.finalized_at)
+                                : "—"}
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-1">
+                              Finalized by:{" "}
+                              {e.finalized_by_email ||
+                                (e.finalized_by
+                                  ? `${e.finalized_by.slice(0, 8)}…`
+                                  : "—")}
+                            </div>
                           </div>
-                          <div className="text-xs text-muted-foreground mt-1">
-                            {e.finalized_at
-                              ? formatDateTimeShort(e.finalized_at)
-                              : "—"}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-1">
-                            Finalized by: {e.finalized_by_email || (e.finalized_by ? `${e.finalized_by.slice(0, 8)}…` : "—")}
-                          </div>
-                        </div>
 
                           {!Boolean(e.is_archived) ? (
                             <Button
@@ -1159,75 +1202,86 @@ export default function EnhancedElectionManagement() {
               );
             })
           )}
-        
-        {showArchived ? (
-          <>
-            <Separator className="my-6" />
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <div className="text-sm font-semibold">Archived Elections</div>
-                <div className="text-xs text-muted-foreground">
-                  Archived elections are hidden from the operational list, but remain viewable as read-only history.
+
+          {showArchived ? (
+            <>
+              <Separator className="my-6" />
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold">Archived Elections</div>
+                  <div className="text-xs text-muted-foreground">
+                    Archived elections are hidden from the operational list, but
+                    remain viewable as read-only history.
+                  </div>
                 </div>
+                <Badge variant="outline">{archivedElections.length}</Badge>
               </div>
-              <Badge variant="outline">{archivedElections.length}</Badge>
-            </div>
 
-            {archivedElections.length === 0 ? (
-              <div className="text-sm text-muted-foreground mt-3">
-                No archived elections.
-              </div>
-            ) : (
-              <div className="mt-3 space-y-3">
-                {archivedElections.map((e) => (
-                  <div
-                    key={e.id}
-                    className={`rounded-2xl border p-4 transition ${selectedElectionId === e.id ? "border-amber-500/60 bg-amber-500/5" : "hover:bg-muted/30"}`}
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div
-                        className="flex-1 cursor-pointer"
-                        onClick={() => setSelectedElectionId(e.id)}
-                      >
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <div className="font-semibold">{e.title}</div>
-                          {archiveBadge(e)}
-                          {finalBadge(e)}
-                          {statusBadge(e)}
-                        </div>
-
-                        <div className="text-xs text-muted-foreground mt-2">
-                          {formatDateTimeShort(e.start_date)} — {formatDateTimeShort(e.end_date)}
-                        </div>
-
-                        <div className="text-xs text-muted-foreground mt-2">
-                          Archived at: {e.archived_at ? formatDateTimeShort(e.archived_at) : "—"}
-                        </div>
-                        <div className="text-xs text-muted-foreground mt-1">
-                          Archived by:{" "}
-                          {e.archived_by_email ||
-                            (e.archived_by ? `${e.archived_by.slice(0, 8)}…` : "—")}
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => openRestoreElection(e)}
-                          disabled={saving}
+              {archivedElections.length === 0 ? (
+                <div className="text-sm text-muted-foreground mt-3">
+                  No archived elections.
+                </div>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  {archivedElections.map((e) => (
+                    <div
+                      key={e.id}
+                      className={`rounded-2xl border p-4 transition ${
+                        selectedElectionId === e.id
+                          ? "border-amber-500/60 bg-amber-500/5"
+                          : "hover:bg-muted/30"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div
+                          className="flex-1 cursor-pointer"
+                          onClick={() => setSelectedElectionId(e.id)}
                         >
-                          Restore
-                        </Button>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <div className="font-semibold">{e.title}</div>
+                            {archiveBadge(e)}
+                            {finalBadge(e)}
+                            {statusBadge(e)}
+                          </div>
+
+                          <div className="text-xs text-muted-foreground mt-2">
+                            {formatDateTimeShort(e.start_date)} —{" "}
+                            {formatDateTimeShort(e.end_date)}
+                          </div>
+
+                          <div className="text-xs text-muted-foreground mt-2">
+                            Archived at:{" "}
+                            {e.archived_at
+                              ? formatDateTimeShort(e.archived_at)
+                              : "—"}
+                          </div>
+                          <div className="text-xs text-muted-foreground mt-1">
+                            Archived by:{" "}
+                            {e.archived_by_email ||
+                              (e.archived_by
+                                ? `${e.archived_by.slice(0, 8)}…`
+                                : "—")}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openRestoreElection(e)}
+                            disabled={saving}
+                          >
+                            Restore
+                          </Button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        ) : null}
-</CardContent>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : null}
+        </CardContent>
       </Card>
 
       {/* RIGHT: Candidates */}
@@ -1243,7 +1297,9 @@ export default function EnhancedElectionManagement() {
               variant="outline"
               size="sm"
               disabled={!selectedElectionId || candidatesLoading || saving}
-              onClick={() => selectedElectionId && loadCandidates(selectedElectionId)}
+              onClick={() =>
+                selectedElectionId && loadCandidates(selectedElectionId)
+              }
             >
               <RefreshCcw className="h-4 w-4 mr-2" />
               Refresh
@@ -1270,11 +1326,11 @@ export default function EnhancedElectionManagement() {
               <div className="rounded-xl border p-3 bg-muted/20">
                 <div className="font-semibold">{selectedElection.title}</div>
 
-                {/* ✅ change: shorter time display */}
                 <div className="text-xs text-muted-foreground mt-1">
                   {formatDateTimeShort(selectedElection.start_date)} —{" "}
                   {formatDateTimeShort(selectedElection.end_date)}
                 </div>
+
                 {isSelectedFinal ? (
                   <div className="mt-3 rounded-lg border border-violet-600/30 bg-violet-600/5 p-3 text-sm">
                     <div className="flex items-center gap-2 font-medium text-violet-800">
@@ -1282,15 +1338,29 @@ export default function EnhancedElectionManagement() {
                       Finalized election (read-only)
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      Editing election details, candidates, and votes is locked. Reporting remains available.
+                      Editing election details, candidates, and votes is locked.
+                      Reporting remains available.
                     </div>
                   </div>
                 ) : null}
 
+                {isSelectedArchived ? (
+                  <div className="mt-3 rounded-lg border border-amber-600/30 bg-amber-600/5 p-3 text-sm">
+                    <div className="font-medium text-amber-900">
+                      Archived election (history)
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      This election is archived. It remains viewable for history,
+                      but should not be treated as ongoing/active.
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               {candidatesLoading ? (
-                <div className="text-sm text-muted-foreground">Loading candidates…</div>
+                <div className="text-sm text-muted-foreground">
+                  Loading candidates…
+                </div>
               ) : candidates.length === 0 ? (
                 <div className="text-sm text-muted-foreground">
                   No candidates yet. Click <b>Add Candidate</b>.
@@ -1330,20 +1400,20 @@ export default function EnhancedElectionManagement() {
                               key={c.id}
                               className="rounded-xl border p-3 flex items-start justify-between gap-3"
                               draggable={!isSelectedFinal}
-                              onDragStart={() => !isSelectedFinal && onDragStartCandidate(pos, c.id)}
+                              onDragStart={() =>
+                                !isSelectedFinal &&
+                                onDragStartCandidate(pos, c.id)
+                              }
                               onDragOver={(e) => {
-                                // allow drop
                                 e.preventDefault();
                               }}
                               onDrop={() => onDropCandidate(pos, c.id)}
                             >
                               <div className="flex items-start gap-3 min-w-0">
-                                {/* Drag handle */}
                                 <div className="mt-1 text-muted-foreground cursor-grab">
                                   <GripVertical className="h-5 w-5" />
                                 </div>
 
-                                {/* Candidate photo (auto-crop circle) */}
                                 <div className="w-16 h-16 rounded-full overflow-hidden border bg-muted flex items-center justify-center flex-shrink-0">
                                   {c.photo_url ? (
                                     <img
@@ -1351,7 +1421,8 @@ export default function EnhancedElectionManagement() {
                                       alt={c.name}
                                       className="w-full h-full object-cover"
                                       onError={(e) => {
-                                        (e.currentTarget as HTMLImageElement).src = "";
+                                        (e.currentTarget as HTMLImageElement).src =
+                                          "";
                                       }}
                                     />
                                   ) : (
@@ -1359,10 +1430,11 @@ export default function EnhancedElectionManagement() {
                                   )}
                                 </div>
 
-                                {/* Candidate info */}
                                 <div className="min-w-0">
                                   <div className="flex items-center gap-2 flex-wrap">
-                                    <div className="font-semibold truncate">{getCandidateDisplayName(c)}</div>
+                                    <div className="font-semibold truncate">
+                                      {getCandidateDisplayName(c)}
+                                    </div>
                                     {c.slate ? (
                                       <Badge variant="secondary">{c.slate}</Badge>
                                     ) : null}
@@ -1432,7 +1504,9 @@ export default function EnhancedElectionManagement() {
               <Label>Title</Label>
               <Input
                 value={eForm.title}
-                onChange={(e) => setEForm((p) => ({ ...p, title: e.target.value }))}
+                onChange={(e) =>
+                  setEForm((p) => ({ ...p, title: e.target.value }))
+                }
                 placeholder="e.g., SCC Elections 2026"
               />
             </div>
@@ -1475,7 +1549,8 @@ export default function EnhancedElectionManagement() {
               <div>
                 <div className="font-semibold">Active flag</div>
                 <div className="text-xs text-muted-foreground">
-                  Optional admin flag. The status badge uses time (Upcoming/Ongoing/Closed).
+                  Optional admin flag. The status badge uses time unless the
+                  election is finalized/archived.
                 </div>
               </div>
               <Switch
@@ -1499,7 +1574,10 @@ export default function EnhancedElectionManagement() {
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2">
-              <Button variant="outline" onClick={() => setElectionDialogOpen(false)}>
+              <Button
+                variant="outline"
+                onClick={() => setElectionDialogOpen(false)}
+              >
                 Cancel
               </Button>
               <Button onClick={saveElection} disabled={saving}>
@@ -1531,7 +1609,6 @@ export default function EnhancedElectionManagement() {
           </DialogHeader>
 
           <div className="grid gap-4">
-            {/* Photo upload row */}
             <div className="rounded-xl border p-4 flex items-center justify-between gap-4">
               <div className="flex items-center gap-4">
                 <div className="w-16 h-16 rounded-full overflow-hidden border bg-muted flex items-center justify-center">
@@ -1575,7 +1652,6 @@ export default function EnhancedElectionManagement() {
                       const url = URL.createObjectURL(f);
                       setPhotoPreviewUrl(url);
                     } else {
-                      // keep existing remote URL if editingCandidate had one
                       setPhotoPreviewUrl(editingCandidate?.photo_url ?? null);
                     }
                   }}
@@ -1595,7 +1671,6 @@ export default function EnhancedElectionManagement() {
                   variant="outline"
                   onClick={() => {
                     resetPhotoState();
-                    // if editing existing candidate, restore remote url preview
                     if (editingCandidate?.photo_url)
                       setPhotoPreviewUrl(editingCandidate.photo_url);
                   }}
@@ -1666,7 +1741,9 @@ export default function EnhancedElectionManagement() {
               <Label>Bio (optional)</Label>
               <Textarea
                 value={cForm.bio}
-                onChange={(e) => setCForm((p) => ({ ...p, bio: e.target.value }))}
+                onChange={(e) =>
+                  setCForm((p) => ({ ...p, bio: e.target.value }))
+                }
                 placeholder="Short profile shown on ballot (optional)"
               />
             </div>
@@ -1696,7 +1773,10 @@ export default function EnhancedElectionManagement() {
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2">
-              <Button variant="outline" onClick={() => setCandidateDialogOpen(false)}>
+              <Button
+                variant="outline"
+                onClick={() => setCandidateDialogOpen(false)}
+              >
                 Cancel
               </Button>
               <Button onClick={saveCandidate} disabled={saving}>
@@ -1726,9 +1806,9 @@ export default function EnhancedElectionManagement() {
               Finalize Election
             </DialogTitle>
             <DialogDescription>
-              Finalizing is <b>permanent</b>. This will lock the election definition,
-              candidates, and votes from any further modifications. Reporting and exports
-              remain available.
+              Finalizing is <b>permanent</b>. This will lock the election
+              definition, candidates, and votes from any further modifications.
+              Reporting and exports remain available.
             </DialogDescription>
           </DialogHeader>
 
@@ -1774,7 +1854,8 @@ export default function EnhancedElectionManagement() {
                 variant="destructive"
                 onClick={confirmFinalizeElection}
                 disabled={
-                  saving || finalizeConfirmText.trim().toUpperCase() !== "FINALIZE"
+                  saving ||
+                  finalizeConfirmText.trim().toUpperCase() !== "FINALIZE"
                 }
               >
                 <Lock className="h-4 w-4 mr-2" />
@@ -1800,7 +1881,9 @@ export default function EnhancedElectionManagement() {
           <DialogHeader>
             <DialogTitle>Archive Election</DialogTitle>
             <DialogDescription>
-              Archiving hides a finalized election from the operational list, but keeps it available as read-only history. This does not delete any data.
+              Archiving hides a finalized election from the operational list, but
+              keeps it available as read-only history. This does not delete any
+              data.
             </DialogDescription>
           </DialogHeader>
 
@@ -1822,12 +1905,17 @@ export default function EnhancedElectionManagement() {
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
-              <Button variant="outline" onClick={() => setArchiveDialogOpen(false)}>
+              <Button
+                variant="outline"
+                onClick={() => setArchiveDialogOpen(false)}
+              >
                 Cancel
               </Button>
               <Button
                 onClick={confirmArchiveElection}
-                disabled={saving || archiveConfirmText.trim().toUpperCase() !== "ARCHIVE"}
+                disabled={
+                  saving || archiveConfirmText.trim().toUpperCase() !== "ARCHIVE"
+                }
               >
                 Archive
               </Button>
@@ -1851,7 +1939,8 @@ export default function EnhancedElectionManagement() {
           <DialogHeader>
             <DialogTitle>Restore Archived Election</DialogTitle>
             <DialogDescription>
-              Restoring returns the election to the operational list. The election remains finalized and read-only.
+              Restoring returns the election to the operational list. The election
+              remains finalized and read-only.
             </DialogDescription>
           </DialogHeader>
 
@@ -1873,12 +1962,17 @@ export default function EnhancedElectionManagement() {
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
-              <Button variant="outline" onClick={() => setRestoreDialogOpen(false)}>
+              <Button
+                variant="outline"
+                onClick={() => setRestoreDialogOpen(false)}
+              >
                 Cancel
               </Button>
               <Button
                 onClick={confirmRestoreElection}
-                disabled={saving || restoreConfirmText.trim().toUpperCase() !== "RESTORE"}
+                disabled={
+                  saving || restoreConfirmText.trim().toUpperCase() !== "RESTORE"
+                }
               >
                 Restore
               </Button>
@@ -1886,7 +1980,6 @@ export default function EnhancedElectionManagement() {
           </div>
         </DialogContent>
       </Dialog>
-
     </div>
   );
 }
