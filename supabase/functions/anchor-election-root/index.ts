@@ -26,6 +26,18 @@ type ChunkRowUpsert = {
   spec_version: string;
 };
 
+type CandidateRow = {
+  id: string;
+  election_id: string;
+  position: string;
+  name: string;
+  first_name: string | null;
+  last_name: string | null;
+  slate: string | null;
+  photo_url: string | null;
+  bio: string | null;
+};
+
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
@@ -89,7 +101,7 @@ function bytes32Zero(): string {
  *   keccak(position),
  *   keccak(candidateId) OR 0x00..00,
  *   abstainByte
- * ))
+ *  ))
  */
 function computeVoteLeaf(args: {
   electionId: string;
@@ -149,6 +161,181 @@ function merkleRootSortedPairs(leaves: string[]): string {
   return level[0];
 }
 
+// -------------------- Manifest generation (bound to anchoring) --------------------
+
+const POSITION_ORDER = [
+  "President",
+  "Vice President - Internal",
+  "Vice President - External",
+  "Vice President",
+  "Secretary",
+  "Treasurer",
+  "Auditor",
+  "Public Relations Officer",
+] as const;
+
+function normalizeWhitespace(s: string) {
+  return (s ?? "").trim().replace(/\s+/g, " ");
+}
+
+function normalizePosition(raw: string) {
+  const s = normalizeWhitespace(raw);
+  const lower = s.toLowerCase();
+
+  if (lower.includes("vp") || lower.includes("vice president")) {
+    if (lower.includes("internal")) return "Vice President - Internal";
+    if (lower.includes("external")) return "Vice President - External";
+    return "Vice President";
+  }
+
+  if (lower === "pro" || lower.includes("public relations")) {
+    return "Public Relations Officer";
+  }
+
+  if (lower === "president") return "President";
+  if (lower === "secretary") return "Secretary";
+  if (lower === "treasurer") return "Treasurer";
+  if (lower === "auditor") return "Auditor";
+
+  return s;
+}
+
+function positionPriority(normalized: string) {
+  const idx = POSITION_ORDER.indexOf(normalized as any);
+  return idx >= 0 ? idx : 9999;
+}
+
+function splitLegacyName(name: string) {
+  const cleaned = normalizeWhitespace(name);
+  if (!cleaned) return { first_name: "", last_name: "" };
+  const parts = cleaned.split(" ");
+  if (parts.length === 1) return { first_name: "", last_name: parts[0] };
+  return {
+    first_name: parts.slice(0, -1).join(" "),
+    last_name: parts[parts.length - 1],
+  };
+}
+
+function candidateSortKey(c: CandidateRow) {
+  const ln = normalizeWhitespace(c.last_name ?? "");
+  const fn = normalizeWhitespace(c.first_name ?? "");
+
+  if (ln || fn) return { ln: ln.toLowerCase(), fn: fn.toLowerCase() };
+
+  const legacy = splitLegacyName(c.name ?? "");
+  return { ln: legacy.last_name.toLowerCase(), fn: legacy.first_name.toLowerCase() };
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+
+  if (Array.isArray(value)) {
+    return "[" + value.map((v) => stableStringify(v)).join(",") + "]";
+  }
+
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort((a, b) => a.localeCompare(b));
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") + "}";
+}
+
+async function generateAndUpsertManifest(args: {
+  supabase: any; // ✅ avoid Supabase "never" typing inside Edge Function
+  electionId: string;
+  electionTitle: string;
+  isFinal: boolean;
+}): Promise<{ manifestHash: string; positionCount: number }> {
+  const { supabase, electionId, electionTitle, isFinal } = args;
+
+  const { data: candidatesData, error: cErr } = await supabase
+    .from("candidates")
+    .select("id, election_id, position, name, first_name, last_name, slate, photo_url, bio")
+    .eq("election_id", electionId);
+
+  if (cErr) throw new Error(`Failed to load candidates: ${cErr.message}`);
+
+  const candidates = (candidatesData ?? []) as CandidateRow[];
+  const filtered = candidates.filter((c) => normalizeWhitespace(c.name).toLowerCase() !== "abstain");
+
+  const byPosition = new Map<string, CandidateRow[]>();
+  for (const c of filtered) {
+    const posTitle = normalizeWhitespace(c.position);
+    if (!byPosition.has(posTitle)) byPosition.set(posTitle, []);
+    byPosition.get(posTitle)!.push(c);
+  }
+
+  const positionBlocks = Array.from(byPosition.entries()).map(([posTitle, list]) => {
+    const sortedCandidates = [...list].sort((a, b) => {
+      const ak = candidateSortKey(a);
+      const bk = candidateSortKey(b);
+      if (ak.ln !== bk.ln) return ak.ln.localeCompare(bk.ln);
+      if (ak.fn !== bk.fn) return ak.fn.localeCompare(bk.fn);
+      return a.id.localeCompare(b.id);
+    });
+
+    return {
+      title: posTitle,
+      normalizedTitle: normalizePosition(posTitle),
+      positionKey: posTitle.toLowerCase().replace(/\s+/g, "-"),
+      candidates: sortedCandidates.map((c, idx) => ({
+        index: idx,
+        id: c.id,
+        first_name: c.first_name,
+        last_name: c.last_name,
+        name: c.name,
+        slate: c.slate,
+        photo_url: c.photo_url,
+        bio: c.bio,
+      })),
+    };
+  });
+
+  positionBlocks.sort((a, b) => {
+    const ap = positionPriority(a.normalizedTitle);
+    const bp = positionPriority(b.normalizedTitle);
+    if (ap !== bp) return ap - bp;
+    return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+  });
+
+  const manifest = {
+    specVersion: "BV_ELECTION_MANIFEST_V1",
+    election: { id: electionId, title: electionTitle, is_final: isFinal },
+    ordering: {
+      position_order: POSITION_ORDER,
+      position_fallback: "alphabetical",
+      candidate_order: ["last_name", "first_name", "id"],
+    },
+    positions: positionBlocks.map((p, idx) => ({
+      index: idx,
+      title: p.title,
+      normalizedTitle: p.normalizedTitle,
+      positionKey: p.positionKey,
+      candidates: p.candidates,
+    })),
+    generatedAt: new Date().toISOString(),
+  };
+
+  const manifestString = stableStringify(manifest);
+  const manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestString));
+
+  const { error: upErr } = await supabase
+    .from("election_manifests")
+    .upsert(
+      {
+        election_id: electionId,
+        spec_version: "BV_ELECTION_MANIFEST_V1",
+        manifest,
+        manifest_hash: manifestHash,
+      },
+      { onConflict: "election_id" },
+    );
+
+  if (upErr) throw new Error(`Failed to save manifest: ${upErr.message}`);
+
+  return { manifestHash, positionCount: manifest.positions.length };
+}
+
+// -------------------- On-chain anchor --------------------
+
 const ELECTION_ROOT_ANCHOR_ABI = [
   "function anchorElectionBallotsRoot(bytes32 electionId, bytes32 merkleRoot) external",
   "function isElectionRootAnchored(bytes32 electionId) external view returns (bool)",
@@ -157,12 +344,8 @@ const ELECTION_ROOT_ANCHOR_ABI = [
 
 serve(async (req: Request) => {
   try {
-    if (req.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders });
-    }
-    if (req.method !== "POST") {
-      return json(405, { error: "Method not allowed" });
-    }
+    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
+    if (req.method !== "POST") return json(405, { error: "Method not allowed" });
 
     const authErr = requireKioskSecret(req);
     if (authErr) return authErr;
@@ -178,19 +361,16 @@ serve(async (req: Request) => {
       return json(400, { error: "Invalid electionId" });
     }
 
-    // 1) Ensure election is final (votes should be frozen by your triggers)
-    const { data: electionRow, error: electionErr } = await supabase
+    // 1) Ensure election is final
+    const { data: electionRow, error: electionErr } = await (supabase as any)
       .from("elections")
-      .select("id, is_final")
+      .select("id, title, is_final")
       .eq("id", electionId)
       .maybeSingle();
 
-    if (electionErr) {
-      return json(500, { error: "Failed to load election", details: electionErr.message });
-    }
-    if (!electionRow) {
-      return json(404, { error: "Election not found" });
-    }
+    if (electionErr) return json(500, { error: "Failed to load election", details: electionErr.message });
+    if (!electionRow) return json(404, { error: "Election not found" });
+
     if (!electionRow.is_final) {
       return json(409, {
         error: "Election is not finalized",
@@ -198,8 +378,30 @@ serve(async (req: Request) => {
       });
     }
 
-    // 2) Load all votes in canonical deterministic order
-    const { data: votesRaw, error: votesErr } = await supabase
+    // 2) Generate + upsert canonical manifest FIRST
+    let manifestHash = "";
+    let manifestPositionCount = 0;
+
+    try {
+      const res = await generateAndUpsertManifest({
+        supabase: supabase as any,
+        electionId,
+        electionTitle: electionRow.title,
+        isFinal: !!electionRow.is_final,
+      });
+      manifestHash = res.manifestHash;
+      manifestPositionCount = res.positionCount;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return json(500, {
+        error: "Failed to generate election manifest",
+        details: msg,
+        hint: "Ensure election_manifests exists and candidates are readable for this election.",
+      });
+    }
+
+    // 3) Load votes in deterministic order
+    const { data: votesRaw, error: votesErr } = await (supabase as any)
       .from("votes")
       .select("id, voter_id, position, candidate_id, is_abstain, election_id")
       .eq("election_id", electionId)
@@ -208,9 +410,7 @@ serve(async (req: Request) => {
       .order("candidate_id", { ascending: true, nullsFirst: true })
       .order("id", { ascending: true });
 
-    if (votesErr) {
-      return json(500, { error: "Failed to load votes", details: votesErr.message });
-    }
+    if (votesErr) return json(500, { error: "Failed to load votes", details: votesErr.message });
 
     const votes = (votesRaw ?? []) as VoteRow[];
 
@@ -221,7 +421,7 @@ serve(async (req: Request) => {
       });
     }
 
-    // 3) Convert votes -> leaves
+    // 4) votes -> leaves
     const leaves = votes.map((v) =>
       computeVoteLeaf({
         electionId: v.election_id,
@@ -232,7 +432,7 @@ serve(async (req: Request) => {
       })
     );
 
-    // 4) Chunk leaves -> chunkRoots
+    // 5) chunk leaves -> chunkRoots
     const chunkRoots: string[] = [];
     const chunkRows: ChunkRowUpsert[] = [];
 
@@ -252,11 +452,11 @@ serve(async (req: Request) => {
       });
     }
 
-    // 5) ElectionRoot = MerkleRoot(chunkRoots)
+    // 6) electionRoot = MerkleRoot(chunkRoots)
     const electionRoot = merkleRootSortedPairs(chunkRoots);
 
-    // 6) Persist chunk metadata (so later ZK prover can fetch chunkRoots + ordering)
-    const { error: chunkUpsertErr } = await supabase
+    // 7) persist chunk metadata
+    const { error: chunkUpsertErr } = await (supabase as any)
       .from("election_vote_chunks")
       .upsert(chunkRows, { onConflict: "election_id,chunk_index" });
 
@@ -268,7 +468,7 @@ serve(async (req: Request) => {
       });
     }
 
-    // 7) Anchor ElectionRoot on-chain
+    // 8) anchor on-chain
     const rpcUrl = requireEnvAny("AMOY_RPC_URL");
     const ownerPk = requireEnvAny("ANCHOR_OWNER_PRIVATE_KEY", "MINTER_PRIVATE_KEY");
     const anchorAddress = requireEnvAny("ELECTION_ROOT_ANCHOR_ADDRESS");
@@ -279,8 +479,8 @@ serve(async (req: Request) => {
 
     const electionIdBytes32 = hashUtf8ToBytes32(electionId);
 
-    // Idempotency: if already anchored, return existing root + compare
     const alreadyAnchored: boolean = await contract.isElectionRootAnchored(electionIdBytes32);
+
     if (alreadyAnchored) {
       const onchainRoot: string = await contract.electionBallotsRoot(electionIdBytes32);
       const matches = onchainRoot.toLowerCase() === electionRoot.toLowerCase();
@@ -290,6 +490,8 @@ serve(async (req: Request) => {
         mode: "root_of_roots",
         electionId,
         electionIdBytes32,
+        manifestHash,
+        manifestPositionCount,
         chunkSize: CHUNK_SIZE,
         totalLeaves: leaves.length,
         chunkCount: chunkRoots.length,
@@ -313,6 +515,8 @@ serve(async (req: Request) => {
       mode: "root_of_roots",
       electionId,
       electionIdBytes32,
+      manifestHash,
+      manifestPositionCount,
       chunkSize: CHUNK_SIZE,
       totalLeaves: leaves.length,
       chunkCount: chunkRoots.length,
