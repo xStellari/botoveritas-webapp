@@ -1,7 +1,6 @@
-/// <reference deno="true" />
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { PDFDocument, StandardFonts, rgb } from "https://esm.sh/pdf-lib@1.17.1";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 type VoteTallyRow = {
   election_id: string;
@@ -1449,7 +1448,11 @@ serve(async (req) => {
               pageW - margin * 2,
             );
             y -= 70;
-
+            
+            // Layout constants
+            const contentW = pageW - margin * 2;
+            const colGap = 40;
+            const colW = (contentW - colGap) / 2;
 
             // Finalization block (auto)
             if (election?.is_final) {
@@ -1502,10 +1505,6 @@ serve(async (req) => {
               y -= 14;
             }
 
-            // Layout constants
-            const contentW = pageW - margin * 2;
-            const colGap = 40;
-            const colW = (contentW - colGap) / 2;
 
             // 1) Group members block (full width)
             if (groupMembers.length) {
