@@ -1,45 +1,28 @@
-# BV ZK Tally Proof V1 (Deployment Spec)
+# ZK folder (BotoVeritas)
 
-This spec defines the **public inputs** and the on-chain contract interface for BotoVeritas tally proofs.
+## Layout
+- `zk/circuits/` : Circom sources (generated + committed)
+- `zk/scripts/`  : Offline tooling (codegen, snarkjs workflows)
 
-## Public inputs (Groth16)
+## Step 2.5 (current)
+This step introduces a **results commitment circuit**:
 
-Order is fixed (BV_TALLY_PROOF_V1):
+- It binds a tally vector (abstain + candidate counts) to:
+  - `electionIdHash`
+  - `electionVoteRoot`
+  - `manifestHash`
+  - `resultsHash`
 
-0. `electionIdHash`  : bytes32 (cast to uint256)
-1. `electionVoteRoot`: bytes32 (cast to uint256)
-2. `manifestHash`    : bytes32 (cast to uint256)
-3. `resultsHash`     : bytes32 (cast to uint256)
+Hashing inside the circuit uses **Poseidon folding** (ZK-friendly).
 
-The proof MUST bind to all 4 values.
+> Note: Step 2.5 does not yet prove the tally vector was derived from the vote-set.
+> The next step composes vote-set binding with this results commitment.
 
-## Off-chain results JSON (BV_TALLY_RESULT_V1)
+## Generate circuit
+```bash
+node zk/scripts/generate-tally-circuit.ts <path-to-manifest.json>
+```
 
-The full results object is stored off-chain (Supabase public URL, IPFS, etc.).
-On-chain stores only `resultsHash` and a URI pointer (`resultsUri`).
-
-Recommended canonical shape:
-
-- schema: "BV_TALLY_RESULT_V1"
-- election_id_hash: "0x.."
-- root: "0x.."
-- manifest_hash: "0x.."
-- positions[] ordered by **manifest position index**
-  - position_index (number)
-  - position (string, informational)
-  - total_ballots
-  - abstain
-  - candidates[] ordered by candidate_id ascending
-    - candidate_id
-    - count
-
-Hashing rule:
-- Serialize canonical JSON deterministically (stable key order, no whitespace).
-- Hash with keccak256 over UTF-8 bytes.
-
-## Registry behavior
-
-ElectionTallyRegistry:
-- accepts 1 record per (electionIdHash, electionVoteRoot)
-- verifies proof through the configured verifier contract
-- stores: electionIdHash, root, manifestHash, resultsHash, resultsUri, timestamp, submitter
+Outputs:
+- `zk/circuits/tally.circom`
+- `zk/circuits/tally.meta.json`
