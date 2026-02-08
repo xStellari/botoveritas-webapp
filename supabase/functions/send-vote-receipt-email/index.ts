@@ -241,7 +241,8 @@ function buildReceiptEmailHtml(params: {
 
         <ul style="margin:10px 0 0 0;padding:0 0 0 18px;color:#475569;font-size:12px;line-height:1.7;">
           <li>This record cannot be altered once recorded.</li>
-          <li>This verification does <strong>not</strong> reveal your selections.</li>
+          <li>The verification page does <strong>not</strong> reveal your selections.</li>
+          <li>Any selections shown in this email are a <strong>masked local receipt</strong> and are <strong>not</strong> stored on-chain.</li>
         </ul>
 
         <div style="margin-top:12px;">
@@ -373,7 +374,8 @@ function buildReceiptEmailHtml(params: {
 
         <ul style="margin:10px 0 0 0;padding:0 0 0 18px;color:#475569;font-size:12px;line-height:1.7;">
           <li>This record cannot be altered once recorded.</li>
-          <li>This verification does <strong>not</strong> reveal your selections.</li>
+          <li>The verification page does <strong>not</strong> reveal your selections.</li>
+          <li>Any selections shown in this email are a <strong>masked local receipt</strong> and are <strong>not</strong> stored on-chain.</li>
         </ul>
 
         <div style="
@@ -551,7 +553,8 @@ function buildReceiptEmailHtml(params: {
                 <ul style="margin:10px 0 0 0;padding:0 0 0 18px;color:#475569;font-size:12px;line-height:1.7;">
                   <li>No technical knowledge required — just open the link.</li>
                   <li>The record cannot be altered once recorded.</li>
-                  <li>Your vote choices remain private (only proof is shown).</li>
+                  <li>The verification page does not reveal your choices (it only proves the vote receipt NFT exists).</li>
+                  <li>Any selections shown in this email are a masked local receipt and are not stored on-chain.</li>
                 </ul>
               </div>
 
@@ -584,7 +587,7 @@ function buildReceiptEmailHtml(params: {
 
               <!-- Privacy note -->
               <div style="font-size:12px;color:#64748b;line-height:1.6;margin:0 0 10px 0;">
-                Selections shown below are partially masked for privacy.
+                Selections shown below are partially masked for privacy. These selections are <strong>not</strong> part of the on-chain receipt; the verification link only proves that your vote receipt NFT exists.
               </div>
 
               <!-- Selections -->
@@ -658,7 +661,8 @@ serve(async (req) => {
     const appUrl = Deno.env.get("APP_URL") || "https://botoveritas.info";
     const logoUrl = Deno.env.get("LOGO_URL") || `${appUrl}/FEU_Alabang_logo.png`;
 
-    // ✅ Verification page base (your route)
+    // ✅ Canonical verification page base (human-friendly route)
+    // NOTE: vercel.json rewrites /verify/nft/:tokenId -> /api/verify/nft/[tokenId].ts
     const verifyBaseUrl = `${appUrl}/verify/nft/`;
 
     const votedAtIso = body.votedAt || new Date().toISOString();

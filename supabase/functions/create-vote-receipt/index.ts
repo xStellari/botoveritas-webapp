@@ -2,7 +2,6 @@ import { serve } from "std/http/server";
 import { createClient } from "@supabase/supabase-js";
 import { ethers } from "ethers";
 
-
 type Body = {
   voterId: string;
   electionId: string;
@@ -63,7 +62,59 @@ const PARTICIPATION_NFT_ABI = [
   "function mintReceipt(address to, bytes32 electionId, bytes32 voterIdHash) external returns (uint256)",
   // event ReceiptMinted(address indexed to, uint256 indexed tokenId, bytes32 indexed electionId, bytes32 voterIdHash)
   "event ReceiptMinted(address indexed to, uint256 indexed tokenId, bytes32 indexed electionId, bytes32 voterIdHash)",
+  // Standard ERC721 Transfer (fallback tokenId extraction)
+  "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
 ];
+
+function extractTokenIdFromReceiptLogs(opts: {
+  receipt: ethers.TransactionReceipt;
+  iface: ethers.Interface;
+  nftAddress: string;
+  recipient: string;
+}): string | null {
+  const { receipt, iface, nftAddress, recipient } = opts;
+
+  // 1) Preferred: ReceiptMinted event
+  for (const log of receipt.logs) {
+    try {
+      const parsed = iface.parseLog(log);
+      if (parsed?.name === "ReceiptMinted") {
+        const tid = parsed.args?.tokenId;
+        const tokenId = tid?.toString?.() ?? String(tid);
+        if (tokenId && tokenId !== "0") return tokenId;
+      }
+    } catch {
+      // ignore non-matching logs
+    }
+  }
+
+  // 2) Fallback: ERC721 Transfer event on the NFT contract address, minted to recipient
+  // Transfer(from=0x0, to=recipient, tokenId=topic3)
+  const transferTopic0 = ethers.id("Transfer(address,address,uint256)");
+  const toTopic = ethers.zeroPadValue(recipient, 32).toLowerCase();
+
+  for (const log of receipt.logs) {
+    try {
+      if ((log.address || "").toLowerCase() !== nftAddress.toLowerCase()) continue;
+      if (!log.topics || log.topics.length < 4) continue;
+      if ((log.topics[0] || "").toLowerCase() !== transferTopic0.toLowerCase()) continue;
+
+      const fromTopic = (log.topics[1] || "").toLowerCase();
+      const toTopicLogged = (log.topics[2] || "").toLowerCase();
+      if (!fromTopic.endsWith("0000000000000000000000000000000000000000")) continue;
+      if (toTopicLogged !== toTopic) continue;
+
+      const tokenIdHex = log.topics[3];
+      if (!tokenIdHex) continue;
+      const tokenId = BigInt(tokenIdHex).toString();
+      if (tokenId && tokenId !== "0") return tokenId;
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
 
 serve(async (req: Request) => {
   try {
@@ -148,14 +199,11 @@ serve(async (req: Request) => {
       const minterPk = requireEnvAny("MINTER_PRIVATE_KEY");
       const nftAddress = requireEnvAny("PARTICIPATION_NFT_ADDRESS");
 
-      // Recipient is the admin/custodial wallet by default
-      // (You can override later with RECEIPT_NFT_RECIPIENT if needed.)
       const provider = new ethers.JsonRpcProvider(rpcUrl);
       const wallet = new ethers.Wallet(minterPk, provider);
       const recipient = envAny("RECEIPT_NFT_RECIPIENT") || wallet.address;
 
       // Convert UUID strings to bytes32 for on-chain audit linkage
-      // (Later you can switch this to hash of sorted vote commitment, etc.)
       const electionIdBytes32 = ethers.keccak256(ethers.toUtf8Bytes(electionId));
       const voterIdHash = ethers.keccak256(ethers.toUtf8Bytes(voterId));
 
@@ -177,24 +225,24 @@ serve(async (req: Request) => {
           });
         }
 
-        // Parse ReceiptMinted event to extract tokenId
-        for (const log of receipt.logs) {
-          try {
-            const parsed = iface.parseLog(log);
-            if (parsed?.name === "ReceiptMinted") {
-              const tid = parsed.args?.tokenId;
-              tokenId = tid?.toString?.() ?? String(tid);
-              break;
-            }
-          } catch {
-            // ignore non-matching logs
-          }
+        const extracted = extractTokenIdFromReceiptLogs({
+          receipt,
+          iface,
+          nftAddress,
+          recipient,
+        });
+
+        if (!extracted) {
+          // Important: do NOT persist unknown tokenId; it breaks metadata verification.
+          return json(502, {
+            error: "Mint succeeded but tokenId could not be extracted from logs",
+            txHash,
+            hint:
+              "Ensure the NFT contract emits ReceiptMinted or standard ERC721 Transfer. If it does, verify the contract address and ABI.",
+          });
         }
 
-        if (!tokenId) {
-          // Fallback: if event parsing fails, still return tx hash; tokenId can be recovered from explorer later
-          tokenId = "UNKNOWN";
-        }
+        tokenId = extracted;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return json(500, {
@@ -237,6 +285,7 @@ serve(async (req: Request) => {
     // MOCK mode (current fallback)
     const txHash = `0x${randomHex(32)}`;
     // Avoid collisions: use epoch seconds + random suffix
+    // NOTE: mock tokenId is NOT an on-chain tokenId; intended only for offline dev/testing.
     const tokenId = `${Math.floor(Date.now() / 1000)}-${randomHex(4)}`;
 
     // Persist receipt to voter_election_status

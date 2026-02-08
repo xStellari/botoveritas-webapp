@@ -3,13 +3,14 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { BarChart, Users, Vote, Shield, LogOut, Inbox } from "lucide-react";
+import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus } from "lucide-react";
 
 import AdminAnalytics from "@/components/admin/AdminAnalytics";
 import VoterManagement from "@/components/admin/VoterManagement";
-import EnhancedElectionManagement from "@/components/admin/EnhancedElectionManagement";
-import BlockchainMonitor from "@/components/admin/BlockchainMonitor";
+import ElectionManagement from "@/components/admin/ElectionManagement";
+import ZKVerification from "@/components/admin/ZKVerification";
 import OrgMembershipRequests from "@/components/admin/OrgMembershipRequests";
+import RostersManagement from "@/components/admin/RostersManagement";
 import { useEffect } from "react";
 
 export default function Admin() {
@@ -55,26 +56,35 @@ export default function Admin() {
 
       <main className="max-w-7xl mx-auto p-6">
         <Tabs defaultValue="analytics" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-6">
             <TabsTrigger value="analytics">
               <BarChart className="h-4 w-4 mr-2" />
               Operations
             </TabsTrigger>
+
             <TabsTrigger value="elections">
               <Vote className="h-4 w-4 mr-2" />
               Elections
             </TabsTrigger>
+
             <TabsTrigger value="voters">
               <Users className="h-4 w-4 mr-2" />
               Voters
             </TabsTrigger>
+
             <TabsTrigger value="requests">
               <Inbox className="h-4 w-4 mr-2" />
               Requests
             </TabsTrigger>
-            <TabsTrigger value="blockchain">
+
+            <TabsTrigger value="rosters">
+              <ListPlus className="h-4 w-4 mr-2" />
+              Rosters
+            </TabsTrigger>
+
+            <TabsTrigger value="zk">
               <Shield className="h-4 w-4 mr-2" />
-              Blockchain
+              ZK
             </TabsTrigger>
           </TabsList>
 
@@ -83,7 +93,7 @@ export default function Admin() {
           </TabsContent>
 
           <TabsContent value="elections">
-            <EnhancedElectionManagement />
+            <ElectionManagement />
           </TabsContent>
 
           <TabsContent value="voters">
@@ -94,8 +104,12 @@ export default function Admin() {
             <OrgMembershipRequests />
           </TabsContent>
 
-          <TabsContent value="blockchain">
-            <BlockchainMonitor />
+          <TabsContent value="rosters">
+            <RostersManagement />
+          </TabsContent>
+
+          <TabsContent value="zk">
+            <ZKVerification />
           </TabsContent>
         </Tabs>
       </main>

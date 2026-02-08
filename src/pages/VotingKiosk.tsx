@@ -12,7 +12,7 @@
 // 10) ✅ NEW: Finalized or archived elections are NEVER treated as "active/ongoing" even if end_date hasn't passed yet.
 // 11) ✅ NEW: Safeguard against voting if election is finalized/archived mid-flow (before persisting votes / status)
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useReducer } from "react";
 import { useNavigate } from "react-router-dom";
 
 import AuthenticationScreen from "@/components/voting/AuthenticationScreen";
@@ -27,7 +27,9 @@ import { toast } from "sonner";
 
 import type { Tables } from "@/types/supabase";
 import { logSessionEvent } from "@/utils/logSessionEvent";
-import { SESSION_HEARTBEAT_INTERVAL_MS } from "@/config/kioskConfig";
+import { useElectionCatalog } from "@/hooks/useElectionCatalog";
+import { useVotingSessionLock } from "@/hooks/useVotingSessionLock";
+import { useVotingTimer } from "@/hooks/useVotingTimer";
 
 export type VoterRow = Tables<"voters">;
 
@@ -55,27 +57,92 @@ export interface CandidateSelection {
   electionName: string;
 }
 
+
+type FlowState = {
+  currentStep: VotingStep;
+  selectedElection: any | null;
+  currentSelections: CandidateSelection[];
+  allSelections: CandidateSelection[];
+  transactionHash: string;
+};
+
+type FlowAction =
+  | { type: "PATCH"; patch: Partial<FlowState> }
+  | { type: "APPEND_TO_ALL_SELECTIONS"; selections: CandidateSelection[] }
+  | { type: "RESET_FLOW" };
+
+const initialFlowState: FlowState = {
+  currentStep: "auth",
+  selectedElection: null,
+  currentSelections: [],
+  allSelections: [],
+  transactionHash: "",
+};
+
+function flowReducer(state: FlowState, action: FlowAction): FlowState {
+  switch (action.type) {
+    case "PATCH":
+      return { ...state, ...action.patch };
+    case "APPEND_TO_ALL_SELECTIONS":
+      return { ...state, allSelections: [...state.allSelections, ...action.selections] };
+    case "RESET_FLOW":
+      return initialFlowState;
+    default:
+      return state;
+  }
+}
+
+
+
 const VotingKiosk = () => {
   const navigate = useNavigate();
 
-  const [currentStep, setCurrentStep] = useState<VotingStep>("auth");
+  const [flow, dispatchFlow] = useReducer(flowReducer, initialFlowState);
+  const { currentStep, selectedElection, currentSelections, allSelections, transactionHash } = flow;
+
+  const setStep = (step: VotingStep) => dispatchFlow({ type: "PATCH", patch: { currentStep: step } });
+  const setSelectedElection = (election: any | null) =>
+    dispatchFlow({ type: "PATCH", patch: { selectedElection: election } });
+  const setCurrentSelections = (selections: CandidateSelection[]) =>
+    dispatchFlow({ type: "PATCH", patch: { currentSelections: selections } });
+  const setAllSelections = (selections: CandidateSelection[]) =>
+    dispatchFlow({ type: "PATCH", patch: { allSelections: selections } });
+  const appendToAllSelections = (selections: CandidateSelection[]) =>
+    dispatchFlow({ type: "APPEND_TO_ALL_SELECTIONS", selections });
+  const setTransactionHash = (txHash: string) =>
+    dispatchFlow({ type: "PATCH", patch: { transactionHash: txHash } });
+
   const [voterData, setVoterData] = useState<VoterData | null>(null);
 
-  const [currentSelections, setCurrentSelections] = useState<CandidateSelection[]>([]);
-  const [allSelections, setAllSelections] = useState<CandidateSelection[]>([]);
+  const {
+    activeElections,
+    expiredElections,
+    completedElections,
+    refreshElectionsAndStatus,
+    resetElectionCatalog,
+  } = useElectionCatalog();
 
-  const [selectedElection, setSelectedElection] = useState<any>(null);
-  const [transactionHash, setTransactionHash] = useState("");
+  
 
-  const [completedElections, setCompletedElections] = useState<string[]>([]);
-  const [activeElections, setActiveElections] = useState<any[]>([]);
-  const [expiredElections, setExpiredElections] = useState<any[]>([]);
+  const {
+    cleanupExpiredSession,
+    hasActiveSession,
+    createInitialLock,
+    setSessionExpiresInMs,
+    endSession,
+  } = useVotingSessionLock();
 
-  // 🔥 TIMER LOGIC
-  const [timeLeft, setTimeLeft] = useState<number | null>(null);
-  const [showTimeoutModal, setShowTimeoutModal] = useState(false);
+  
+  const {
+    timeLeft,
+    showTimeoutModal,
+    setShowTimeoutModal,
+    startTimerIfNeeded,
+    setTimeLeft,
+    resetTimer,
+  } = useVotingTimer({ currentStep });
 
-  // -----------------------------------------------------
+// -----------------------------------------------------
   // ✅ NEW: Centralized lifecycle guard
   // Finalized or archived elections must NEVER be treated as "active/ongoing".
   // -----------------------------------------------------
@@ -124,119 +191,18 @@ const VotingKiosk = () => {
   // Uses the RPC that checks the imported membership lists by NAME.
   // We confirm eligibility via RPC so election visibility is correct.
   // -----------------------------------------------------
-  const filterElectionsByEligibilityRpc = async (elections: any[], voterId: string) => {
-    if (!elections.length) return [];
-
-    let hadError = false;
-    const results = await Promise.all(
-      elections.map(async (e) => {
-        const { data, error } = await supabase.rpc(
-          "is_voter_eligible_for_election" as any,
-          { p_voter_id: voterId, p_election_id: e.id } as any
-        );
-
-        if (error) {
-          hadError = true;
-          console.error("Eligibility RPC failed for election", e?.id, error);
-          return null; // safest: hide election if eligibility cannot be verified
-        }
-
-        return data ? e : null;
-      })
-    );
-
-    if (hadError) {
-      toast.error("Some eligibility checks failed. Please refresh.");
-    }
-
-    return results.filter(Boolean);
-  };
-
-  // -----------------------------------------------------
-  // ✅ UPDATED: Refresh elections + status (used by Refresh button)
-  // -----------------------------------------------------
-  const refreshElectionsAndStatus = async () => {
-    if (!voterData) return;
-
-    // 1) Load elections
-    const { data: elections = [], error: electionsErr } = await supabase
-      .from("elections")
-      .select("*");
-
-    if (electionsErr) {
-      toast.error("Failed to load elections.");
-      return;
-    }
-
-    const now = new Date();
-
-    // ✅ NEW: "Active" must exclude finalized/archived even if time window is valid
-    const activeTimeWindow = elections.filter((e) => {
-      const start = new Date(e.start_date);
-      const end = new Date(e.end_date);
-      return Boolean(e.is_active) && isOperationalElection(e) && start <= now && end > now;
-    });
-
-    // ✅ NEW: "Expired/Closed" should include:
-    // - ended by time
-    // - OR ended early due to lifecycle (finalized/archived)
-    const expiredTimeWindow = elections.filter((e) => {
-      const end = new Date(e.end_date);
-      const endedByTime = end <= now;
-      const endedByLifecycle = !isOperationalElection(e); // finalized or archived
-      return Boolean(e.is_active) && (endedByTime || endedByLifecycle);
-    });
-
-    // ✅ OPTIONAL: Authoritative eligibility (server-side)
-    const active = await filterElectionsByEligibilityRpc(activeTimeWindow, voterData.id);
-    const expired = await filterElectionsByEligibilityRpc(expiredTimeWindow, voterData.id);
-
-    setActiveElections(active);
-    setExpiredElections(expired);
-
-    // 2) Refresh completed elections for ACTIVE only
-    const activeIds = active.map((e) => e.id);
-
-    if (activeIds.length === 0) {
-      setCompletedElections([]);
-      return;
-    }
-
-    const { data: statusRows, error: statusErr } = await supabase
-      .from("voter_election_status")
-      .select("election_id, has_voted")
-      .eq("voter_id", voterData.id)
-      .in("election_id", activeIds);
-
-    if (statusErr) {
-      toast.error("Failed to check voting status.");
-      return;
-    }
-
-    const completed = (statusRows ?? [])
-      .filter((r) => r.has_voted)
-      .map((r) => r.election_id);
-
-    setCompletedElections(completed);
-  };
-
   // -----------------------------------------------------
   // TIMER START HELPER (does NOT depend on React state timing)
   // -----------------------------------------------------
   const ensureTimerStarted = async (voterId: string, activeCount: number) => {
-    if (timeLeft !== null) return;
-
     const totalMinutes = Math.max(activeCount, 1) * 3; // 3 mins per active election, at least 3 mins
     const totalMs = totalMinutes * 60 * 1000;
 
-    setTimeLeft(totalMs);
+    // starts only if not started yet
+    startTimerIfNeeded(totalMs);
 
-    const expiresAt = Date.now() + totalMs;
-
-    await supabase.from("voter_sessions").upsert({
-      voter_id: voterId,
-      expires_at: new Date(expiresAt).toISOString(),
-    });
+    // keep DB session expiry aligned with timer
+    await setSessionExpiresInMs(voterId, totalMs);
   };
 
   // -----------------------------------------------------
@@ -258,18 +224,9 @@ const VotingKiosk = () => {
 
     // 2) Prevent simultaneous sessions (SERVER TIME via RPC)
     // OPTIONAL: best-effort delete any expired row for this voter (helps immediately even before cron cleanup)
-    await supabase
-      .from("voter_sessions")
-      .delete()
-      .eq("voter_id", voterRow.id)
-      .lte("expires_at", new Date().toISOString());
-
-    const { data: hasActive, error: sessionCheckErr } = await supabase.rpc(
-      "has_active_voter_session" as any,
-      { p_voter_id: voterRow.id } as any
-    );
-
-    if (sessionCheckErr) {
+        await cleanupExpiredSession(voterRow.id);
+    const { hasActive, error: sessionCheckErr } = await hasActiveSession(voterRow.id);
+if (sessionCheckErr) {
       toast.error("Failed to check active session.");
       return;
     }
@@ -287,15 +244,10 @@ const VotingKiosk = () => {
 
     // ✅ NEW: Create session lock immediately after auth
     // This prevents another device from authenticating before election selection starts.
-    const initialLockMs = 3 * 60 * 1000; // 3 minutes initial lock
-    const initialExpiresAt = new Date(Date.now() + initialLockMs).toISOString();
+        const initialLockMs = 3 * 60 * 1000; // 3 minutes initial lock
 
-    const { error: lockErr } = await supabase.from("voter_sessions").upsert({
-      voter_id: voterRow.id,
-      expires_at: initialExpiresAt,
-    });
-
-    if (lockErr) {
+    const { error: lockErr } = await createInitialLock(voterRow.id, initialLockMs);
+if (lockErr) {
       toast.error("Failed to create voting session lock.");
       return;
     }
@@ -308,85 +260,26 @@ const VotingKiosk = () => {
       faceVerified: true,
     };
 
-    // 3) Load elections FIRST (so we can determine what "active" means)
-    const { data: elections = [], error: electionsErr } = await supabase
-      .from("elections")
-      .select("*");
+    // 3) Load elections + eligibility + completed status
+    const catalog = await refreshElectionsAndStatus(voterRow.id);
 
-    if (electionsErr) {
-      toast.error("Failed to load elections.");
+    if (!catalog) {
+      // refreshElectionsAndStatus already handled user-facing error
       return;
     }
 
-    const now = new Date();
+    const { activeElections: active, completedElections: completed, hasVotedAllActive } = catalog;
 
-    // ✅ FIX: Election is "active" only if:
-    // - is_active = true
-    // - NOT finalized
-    // - NOT archived
-    // - start_date <= now
-    // - end_date > now
-    const activeTimeWindow = elections.filter((e) => {
-      const start = new Date(e.start_date);
-      const end = new Date(e.end_date);
-      return Boolean(e.is_active) && isOperationalElection(e) && start <= now && end > now;
-    });
-
-    // ✅ "Expired/Closed" includes:
-    // - ended by time
-    // - OR ended early due to finalize/archive
-    const expiredTimeWindow = elections.filter((e) => {
-      const end = new Date(e.end_date);
-      const endedByTime = end <= now;
-      const endedByLifecycle = !isOperationalElection(e);
-      return Boolean(e.is_active) && (endedByTime || endedByLifecycle);
-    });
-
-    // ✅ OPTIONAL: Authoritative eligibility (server-side)
-    // Uses membership list RPC (name-based) so the election list is correct even if org_affiliations is stale.
-    const active = await filterElectionsByEligibilityRpc(activeTimeWindow, voterRow.id);
-    const expired = await filterElectionsByEligibilityRpc(expiredTimeWindow, voterRow.id);
-
-    setActiveElections(active);
-    setExpiredElections(expired);
-
-    // 4) ✅ FIX: already-voted logic should only consider ACTIVE elections
-    const activeIds = active.map((e) => e.id);
-
-    if (activeIds.length > 0) {
-      const { data: statusRows, error: statusErr } = await supabase
-        .from("voter_election_status")
-        .select("election_id, has_voted")
-        .eq("voter_id", voterRow.id)
-        .in("election_id", activeIds);
-
-      if (statusErr) {
-        toast.error("Failed to check voting status.");
-        return;
-      }
-
-      const completed = (statusRows ?? [])
-        .filter((r) => r.has_voted)
-        .map((r) => r.election_id);
-
-      setCompletedElections(completed);
-
-      const hasVotedAllActive = activeIds.every((id) => completed.includes(id));
-
-      if (hasVotedAllActive) {
-        navigate("/registration-error", {
-          state: {
-            title: "You Already Voted",
-            message: "You have already voted in all active elections available to you.",
-          },
-        });
-        return;
-      }
-    } else {
-      setCompletedElections([]);
+    if (hasVotedAllActive) {
+      navigate("/registration-error", {
+        state: {
+          title: "You Already Voted",
+          message: "You have already voted in all active elections available to you.",
+        },
+      });
+      return;
     }
-
-    // 5) Proceed
+// 5) Proceed
     setVoterData(enriched);
 
     // ✅ IMPORTANT: if only one active election, we auto-select it.
@@ -394,7 +287,7 @@ const VotingKiosk = () => {
     if (active.length === 1) {
       handleElectionSelect(active[0].id, active[0], voterRow.id, active.length);
     } else {
-      setCurrentStep("election-select");
+      setStep("election-select");
     }
   };
 
@@ -416,7 +309,7 @@ const VotingKiosk = () => {
     // ✅ NEW: Defensive guard (prevents edge-cases / stale UI selection)
     if (electionData?.is_final || electionData?.is_archived) {
       toast.error("This election is already finalized/archived and is no longer available for voting.");
-      await refreshElectionsAndStatus();
+      await refreshElectionsAndStatus(voterData.id);
       return;
     }
 
@@ -445,7 +338,7 @@ const VotingKiosk = () => {
 
     setSelectedElection({ id: electionId, ...electionData });
     setCurrentSelections([]);
-    setCurrentStep("ballot");
+    setStep("ballot");
   };
 
   // -----------------------------------------------------
@@ -458,32 +351,14 @@ const VotingKiosk = () => {
     const filtered = allSelections.filter((s) => s.electionId !== selectedElection.id);
     setAllSelections([...filtered, ...selections]);
 
-    setCurrentStep("review");
+    setStep("review");
   };
 
   // -----------------------------------------------------
   // COUNTDOWN EFFECT
   // -----------------------------------------------------
-  useEffect(() => {
-    if (timeLeft === null) return;
-    if (currentStep === "submitting" || currentStep === "complete") return;
+  
 
-    const interval = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev === null) return null;
-
-        if (prev <= 1000) {
-          clearInterval(interval);
-          if (!showTimeoutModal) setShowTimeoutModal(true);
-          return prev;
-        }
-
-        return prev - 1000;
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [timeLeft, currentStep, voterData, showTimeoutModal]);
 
   // -----------------------------------------------------
   // FINAL SUBMISSION COMPLETE
@@ -496,10 +371,10 @@ const VotingKiosk = () => {
     // ✅ NEW: mid-flow safety check
     const ok = await assertElectionStillOperational(electionId);
     if (!ok) {
-      await refreshElectionsAndStatus();
+      await refreshElectionsAndStatus(voterData.id);
       setSelectedElection(null);
       setCurrentSelections([]);
-      setCurrentStep("election-select");
+      setStep("election-select");
       return;
     }
 
@@ -526,10 +401,10 @@ const VotingKiosk = () => {
 
     const ok = await assertElectionStillOperational(electionId);
     if (!ok) {
-      await refreshElectionsAndStatus();
+      await refreshElectionsAndStatus(voterData.id);
       setSelectedElection(null);
       setCurrentSelections([]);
-      setCurrentStep("election-select");
+      setStep("election-select");
       return;
     }
 
@@ -548,15 +423,16 @@ const VotingKiosk = () => {
       year_level: voterData?.year_level,
     });
 
-    const updated = [...completedElections, selectedElection.id];
-    setCompletedElections(updated);
+        // ✅ Refresh catalog from DB to update completed elections accurately
+    const catalog = await refreshElectionsAndStatus(voterData.id);
 
-    const remaining = activeElections.filter((e) => !updated.includes(e.id));
+    const completed = catalog?.completedElections ?? completedElections;
+    const remaining = activeElections.filter((e) => !completed.includes(e.id));
 
     if (remaining.length > 0) {
-      setCurrentStep("election-finished");
+      setStep("election-finished");
     } else {
-      setCurrentStep("review-final");
+      setStep("review-final");
     }
   };
 
@@ -565,21 +441,14 @@ const VotingKiosk = () => {
   // -----------------------------------------------------
   const handleReset = async () => {
     if (voterData?.id) {
-      await supabase.from("voter_sessions").delete().eq("voter_id", voterData.id);
-      await logSessionEvent({ voterId: voterData.id, action: "session_end" });
+            await endSession(voterData.id);
+await logSessionEvent({ voterId: voterData.id, action: "session_end" });
     }
 
-    setCurrentStep("auth");
+    dispatchFlow({ type: "RESET_FLOW" });
     setVoterData(null);
-    setCurrentSelections([]);
-    setAllSelections([]);
-    setTransactionHash("");
-    setSelectedElection(null);
-    setCompletedElections([]);
-    setActiveElections([]);
-    setExpiredElections([]);
-    setTimeLeft(null);
-    setShowTimeoutModal(false);
+    resetElectionCatalog();
+    resetTimer();
 
     navigate("/");
   };
@@ -613,14 +482,8 @@ const VotingKiosk = () => {
                 setShowTimeoutModal(false);
 
                 if (voterData) {
-                  await supabase
-                    .from("voter_sessions")
-                    .update({
-                      expires_at: new Date(Date.now() + newTime).toISOString(),
-                    })
-                    .eq("voter_id", voterData.id);
-
-                  await logSessionEvent({
+                                    await setSessionExpiresInMs(voterData.id, newTime);
+await logSessionEvent({
                     voterId: voterData.id,
                     action: "session_extend",
                   });
@@ -645,7 +508,7 @@ const VotingKiosk = () => {
           completedElections={completedElections}
           activeElections={activeElections}
           expiredElections={expiredElections}
-          onRefresh={refreshElectionsAndStatus} // ✅ NEW
+          onRefresh={async () => { await refreshElectionsAndStatus(voterData.id); }} // ✅ NEW
         />
       )}
 
@@ -675,7 +538,7 @@ const VotingKiosk = () => {
             await persistVotesForElection(voterData.id, selectedElection.id, currentSelections);
             await handleSubmissionComplete("pending-hash");
           }}
-          onEdit={() => setCurrentStep("ballot")}
+          onEdit={() => setStep("ballot")}
           showAll={false}
           timeLeft={timeLeft ?? 0}
           activeElections={activeElections}
@@ -715,9 +578,9 @@ const VotingKiosk = () => {
               });
             }
 
-            setCurrentStep("submitting");
+            setStep("submitting");
           }}
-          onEdit={() => setCurrentStep("election-select")}
+          onEdit={() => setStep("election-select")}
           showAll={true}
           timeLeft={timeLeft ?? 0}
           activeElections={activeElections}
@@ -735,7 +598,7 @@ const VotingKiosk = () => {
             // ✅ IMPORTANT: Keep the same SubmissionScreen instance mounted.
             // This prevents state (mintedReceipts, receiptStatus, currentStep) from resetting.
             setTransactionHash(tx);
-            setCurrentStep((prev) => (prev === "complete" ? prev : "complete"));
+            if (currentStep !== "complete") setStep("complete");
           }}
           onReset={handleReset}
           isComplete={currentStep === "complete"}
@@ -750,9 +613,9 @@ const VotingKiosk = () => {
             if (activeElections.length > completedElections.length) {
               setSelectedElection(null);
               setCurrentSelections([]);
-              setCurrentStep("election-select");
+              setStep("election-select");
             } else {
-              setCurrentStep("review-final");
+              setStep("review-final");
             }
           }}
         />

@@ -43,8 +43,6 @@ type Signatory = {
   role?: string | null;
 };
 
-type ElectionsListRow = { id: string; start_date: string };
-
 type VotesVoterIdRow = { voter_id: string | null };
 
 type Body = {
@@ -135,13 +133,19 @@ function positionRank(posRaw: string) {
 
   if (
     (pos.includes("vp") && pos.includes("internal")) ||
-    (pos.includes("vice") && pos.includes("president") && pos.includes("internal"))
-  ) return 2;
+    (pos.includes("vice") &&
+      pos.includes("president") &&
+      pos.includes("internal"))
+  )
+    return 2;
 
   if (
     (pos.includes("vp") && pos.includes("external")) ||
-    (pos.includes("vice") && pos.includes("president") && pos.includes("external"))
-  ) return 3;
+    (pos.includes("vice") &&
+      pos.includes("president") &&
+      pos.includes("external"))
+  )
+    return 3;
 
   if (pos === "secretary" || pos.includes("secretary")) return 4;
   if (pos === "treasurer" || pos.includes("treasurer")) return 5;
@@ -151,7 +155,8 @@ function positionRank(posRaw: string) {
     pos === "pro" ||
     pos.includes("p.r.o") ||
     (pos.includes("public") && pos.includes("relations"))
-  ) return 7;
+  )
+    return 7;
 
   return 999;
 }
@@ -169,7 +174,9 @@ async function fetchBytes(url: string): Promise<Uint8Array> {
  * QuickChart via POST (avoids URL length limits).
  * Returns PNG bytes.
  */
-async function quickChartPng(config: Record<string, unknown>): Promise<Uint8Array> {
+async function quickChartPng(
+  config: Record<string, unknown>,
+): Promise<Uint8Array> {
   const res = await fetch("https://quickchart.io/chart", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -197,8 +204,12 @@ function u8ToArrayBuffer(u8: Uint8Array): ArrayBuffer {
   return copy.buffer;
 }
 
-
-function drawPageNumber(page: PDFPage, font: PDFFont, idx: number, total: number) {
+function drawPageNumber(
+  page: PDFPage,
+  font: PDFFont,
+  idx: number,
+  total: number,
+) {
   const pageW = page.getWidth();
   const marginX = 48;
   const y = 20;
@@ -304,7 +315,13 @@ async function drawHeader(params: {
   return headerLineY - 18;
 }
 
-function drawSectionTitle(page: PDFPage, fontBold: PDFFont, title: string, x: number, y: number) {
+function drawSectionTitle(
+  page: PDFPage,
+  fontBold: PDFFont,
+  title: string,
+  x: number,
+  y: number,
+) {
   page.drawText(title, {
     x,
     y,
@@ -411,7 +428,17 @@ serve(async (req: Request) => {
     const body: Body = await req.json().catch(() => ({} as Body));
 
     const election_id = body?.election_id;
-    const isAllElections = !election_id;
+
+    // Deployment decision: require election_id (no "all elections" export)
+    if (!election_id) {
+      return new Response(
+        JSON.stringify({ error: "election_id is required" }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
+      );
+    }
 
     // Branding: allow override, otherwise use secrets
     const logo_url =
@@ -434,25 +461,31 @@ serve(async (req: Request) => {
     if (!signatories.length && (prepared_by || noted_by)) {
       signatories = [
         ...(prepared_by
-          ? [{
-            label: prepared_by_title,
-            name: prepared_by,
-            role: "Prepared by",
-          }]
+          ? [
+            {
+              label: prepared_by_title,
+              name: prepared_by,
+              role: "Prepared by",
+            },
+          ]
           : []),
         ...(noted_by
-          ? [{
-            label: noted_by_title,
-            name: noted_by,
-            role: "Noted by",
-          }]
+          ? [
+            {
+              label: noted_by_title,
+              name: noted_by,
+              role: "Noted by",
+            },
+          ]
           : []),
       ];
     }
 
     // Blockchain summary options (optional)
     const network = body?.network || "Polygon (Proof-of-Vote via NFT)";
-    const explorer_base = body?.explorer_base || "https://polygonscan.com/tx/";
+    // Default switched to Polygon Amoy for defense testing
+    const explorer_base =
+      body?.explorer_base || "https://amoy.polygonscan.com/tx/";
     const tx_hashes = Array.isArray(body?.tx_hashes)
       ? body.tx_hashes.filter(Boolean).slice(0, 20)
       : [];
@@ -517,7 +550,9 @@ serve(async (req: Request) => {
         .select("*", { count: "exact", head: true })
         .eq("election_id", singleElectionId);
 
-      if (totalVoteRowsErr) throw new Error(`votes count: ${totalVoteRowsErr.message}`);
+      if (totalVoteRowsErr) {
+        throw new Error(`votes count: ${totalVoteRowsErr.message}`);
+      }
 
       // Distinct voters who voted
       const { data: voterIdRows, error: voterIdsErr } = await supabase
@@ -533,7 +568,9 @@ serve(async (req: Request) => {
       }
       const votersWhoVoted = distinctVoterIds.size;
 
-      // Eligible voters: if eligible_orgs empty => all voters; else overlap org_affiliations
+      // Eligible voters:
+      // - if eligible_orgs empty => all voters
+      // - else => DB-native overlap: org_affiliations && eligible_orgs
       let eligibleVoters = 0;
       const eligibleOrgs = Array.isArray(election?.eligible_orgs)
         ? election.eligible_orgs.filter(Boolean)
@@ -546,31 +583,16 @@ serve(async (req: Request) => {
         if (error) throw new Error(`voters count: ${error.message}`);
         eligibleVoters = count ?? 0;
       } else {
-        const { data, error } = await supabase
+        const { count, error } = await supabase
           .from("voters")
-          .select("org_affiliations");
-        if (error) throw new Error(`voters org_affiliations: ${error.message}`);
+          .select("*", { count: "exact", head: true })
+          .overlaps("org_affiliations", eligibleOrgs);
 
-        let n = 0;
-        for (const row of (data ?? []) as Array<{ org_affiliations: unknown }>) {
-          const aff = row?.org_affiliations;
-
-          const list: string[] = Array.isArray(aff)
-            ? aff.map(String)
-            : typeof aff === "string"
-            ? (() => {
-              try {
-                const parsed = JSON.parse(aff);
-                return Array.isArray(parsed) ? parsed.map(String) : [];
-              } catch {
-                return [];
-              }
-            })()
-            : [];
-
-          if (eligibleOrgs.some((org) => list.includes(org))) n++;
+        if (error) {
+          throw new Error(`voters eligible overlap count: ${error.message}`);
         }
-        eligibleVoters = n;
+
+        eligibleVoters = count ?? 0;
       }
 
       const turnoutRate = eligibleVoters
@@ -653,7 +675,9 @@ serve(async (req: Request) => {
         });
 
         const scheduleLine = election
-          ? `Election Window: ${fmtShortDate(election.start_date)}  to  ${fmtShortDate(election.end_date)}`
+          ? `Election Window: ${fmtShortDate(election.start_date)}  to  ${
+            fmtShortDate(election.end_date)
+          }`
           : "Election Window: —";
 
         page.drawText(scheduleLine, {
@@ -808,7 +832,9 @@ serve(async (req: Request) => {
 
         y -= 10;
         const example =
-          `For this election: Turnout Rate = (${votersWhoVoted} ÷ ${eligibleVoters || 0}) × 100 = ${turnoutRate.toFixed(1)}%.`;
+          `For this election: Turnout Rate = (${votersWhoVoted} ÷ ${
+            eligibleVoters || 0
+          }) × 100 = ${turnoutRate.toFixed(1)}%.`;
         drawParagraph(
           page,
           font,
@@ -833,7 +859,9 @@ serve(async (req: Request) => {
           fontBold,
           font,
           title: "Turnout Distribution by Year Level",
-          subtitle: `${electionTitle} • Overall Turnout: ${turnoutRate.toFixed(1)}%`,
+          subtitle: `${electionTitle} • Overall Turnout: ${
+            turnoutRate.toFixed(1)
+          }%`,
           logoBytes,
         });
 
@@ -878,7 +906,9 @@ serve(async (req: Request) => {
           };
 
           try {
-            const pngBytes = await quickChartPng(donutConfig as Record<string, unknown>);
+            const pngBytes = await quickChartPng(
+              donutConfig as Record<string, unknown>,
+            );
             const img = await pdf.embedPng(pngBytes);
 
             const imgW = pageW - margin * 2;
@@ -970,12 +1000,14 @@ serve(async (req: Request) => {
       // -------------------------
       // RESULTS PER POSITION
       // -------------------------
-      const positionEntries = Array.from(byPosition.entries()).sort(([a], [b]) => {
-        const ra = positionRank(a);
-        const rb = positionRank(b);
-        if (ra !== rb) return ra - rb;
-        return String(a).localeCompare(String(b));
-      });
+      const positionEntries = Array.from(byPosition.entries()).sort(
+        ([a], [b]) => {
+          const ra = positionRank(a);
+          const rb = positionRank(b);
+          if (ra !== rb) return ra - rb;
+          return String(a).localeCompare(String(b));
+        },
+      );
 
       for (const [position, rows] of positionEntries) {
         const page = pdf.addPage([pageW, pageH]);
@@ -991,14 +1023,15 @@ serve(async (req: Request) => {
 
         let y = yStart - 6;
 
-        const totalBallotsPos = rows[0]?.total_ballots_for_position ??
-          rows.reduce((a, r) => a + (r.vote_count || 0), 0);
+        const totalBallotsPos =
+          rows[0]?.total_ballots_for_position ??
+            rows.reduce((a, r) => a + (r.vote_count || 0), 0);
         const abstainCount = rows[0]?.abstain_count ?? 0;
 
         const sorted = rows.slice().sort((a, b) => b.vote_count - a.vote_count);
         const leaderVotes = sorted[0]?.vote_count ?? 0;
-        const leaders = sorted.filter((r) =>
-          r.vote_count === leaderVotes && leaderVotes > 0
+        const leaders = sorted.filter(
+          (r) => r.vote_count === leaderVotes && leaderVotes > 0,
         );
 
         const effectiveVotes = (r: VoteTallyRow) => {
@@ -1010,15 +1043,21 @@ serve(async (req: Request) => {
           const da = effectiveVotes(a);
           const db = effectiveVotes(b);
           if (db !== da) return db - da;
-          return String(a.candidate_name || "").localeCompare(String(b.candidate_name || ""));
+          return String(a.candidate_name || "").localeCompare(
+            String(b.candidate_name || ""),
+          );
         });
 
         const leaderNames = leaders.map((l) =>
           l.slate ? `${l.candidate_name} (${l.slate})` : l.candidate_name
         );
 
-        const leaderShare = totalBallotsPos ? pct(leaderVotes, totalBallotsPos) : "0.0%";
-        const abstainShare = totalBallotsPos ? pct(abstainCount, totalBallotsPos) : "0.0%";
+        const leaderShare = totalBallotsPos
+          ? pct(leaderVotes, totalBallotsPos)
+          : "0.0%";
+        const abstainShare = totalBallotsPos
+          ? pct(abstainCount, totalBallotsPos)
+          : "0.0%";
 
         const intro =
           "The pie chart summarizes the vote distribution for this position. " +
@@ -1045,13 +1084,18 @@ serve(async (req: Request) => {
           type: "pie",
           data: { labels: pieLabels, datasets: [{ data: pieValues }] },
           options: {
-            plugins: { legend: { position: "right" }, title: { display: false } },
+            plugins: {
+              legend: { position: "right" },
+              title: { display: false },
+            },
           },
         };
 
         let imgHUsed = 0;
         try {
-          const pngBytes = await quickChartPng(pieConfig as Record<string, unknown>);
+          const pngBytes = await quickChartPng(
+            pieConfig as Record<string, unknown>,
+          );
           const img = await pdf.embedPng(pngBytes);
 
           const imgW = pageW - margin * 2;
@@ -1099,9 +1143,9 @@ serve(async (req: Request) => {
           `Total ballots for this position: ${totalBallotsPos}. ` +
           `Abstentions: ${abstainCount} (${abstainShare}). ` +
           (leaders.length
-            ? (leaders.length > 1
+            ? leaders.length > 1
               ? `Leading candidates (tie): ${leaderNames.join(" • ")} with ${leaderVotes} votes each (${leaderShare}).`
-              : `Leading candidate: ${leaderNames[0]} with ${leaderVotes} votes (${leaderShare}).`)
+              : `Leading candidate: ${leaderNames[0]} with ${leaderVotes} votes (${leaderShare}).`
             : "No leading candidate identified (no votes recorded for any candidate).");
 
         drawParagraph(
@@ -1249,7 +1293,13 @@ serve(async (req: Request) => {
         }
 
         y -= 12;
-        drawSectionTitle(page, fontBold, "Included Transaction Hashes (Optional)", margin, y);
+        drawSectionTitle(
+          page,
+          fontBold,
+          "Included Transaction Hashes (Optional)",
+          margin,
+          y,
+        );
         y -= 16;
 
         if (!tx_hashes.length) {
@@ -1267,7 +1317,9 @@ serve(async (req: Request) => {
         } else {
           for (const h of tx_hashes) {
             if (y < 90) break;
-            const short = h.length > 66 ? `${h.slice(0, 12)}…${h.slice(-10)}` : h;
+            const short = h.length > 66
+              ? `${h.slice(0, 12)}…${h.slice(-10)}`
+              : h;
             page.drawText(`• ${short}`, {
               x: margin,
               y,
@@ -1300,8 +1352,16 @@ serve(async (req: Request) => {
         const list: Signatory[] = signatories.length > 0
           ? signatories
           : [
-            { label: "Prepared by", name: "__________________________", role: "Group Member" },
-            { label: "Noted by", name: "__________________________", role: "Thesis Adviser" },
+            {
+              label: "Prepared by",
+              name: "__________________________",
+              role: "Group Member",
+            },
+            {
+              label: "Noted by",
+              name: "__________________________",
+              role: "Thesis Adviser",
+            },
           ];
 
         const isGroupMember = (s: Signatory) => {
@@ -1459,7 +1519,9 @@ serve(async (req: Request) => {
           });
           y -= 18;
 
-          const finalizedBy = election.finalized_by_email || election.finalized_by || "—";
+          const finalizedBy = election.finalized_by_email ||
+            election.finalized_by ||
+            "—";
 
           page.drawText(`Finalized by: ${finalizedBy}`, {
             x: margin,
@@ -1548,54 +1610,14 @@ serve(async (req: Request) => {
       return { pdfBytes, electionTitle };
     };
 
-    if (!isAllElections) {
-      const { pdfBytes, electionTitle } = await buildSingleElectionPdf(election_id!);
-      const filename = `${safeFilename(electionTitle)}_Results_Report.pdf`;
+    const { pdfBytes, electionTitle } = await buildSingleElectionPdf(election_id);
+    const filename = `${safeFilename(electionTitle)}_Results_Report.pdf`;
 
-      return new Response(u8ToArrayBuffer(pdfBytes), {
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/pdf",
-          "Content-Disposition": `attachment; filename="${filename}"`,
-        },
-      });
-    }
-
-    // ALL ELECTIONS: generate a single combined PDF by merging per-election PDFs
-    const { data: electionsList, error: electionsListErr } = await supabase
-      .from("elections")
-      .select("id,start_date")
-      .order("start_date", { ascending: true });
-
-    if (electionsListErr) throw new Error(`elections list: ${electionsListErr.message}`);
-
-    const electionIds = ((electionsList ?? []) as ElectionsListRow[])
-      .map((e) => String(e.id))
-      .filter(Boolean);
-
-    if (!electionIds.length) {
-      return new Response(JSON.stringify({ error: "No elections found" }), {
-        status: 404,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const mergedPdf = await PDFDocument.create();
-    for (const id of electionIds) {
-      const { pdfBytes } = await buildSingleElectionPdf(id);
-      const doc = await PDFDocument.load(pdfBytes);
-      const pageCopies = await mergedPdf.copyPages(doc, doc.getPageIndices());
-      for (const p of pageCopies) mergedPdf.addPage(p);
-    }
-
-    const mergedBytes = await mergedPdf.save();
-    const mergedFilename = "All_Elections_Results_Report.pdf";
-
-    return new Response(u8ToArrayBuffer(mergedBytes), {
+    return new Response(u8ToArrayBuffer(pdfBytes), {
       headers: {
         ...corsHeaders,
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${mergedFilename}"`,
+        "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });
   } catch (err: unknown) {
