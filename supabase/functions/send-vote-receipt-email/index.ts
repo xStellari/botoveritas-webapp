@@ -659,7 +659,7 @@ serve(async (req) => {
     const logoUrl = Deno.env.get("LOGO_URL") || `${appUrl}/FEU_Alabang_logo.png`;
 
     // ✅ Verification page base (your route)
-    const verifyBaseUrl = `${appUrl}/api/verify/nft/`;
+    const verifyBaseUrl = `${appUrl}/verify/nft/`;
 
     const votedAtIso = body.votedAt || new Date().toISOString();
     const subject = `Vote Receipt — ${safeStr(body.electionTitle, "Election")}`;
