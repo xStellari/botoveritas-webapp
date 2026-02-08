@@ -1,13 +1,20 @@
 import { serve } from "std/http/server";
 import { createClient } from "@supabase/supabase-js";
 import { ethers } from "ethers";
+import {
+  BV_VOTE_CHUNK_SPEC_V1,
+  BV_ELECTION_MANIFEST_V1,
+  CHUNK_SIZE,
+  hashUtf8ToBytes32,
+  bytes32Zero,
+  computeVoteLeaf,
+  merkleRootSortedPairs,
+} from "../_shared/bvCrypto.ts";
 
 type Body = {
   electionId: string; // UUID string
 };
 
-// ✅ Chunking constant (LOCKED BY STEP 3)
-const CHUNK_SIZE = 512;
 
 type VoteRow = {
   id: string;
@@ -81,85 +88,6 @@ function isUuid(v: string) {
   );
 }
 
-/**
- * Canonical bytes32 hashes (must remain stable forever once adopted)
- */
-function hashUtf8ToBytes32(s: string): string {
-  return ethers.keccak256(ethers.toUtf8Bytes(s));
-}
-
-function bytes32Zero(): string {
-  return "0x" + "00".repeat(32);
-}
-
-/**
- * Leaf hash spec (V1):
- * leaf = keccak256( concat(
- *   "BotoVeritasVoteV1",
- *   keccak(electionId),
- *   keccak(voterId),
- *   keccak(position),
- *   keccak(candidateId) OR 0x00..00,
- *   abstainByte
- *  ))
- */
-function computeVoteLeaf(args: {
-  electionId: string;
-  voterId: string;
-  position: string;
-  candidateId: string | null;
-  isAbstain: boolean;
-}): string {
-  const domain = ethers.toUtf8Bytes("BotoVeritasVoteV1");
-  const electionHash = hashUtf8ToBytes32(args.electionId);
-  const voterHash = hashUtf8ToBytes32(args.voterId);
-  const positionHash = hashUtf8ToBytes32(args.position);
-  const candidateHash = args.candidateId ? hashUtf8ToBytes32(args.candidateId) : bytes32Zero();
-  const abstainByte = args.isAbstain ? "0x01" : "0x00";
-
-  const packed = ethers.concat([
-    domain,
-    electionHash,
-    voterHash,
-    positionHash,
-    candidateHash,
-    abstainByte,
-  ]);
-
-  return ethers.keccak256(packed);
-}
-
-/**
- * Merkle root with:
- * - sorted pairs (min, max) before hashing
- * - duplicate last if odd count at a level
- */
-function merkleRootSortedPairs(leaves: string[]): string {
-  if (leaves.length === 0) return bytes32Zero();
-  if (leaves.length === 1) return leaves[0];
-
-  let level = [...leaves];
-
-  while (level.length > 1) {
-    const next: string[] = [];
-
-    for (let i = 0; i < level.length; i += 2) {
-      const left = level[i];
-      const right = i + 1 < level.length ? level[i + 1] : level[i];
-
-      const a = left.toLowerCase();
-      const b = right.toLowerCase();
-      const [min, max] = a <= b ? [left, right] : [right, left];
-
-      const parent = ethers.keccak256(ethers.concat([min, max]));
-      next.push(parent);
-    }
-
-    level = next;
-  }
-
-  return level[0];
-}
 
 // -------------------- Manifest generation (bound to anchoring) --------------------
 
@@ -297,7 +225,7 @@ async function generateAndUpsertManifest(args: {
   });
 
   const manifest = {
-    specVersion: "BV_ELECTION_MANIFEST_V1",
+    specVersion: BV_ELECTION_MANIFEST_V1,
     election: { id: electionId, title: electionTitle, is_final: isFinal },
     ordering: {
       position_order: POSITION_ORDER,
@@ -322,7 +250,7 @@ async function generateAndUpsertManifest(args: {
     .upsert(
       {
         election_id: electionId,
-        spec_version: "BV_ELECTION_MANIFEST_V1",
+        spec_version: BV_ELECTION_MANIFEST_V1,
         manifest,
         manifest_hash: manifestHash,
       },
@@ -448,7 +376,7 @@ serve(async (req: Request) => {
         chunk_index: chunkIndex,
         leaf_count: chunkLeaves.length,
         chunk_root: chunkRoot,
-        spec_version: "BV_VOTE_LEAF_V1__CHUNKED_ROOT_V1",
+        spec_version: BV_VOTE_CHUNK_SPEC_V1,
       });
     }
 
