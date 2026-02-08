@@ -3,26 +3,28 @@
 ## Layout
 - `zk/circuits/` : Circom sources (generated + committed)
 - `zk/scripts/`  : Offline tooling (codegen, snarkjs workflows)
+- `zk/manifests/`: Reproducible manifest snapshots used for circuit/proof generation
 
-## Step 2.5 (current)
-This step introduces a **results commitment circuit**:
+## Step 2.6
+This step adds **Supabase-backed manifest fetching** for codegen:
 
-- It binds a tally vector (abstain + candidate counts) to:
-  - `electionIdHash`
-  - `electionVoteRoot`
-  - `manifestHash`
-  - `resultsHash`
+- `fetch-manifest.ts` pulls `election_manifests` by `election_id`
+- writes a snapshot file under `zk/manifests/`
+- `generate-tally-circuit.ts` can run in two modes:
+  - `--electionId <uuid>` (recommended)
+  - `--manifestFile <path>` (offline/manual)
 
-Hashing inside the circuit uses **Poseidon folding** (ZK-friendly).
-
-> Note: Step 2.5 does not yet prove the tally vector was derived from the vote-set.
-> The next step composes vote-set binding with this results commitment.
-
-## Generate circuit
+## Generate circuit (recommended)
 ```bash
-node zk/scripts/generate-tally-circuit.ts <path-to-manifest.json>
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+node zk/scripts/generate-tally-circuit.ts --electionId <election-uuid>
 ```
 
 Outputs:
 - `zk/circuits/tally.circom`
 - `zk/circuits/tally.meta.json`
+- `zk/manifests/election_<uuid>__<manifestHash>.json`
+
+## Notes
+- Filenames avoid illegal Windows characters.
+- Circuit filename stays `tally.circom` to keep workflow simple; correctness is enforced by `manifestHash` and proof public inputs.
