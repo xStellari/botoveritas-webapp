@@ -9,6 +9,7 @@ import VotingKiosk from "./pages/VotingKiosk";
 import NotFound from "./pages/NotFound";
 import Admin from "./pages/Admin";
 import Results from "./pages/Results";
+import Verify from "./pages/Verify";
 import RegistrationConfirmation from "./pages/RegistrationConfirmation";
 import Register from "./pages/Register";
 import Login from "./pages/Login";
@@ -35,6 +36,7 @@ const App = () => (
           <Route path="/registration-confirmation" element={<RegistrationConfirmation />} />
           <Route path="/voting" element={<VotingKiosk />} />
           <Route path="/results" element={<Results />} />
+          <Route path="/verify" element={<Verify />} />
           <Route path="/verify-email" element={<VerifyEmail />} />
 
 

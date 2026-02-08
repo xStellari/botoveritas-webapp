@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Flame, Clock, CalendarDays, Vote, UserPlus, CheckCircle } from "lucide-react";
+import { Flame, Clock, CalendarDays, Vote, UserPlus, CheckCircle, ShieldCheck } from "lucide-react";
 
 import feuLogo from "@/assets/feu-logo.png";
 import { Card } from "@/components/ui/card";
@@ -195,6 +195,44 @@ const Index = () => {
                 </div>
               </Card>
             </section>
+
+
+            <section className="mt-6">
+              <Card
+                className="p-6 border-2 rounded-xl border-emerald-200 hover:border-emerald-500 hover:shadow-lg transition cursor-pointer"
+                onClick={() => navigate("/verify")}
+              >
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-start gap-4">
+                    <div className="p-3 rounded-full bg-emerald-50 border border-emerald-200">
+                      <ShieldCheck className="h-8 w-8 text-emerald-800" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold">Public Verification</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Verify vote inclusion, NFT receipts, and (after finalization) ZK tally proofs — no login required.
+                      </p>
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        <Badge variant="outline" className="border-emerald-500 text-emerald-700">
+                          Vote Inclusion
+                        </Badge>
+                        <Badge variant="outline" className="border-amber-500 text-amber-700">
+                          NFT Receipts
+                        </Badge>
+                        <Badge variant="outline" className="border-blue-500 text-blue-700">
+                          ZK Audit
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+
+                  <Button className="bg-emerald-700 hover:bg-emerald-800 md:w-auto w-full">
+                    Verify
+                  </Button>
+                </div>
+              </Card>
+            </section>
+
           </div>
 
           <section className="flex-1 min-h-0 mt-8 space-y-10 kiosk-portrait-scroll no-scrollbar">
