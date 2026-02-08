@@ -1,15 +1,6 @@
 import { serve } from "std/http/server";
 import { createClient } from "@supabase/supabase-js";
 import { ethers } from "ethers";
-import {
-  BV_VOTE_CHUNK_SPEC_V1,
-  BV_ELECTION_MANIFEST_V1,
-  CHUNK_SIZE,
-  hashUtf8ToBytes32,
-  bytes32Zero,
-  computeVoteLeaf,
-  merkleRootSortedPairs,
-} from "../_shared/bvCrypto.ts";
 
 type Body = {
   electionId: string; // UUID
@@ -61,6 +52,89 @@ function isUuid(v: string) {
   );
 }
 
+// ✅ Must match anchor-election-root
+const CHUNK_SIZE = 512;
+
+// -------------------- Hashing + Merkle (MUST MATCH ANCHOR) --------------------
+
+function hashUtf8ToBytes32(s: string): string {
+  return ethers.keccak256(ethers.toUtf8Bytes(s));
+}
+
+function bytes32Zero(): string {
+  return "0x" + "00".repeat(32);
+}
+
+/**
+ * Leaf hash spec (V1):
+ * leaf = keccak256( concat(
+ *   "BotoVeritasVoteV1",
+ *   keccak(electionId),
+ *   keccak(voterId),
+ *   keccak(position),
+ *   keccak(candidateId) OR 0x00..00,
+ *   abstainByte
+ *  ))
+ */
+function computeVoteLeaf(args: {
+  electionId: string;
+  voterId: string;
+  position: string;
+  candidateId: string | null;
+  isAbstain: boolean;
+}): string {
+  const domain = ethers.toUtf8Bytes("BotoVeritasVoteV1");
+  const electionHash = hashUtf8ToBytes32(args.electionId);
+  const voterHash = hashUtf8ToBytes32(args.voterId);
+  const positionHash = hashUtf8ToBytes32(args.position);
+  const candidateHash = args.candidateId
+    ? hashUtf8ToBytes32(args.candidateId)
+    : bytes32Zero();
+  const abstainByte = args.isAbstain ? "0x01" : "0x00";
+
+  const packed = ethers.concat([
+    domain,
+    electionHash,
+    voterHash,
+    positionHash,
+    candidateHash,
+    abstainByte,
+  ]);
+
+  return ethers.keccak256(packed);
+}
+
+/**
+ * Merkle root with:
+ * - sorted pairs (min, max) before hashing
+ * - duplicate last if odd count at a level
+ */
+function merkleRootSortedPairs(leaves: string[]): string {
+  if (leaves.length === 0) return bytes32Zero();
+  if (leaves.length === 1) return leaves[0];
+
+  let level = [...leaves];
+
+  while (level.length > 1) {
+    const next: string[] = [];
+
+    for (let i = 0; i < level.length; i += 2) {
+      const left = level[i];
+      const right = i + 1 < level.length ? level[i + 1] : level[i];
+
+      const a = left.toLowerCase();
+      const b = right.toLowerCase();
+      const [min, max] = a <= b ? [left, right] : [right, left];
+
+      const parent = ethers.keccak256(ethers.concat([min, max]));
+      next.push(parent);
+    }
+
+    level = next;
+  }
+
+  return level[0];
+}
 
 // -------------------- Types --------------------
 
@@ -115,6 +189,17 @@ type TallyPosition = {
 
 function normalizeWhitespace(s: string) {
   return (s ?? "").trim().replace(/\s+/g, " ");
+}
+
+function bytes32ToFieldDec(hex: string): string {
+  const h = String(hex || "").toLowerCase();
+  const clean = h.startsWith("0x") ? h : `0x${h}`;
+  return BigInt(clean).toString(10);
+}
+
+function ensure0x(hex: string): string {
+  const h = String(hex || "");
+  return h.startsWith("0x") ? h : `0x${h}`;
 }
 
 // Builds a deterministic tally template from manifest
@@ -203,15 +288,6 @@ serve(async (req: Request) => {
     }
 
     const manifest = manifestRow as ManifestRow;
-
-    if (String(manifest.spec_version) !== BV_ELECTION_MANIFEST_V1) {
-      return json(409, {
-        error: "Manifest spec_version mismatch",
-        expected: BV_ELECTION_MANIFEST_V1,
-        got: String(manifest.spec_version),
-      });
-    }
-
     const manifestHash = String(manifest.manifest_hash || "");
 
     if (!manifestHash || !manifestHash.startsWith("0x") || manifestHash.length !== 66) {
@@ -303,17 +379,6 @@ serve(async (req: Request) => {
     } else {
       const dbChunks = (dbChunksRaw ?? []) as ChunkDbRow[];
 
-      // Hard safety: do not proceed under an unexpected chunk spec
-      const badSpec = dbChunks.find((r) => String(r.spec_version) !== BV_VOTE_CHUNK_SPEC_V1);
-      if (badSpec) {
-        return json(409, {
-          error: "Chunk spec_version mismatch",
-          expected: BV_VOTE_CHUNK_SPEC_V1,
-          got: String(badSpec.spec_version),
-          chunk_index: Number(badSpec.chunk_index),
-        });
-      }
-
       // If table empty, we still allow witness generation (but warn)
       if (!dbChunks.length) {
         dbChunkCheck = {
@@ -345,7 +410,7 @@ serve(async (req: Request) => {
             mismatches.push({
               chunk_index: i,
               db: { chunk_root: db.chunk_root, leaf_count: db.leaf_count, spec_version: db.spec_version },
-              computed: { chunk_root: co.chunk_root, leaf_count: co.leaf_count, spec_version: BV_VOTE_CHUNK_SPEC_V1 },
+              computed: { chunk_root: co.chunk_root, leaf_count: co.leaf_count, spec_version: "BV_VOTE_LEAF_V1__CHUNKED_ROOT_V1" },
               rootMatch,
               leafMatch,
             });
@@ -484,6 +549,35 @@ serve(async (req: Request) => {
         totalLeaves: leaves.length,
         chunkCount: chunkRoots.length,
         computedElectionRoot: electionRoot,
+      },
+      publicInputs: {
+        // snarkjs publicSignals want field elements (decimal strings)
+        // Order (BV_TALLY_PROOF_V1):
+        // [0] electionIdHash
+        // [1] electionVoteRoot
+        // [2] manifestHash
+        // [3] resultsHash  (computed during proving; NOT computed in this edge function)
+        electionIdHashField: bytes32ToFieldDec(electionIdBytes32),
+        electionVoteRootField: bytes32ToFieldDec(ensure0x(electionRoot)),
+        manifestHashField: bytes32ToFieldDec(ensure0x(manifestHash)),
+        // Domain constant used by zk/circuits/tally.circom Poseidon fold
+        resultsCommitDomainField: "123456789",
+        resultsHashField: null as string | null,
+      },
+      circuitInputs: {
+        // Maps 1:1 with generated zk/circuits/tally.circom signals
+        abstain: abstainCounts,
+        countsByPosition: candidateCounts,
+        // Flattened in fold order: (abstain0, counts0..., abstain1, counts1..., ...)
+        foldVector: (() => {
+          const out: number[] = [];
+          for (let i = 0; i < abstainCounts.length; i++) {
+            out.push(abstainCounts[i] ?? 0);
+            const row = candidateCounts[i] ?? [];
+            for (const c of row) out.push(c ?? 0);
+          }
+          return out;
+        })(),
       },
       integrity: {
         dbChunkCheck,
