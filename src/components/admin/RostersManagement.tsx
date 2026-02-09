@@ -806,9 +806,6 @@ export default function RostersManagement() {
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="space-y-1">
             <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-2xl bg-feu-green/10 flex items-center justify-center">
-                <span className="text-feu-green font-bold">BV</span>
-              </div>
               <div>
                 <h2 className="text-xl md:text-2xl font-semibold tracking-tight">
                   Rosters & Eligibility
