@@ -218,99 +218,124 @@ export default function Admin() {
           </TabsList>
 
           <TabsContent value="analytics">
-            <AdminAnalytics />
-
-            <div className="mt-6 space-y-6">
+            <div className="space-y-6">
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2">
-                    <UserPlus className="h-4 w-4" />
-                    Registration Phase
+                    <BarChart className="h-4 w-4" />
+                    Operations Console
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  <p className="text-sm text-muted-foreground">
-                    Controls whether students can start the voter registration flow. This is meant for your
-                    <span className="font-medium text-foreground"> registration window</span> (e.g., 1–2 weeks before elections).
-                  </p>
-
-                  <div className="flex items-center justify-between rounded-lg border bg-background p-4">
-                    <div className="space-y-1">
-                      <div className="font-semibold leading-none">
-                        {registrationEnabled ? "Registration is OPEN" : "Registration is CLOSED"}
-                      </div>
-                      <div className="text-sm text-muted-foreground">
-                        {registrationEnabled
-                          ? "Voters can proceed to identity verification and complete registration."
-                          : "Voters will be blocked at the start of registration."}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs text-muted-foreground">
-                        {registrationLoading ? "Loading…" : registrationSaving ? "Saving…" : ""}
-                      </span>
-                      <Switch
-                        checked={registrationEnabled}
-                        disabled={registrationLoading || registrationSaving}
-                        onCheckedChange={handleToggleRegistration}
-                        aria-label="Toggle registration"
-                      />
-                    </div>
-                  </div>
-
-                  <p className="text-xs text-muted-foreground">
-                    Setting key: <code className="px-1 py-0.5 rounded bg-muted">{APP_SETTING_KEYS.registrationEnabled}</code>
-                  </p>
+                <CardContent className="text-sm text-muted-foreground">
+                  Runtime controls, integrity signals, and maintenance actions. Turnout and participation metrics live in{" "}
+                  <span className="font-medium text-foreground">Results</span>.
                 </CardContent>
               </Card>
 
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2">
-                    <RotateCcw className="h-4 w-4" />
-                    Testing / Maintenance: Reset Voter for an Election
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <p className="text-sm text-muted-foreground">
-                    This is intended for test resets only. It clears the selected voter's vote state for the given election
-                    (votes + voter_election_status) via the secure{" "}
-                    <code className="px-1 py-0.5 rounded bg-muted">admin-reset-voter</code> Edge Function.
-                  </p>
+              <section className="space-y-3">
+                <h2 className="text-lg font-semibold text-feu-green">System State & Modes</h2>
 
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label htmlFor="reset-election-id">Election ID (UUID)</Label>
-                      <Input
-                        id="reset-election-id"
-                        value={resetElectionId}
-                        onChange={(e) => setResetElectionId(e.target.value)}
-                        placeholder="e.g. 2f2d7c7a-...."
-                        autoComplete="off"
-                      />
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2">
+                      <UserPlus className="h-4 w-4" />
+                      Registration Mode
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <p className="text-sm text-muted-foreground">
+                      Controls whether voters can start the registration flow. Treat this as a{" "}
+                      <span className="font-medium text-foreground">runtime gate</span> for your registration window
+                      (e.g., 1–2 weeks before elections), not an election setting.
+                    </p>
+
+                    <div className="flex items-center justify-between rounded-lg border bg-background p-4">
+                      <div className="space-y-1">
+                        <div className="font-semibold leading-none">
+                          {registrationEnabled ? "Registration is OPEN" : "Registration is CLOSED"}
+                        </div>
+                        <div className="text-sm text-muted-foreground">
+                          {registrationEnabled
+                            ? "Voters can proceed to identity verification and complete registration."
+                            : "Voters will be blocked at the start of registration."}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-muted-foreground">
+                          {registrationLoading ? "Loading…" : registrationSaving ? "Saving…" : ""}
+                        </span>
+                        <Switch
+                          checked={registrationEnabled}
+                          disabled={registrationLoading || registrationSaving}
+                          onCheckedChange={handleToggleRegistration}
+                          aria-label="Toggle registration"
+                        />
+                      </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="reset-voter-id">Voter ID (UUID)</Label>
-                      <Input
-                        id="reset-voter-id"
-                        value={resetVoterId}
-                        onChange={(e) => setResetVoterId(e.target.value)}
-                        placeholder="e.g. 9a61a3b1-...."
-                        autoComplete="off"
-                      />
-                    </div>
-                  </div>
+                    <p className="text-xs text-muted-foreground">
+                      Setting key: <code className="px-1 py-0.5 rounded bg-muted">{APP_SETTING_KEYS.registrationEnabled}</code>
+                    </p>
+                  </CardContent>
+                </Card>
+              </section>
 
-                  <div className="flex items-center justify-end">
-                    <Button onClick={handleAdminResetVoter} disabled={resetBusy}>
-                      <RotateCcw className="h-4 w-4 mr-2" />
-                      {resetBusy ? "Resetting..." : "Reset Voter"}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+              <section className="space-y-3">
+                <h2 className="text-lg font-semibold text-feu-green">Guarantees & Exceptions</h2>
+                <AdminAnalytics />
+              </section>
+
+              <section className="space-y-3">
+                <h2 className="text-lg font-semibold text-feu-green">Manual Interventions</h2>
+
+                <Card className="border-destructive/30 bg-destructive/5">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2">
+                      <RotateCcw className="h-4 w-4" />
+                      Danger Zone: Reset Voter for an Election
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <p className="text-sm text-muted-foreground">
+                      <span className="font-medium text-foreground">Testing / maintenance only.</span> This clears the selected
+                      voter's vote state for the given election (votes + voter_election_status) via the secure{" "}
+                      <code className="px-1 py-0.5 rounded bg-muted">admin-reset-voter</code> Edge Function.
+                    </p>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="reset-election-id">Election ID (UUID)</Label>
+                        <Input
+                          id="reset-election-id"
+                          value={resetElectionId}
+                          onChange={(e) => setResetElectionId(e.target.value)}
+                          placeholder="e.g. 2f2d7c7a-...."
+                          autoComplete="off"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="reset-voter-id">Voter ID (UUID)</Label>
+                        <Input
+                          id="reset-voter-id"
+                          value={resetVoterId}
+                          onChange={(e) => setResetVoterId(e.target.value)}
+                          placeholder="e.g. 9a61a3b1-...."
+                          autoComplete="off"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-end">
+                      <Button onClick={handleAdminResetVoter} disabled={resetBusy}>
+                        <RotateCcw className="h-4 w-4 mr-2" />
+                        {resetBusy ? "Resetting..." : "Reset Voter"}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </section>
             </div>
           </TabsContent>
 
