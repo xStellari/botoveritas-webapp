@@ -25,6 +25,11 @@ const APP_SETTING_KEYS = {
   registrationEnabled: "registration_enabled",
 } as const;
 
+// Stable UUIDs to group audit log entries for non-UUID entities (e.g., app_settings.key)
+const APP_SETTING_AUDIT_ENTITY_IDS = {
+  registrationEnabled: "00000000-0000-0000-0000-000000000001",
+} as const;
+
 export default function Admin() {
   const navigate = useNavigate();
 
@@ -35,6 +40,10 @@ export default function Admin() {
   const [registrationEnabled, setRegistrationEnabled] = useState<boolean>(false);
   const [registrationLoading, setRegistrationLoading] = useState(true);
   const [registrationSaving, setRegistrationSaving] = useState(false);
+
+  const [registrationAuditLoading, setRegistrationAuditLoading] = useState(true);
+  const [registrationLastChangedAt, setRegistrationLastChangedAt] = useState<string | null>(null);
+  const [registrationLastChangedBy, setRegistrationLastChangedBy] = useState<string | null>(null);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -53,6 +62,7 @@ export default function Admin() {
 
     async function loadRegistrationSetting() {
       setRegistrationLoading(true);
+      setRegistrationAuditLoading(true);
       try {
         const { data, error } = await supabase
           .from("app_settings")
@@ -66,6 +76,24 @@ export default function Admin() {
         const value = data?.value ?? false;
 
         if (!cancelled) setRegistrationEnabled(Boolean(value));
+
+        // Load last-change attribution from audit logs (best-effort)
+        const { data: auditRow, error: auditErr } = await supabase
+          .from("admin_audit_logs")
+          .select("created_at, details")
+          .eq("entity_type", "app_settings")
+          .eq("entity_id", APP_SETTING_AUDIT_ENTITY_IDS.registrationEnabled)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (auditErr) throw auditErr;
+
+        if (!cancelled) {
+          setRegistrationLastChangedAt(auditRow?.created_at ?? null);
+          const email = (auditRow?.details as unknown as { admin_email?: string } | null)?.admin_email ?? null;
+          setRegistrationLastChangedBy(email);
+        }
       } catch (e) {
         if (!cancelled) {
           toast.error("Failed to load registration setting", {
@@ -74,7 +102,10 @@ export default function Admin() {
           setRegistrationEnabled(false);
         }
       } finally {
-        if (!cancelled) setRegistrationLoading(false);
+        if (!cancelled) {
+          setRegistrationLoading(false);
+          setRegistrationAuditLoading(false);
+        }
       }
     }
 
@@ -86,6 +117,7 @@ export default function Admin() {
   }, []);
 
   const handleToggleRegistration = async (next: boolean) => {
+    const prev = registrationEnabled;
     setRegistrationEnabled(next); // optimistic
     setRegistrationSaving(true);
 
@@ -103,6 +135,38 @@ export default function Admin() {
 
       if (error) throw error;
 
+      // Best-effort: write an audit log entry for attribution
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const adminId = sessionData.session?.user?.id ?? null;
+        const adminEmail = sessionData.session?.user?.email ?? null;
+
+        const { data: auditInserted, error: auditInsertErr } = await supabase
+          .from("admin_audit_logs")
+          .insert({
+            admin_id: adminId,
+            action: "APP_SETTING_UPDATE",
+            entity_type: "app_settings",
+            entity_id: APP_SETTING_AUDIT_ENTITY_IDS.registrationEnabled,
+            details: {
+              key: APP_SETTING_KEYS.registrationEnabled,
+              from: prev,
+              to: next,
+              admin_email: adminEmail,
+            },
+          })
+          .select("created_at, details")
+          .single();
+
+        if (auditInsertErr) throw auditInsertErr;
+
+        setRegistrationLastChangedAt(auditInserted?.created_at ?? new Date().toISOString());
+        const email = (auditInserted?.details as unknown as { admin_email?: string } | null)?.admin_email ?? adminEmail ?? null;
+        setRegistrationLastChangedBy(email);
+      } catch {
+        // Do not block the main operation if audit logging fails.
+      }
+
       toast.success(`Registration ${next ? "enabled" : "disabled"}`, {
         description: next
           ? "Voters can now start registering for the upcoming election."
@@ -110,7 +174,7 @@ export default function Admin() {
       });
     } catch (e) {
       // rollback
-      setRegistrationEnabled((prev) => !prev);
+      setRegistrationEnabled(prev);
       toast.error("Failed to update registration setting", {
         description: e instanceof Error ? e.message : String(e),
       });
@@ -218,124 +282,109 @@ export default function Admin() {
           </TabsList>
 
           <TabsContent value="analytics">
-            <div className="space-y-6">
+            <AdminAnalytics />
+
+            <div className="mt-6 space-y-6">
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2">
-                    <BarChart className="h-4 w-4" />
-                    Operations Console
+                    <UserPlus className="h-4 w-4" />
+                    Registration Phase
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="text-sm text-muted-foreground">
-                  Runtime controls, integrity signals, and maintenance actions. Turnout and participation metrics live in{" "}
-                  <span className="font-medium text-foreground">Results</span>.
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Controls whether students can start the voter registration flow. This is meant for your
+                    <span className="font-medium text-foreground"> registration window</span> (e.g., 1–2 weeks before elections).
+                  </p>
+
+                  <div className="flex items-center justify-between rounded-lg border bg-background p-4">
+                    <div className="space-y-1">
+                      <div className="font-semibold leading-none">
+                        {registrationEnabled ? "Registration is OPEN" : "Registration is CLOSED"}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {registrationEnabled
+                          ? "Voters can proceed to identity verification and complete registration."
+                          : "Voters will be blocked at the start of registration."}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-muted-foreground">
+                        {registrationLoading ? "Loading…" : registrationSaving ? "Saving…" : ""}
+                      </span>
+                      <Switch
+                        checked={registrationEnabled}
+                        disabled={registrationLoading || registrationSaving}
+                        onCheckedChange={handleToggleRegistration}
+                        aria-label="Toggle registration"
+                      />
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    Setting key: <code className="px-1 py-0.5 rounded bg-muted">{APP_SETTING_KEYS.registrationEnabled}</code>
+                  </p>
+
+                  <p className="text-xs text-muted-foreground">
+                    Last changed:{" "}
+                    {registrationAuditLoading
+                      ? "Loading…"
+                      : registrationLastChangedAt
+                        ? new Date(registrationLastChangedAt).toLocaleString()
+                        : "—"}
+                    {registrationLastChangedBy ? ` by ${registrationLastChangedBy}` : ""}
+                  </p>
                 </CardContent>
               </Card>
 
-              <section className="space-y-3">
-                <h2 className="text-lg font-semibold text-feu-green">System State & Modes</h2>
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2">
+                    <RotateCcw className="h-4 w-4" />
+                    Testing / Maintenance: Reset Voter for an Election
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    This is intended for test resets only. It clears the selected voter's vote state for the given election
+                    (votes + voter_election_status) via the secure{" "}
+                    <code className="px-1 py-0.5 rounded bg-muted">admin-reset-voter</code> Edge Function.
+                  </p>
 
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2">
-                      <UserPlus className="h-4 w-4" />
-                      Registration Mode
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <p className="text-sm text-muted-foreground">
-                      Controls whether voters can start the registration flow. Treat this as a{" "}
-                      <span className="font-medium text-foreground">runtime gate</span> for your registration window
-                      (e.g., 1–2 weeks before elections), not an election setting.
-                    </p>
-
-                    <div className="flex items-center justify-between rounded-lg border bg-background p-4">
-                      <div className="space-y-1">
-                        <div className="font-semibold leading-none">
-                          {registrationEnabled ? "Registration is OPEN" : "Registration is CLOSED"}
-                        </div>
-                        <div className="text-sm text-muted-foreground">
-                          {registrationEnabled
-                            ? "Voters can proceed to identity verification and complete registration."
-                            : "Voters will be blocked at the start of registration."}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs text-muted-foreground">
-                          {registrationLoading ? "Loading…" : registrationSaving ? "Saving…" : ""}
-                        </span>
-                        <Switch
-                          checked={registrationEnabled}
-                          disabled={registrationLoading || registrationSaving}
-                          onCheckedChange={handleToggleRegistration}
-                          aria-label="Toggle registration"
-                        />
-                      </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="reset-election-id">Election ID (UUID)</Label>
+                      <Input
+                        id="reset-election-id"
+                        value={resetElectionId}
+                        onChange={(e) => setResetElectionId(e.target.value)}
+                        placeholder="e.g. 2f2d7c7a-...."
+                        autoComplete="off"
+                      />
                     </div>
 
-                    <p className="text-xs text-muted-foreground">
-                      Setting key: <code className="px-1 py-0.5 rounded bg-muted">{APP_SETTING_KEYS.registrationEnabled}</code>
-                    </p>
-                  </CardContent>
-                </Card>
-              </section>
-
-              <section className="space-y-3">
-                <h2 className="text-lg font-semibold text-feu-green">Guarantees & Exceptions</h2>
-                <AdminAnalytics />
-              </section>
-
-              <section className="space-y-3">
-                <h2 className="text-lg font-semibold text-feu-green">Manual Interventions</h2>
-
-                <Card className="border-destructive/30 bg-destructive/5">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2">
-                      <RotateCcw className="h-4 w-4" />
-                      Danger Zone: Reset Voter for an Election
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <p className="text-sm text-muted-foreground">
-                      <span className="font-medium text-foreground">Testing / maintenance only.</span> This clears the selected
-                      voter's vote state for the given election (votes + voter_election_status) via the secure{" "}
-                      <code className="px-1 py-0.5 rounded bg-muted">admin-reset-voter</code> Edge Function.
-                    </p>
-
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor="reset-election-id">Election ID (UUID)</Label>
-                        <Input
-                          id="reset-election-id"
-                          value={resetElectionId}
-                          onChange={(e) => setResetElectionId(e.target.value)}
-                          placeholder="e.g. 2f2d7c7a-...."
-                          autoComplete="off"
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="reset-voter-id">Voter ID (UUID)</Label>
-                        <Input
-                          id="reset-voter-id"
-                          value={resetVoterId}
-                          onChange={(e) => setResetVoterId(e.target.value)}
-                          placeholder="e.g. 9a61a3b1-...."
-                          autoComplete="off"
-                        />
-                      </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="reset-voter-id">Voter ID (UUID)</Label>
+                      <Input
+                        id="reset-voter-id"
+                        value={resetVoterId}
+                        onChange={(e) => setResetVoterId(e.target.value)}
+                        placeholder="e.g. 9a61a3b1-...."
+                        autoComplete="off"
+                      />
                     </div>
+                  </div>
 
-                    <div className="flex items-center justify-end">
-                      <Button onClick={handleAdminResetVoter} disabled={resetBusy}>
-                        <RotateCcw className="h-4 w-4 mr-2" />
-                        {resetBusy ? "Resetting..." : "Reset Voter"}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              </section>
+                  <div className="flex items-center justify-end">
+                    <Button onClick={handleAdminResetVoter} disabled={resetBusy}>
+                      <RotateCcw className="h-4 w-4 mr-2" />
+                      {resetBusy ? "Resetting..." : "Reset Voter"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
             </div>
           </TabsContent>
 
