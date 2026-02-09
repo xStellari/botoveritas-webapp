@@ -1,0 +1,4 @@
+# supabase/functions/admin-reset-voter/config.toml
+# Allow unauthenticated OPTIONS preflight requests at the Supabase gateway level.
+# We still enforce auth + admin role inside the function for POST requests.
+verify_jwt = false
