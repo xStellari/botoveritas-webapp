@@ -27,22 +27,20 @@
       "dest": "/src/$1"
     },
     {
-      "src": "^/verify/vote/(.*)$",
-      "dest": "/api/verify/vote/[voteId].ts?voteId=$1"
+      "src": "^/verify/vote/([^/]+)/?$",
+      "dest": "/api/verify/vote/$1"
     },
     {
-      "src": "^/verify/nft/([^/]+)$",
-      "dest": "/api/verify/nft/[tokenId].ts?tokenId=$1"
+      "src": "^/verify/nft/([^/]+)/?$",
+      "dest": "/api/verify/nft/$1"
     },
     {
-      "src": "^/api/verify/nft/([^/]+)$",
-      "dest": "/verify/nft/$1",
-      "status": 308
+      "src": "^/api/verify/nft/([^/]+)/?$",
+      "dest": "/api/verify/nft/$1"
     },
     {
-      "src": "^/api/nft/([^/]+)$",
-      "dest": "/verify/nft/$1",
-      "status": 308
+      "src": "^/api/nft/([^/]+)/?$",
+      "dest": "/api/nft/$1"
     },
     {
       "handle": "filesystem"
