@@ -1,33 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from "recharts";
-import { TrendingUp, Users, Vote, Download } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import type { Database } from "@/types/supabase";
 import { toast } from "sonner";
 
-interface ElectionStats {
-  election_id: string;
-  title: string;
-  eligibleVoters: number;
-  votedCount: number;
-  turnoutRateVsEligible: number;
-}
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { AlertTriangle, CheckCircle2, CircleMinus, Download, RefreshCcw } from "lucide-react";
 
 type ElectionOption = { id: string; title: string };
 
@@ -35,23 +13,73 @@ type ElectionRow = {
   id: string;
   title: string;
   start_date: string;
-  eligible_orgs: string[] | null;
+  end_date: string;
+  is_active: boolean | null;
+  is_final: boolean;
+  is_archived: boolean;
 };
 
-type OpsMetrics = {
-  votesLast60m: number;
-  votesLast15m: number;
+type ProofCoverage = {
+  election_id: string;
+  title: string;
+  voted: number;
+  withTx: number;
+  withToken: number;
+};
+
+type ArtifactReadiness = {
+  election_id: string;
+  title: string;
+  hasManifest: boolean;
+  chunkCount: number;
+};
+
+type AuthHealth = {
+  totalEvents60m: number;
+  topEventTypes: Array<{ event_type: string; count: number }>;
+};
+
+type SessionHealth = {
   activeSessions: number;
-  sessionsExpiringSoon: number;
+  expiringSoon: number;
+  topActions60m: Array<{ action: string; count: number }>;
 };
 
-function toHourBucketISO(dateISO: string) {
-  const d = new Date(dateISO);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd} ${hh}:00`;
+type OpsSnapshot = {
+  proof: ProofCoverage[];
+  artifacts: ArtifactReadiness[];
+  auth: AuthHealth;
+  sessions: SessionHealth;
+};
+
+type Status = "ok" | "warn" | "bad" | "na";
+
+function statusLabel(s: Status) {
+  switch (s) {
+    case "ok":
+      return "OK";
+    case "warn":
+      return "Needs attention";
+    case "bad":
+      return "Action required";
+    case "na":
+      return "N/A";
+  }
+}
+
+function statusIcon(s: Status) {
+  const cls =
+    s === "ok"
+      ? "text-emerald-600"
+      : s === "warn"
+      ? "text-amber-600"
+      : s === "bad"
+      ? "text-rose-600"
+      : "text-muted-foreground";
+  if (s === "ok") return <CheckCircle2 className={`h-5 w-5 ${cls}`} />;
+  if (s === "warn") return <AlertTriangle className={`h-5 w-5 ${cls}`} />;
+  if (s === "bad") return <CircleMinus className={`h-5 w-5 ${cls}`} />;
+  return <CircleMinus className={`h-5 w-5 ${cls}`} />;
 }
 
 function downloadCSV(filename: string, rows: Array<Record<string, any>>) {
@@ -71,10 +99,7 @@ function downloadCSV(filename: string, rows: Array<Record<string, any>>) {
     return str;
   };
 
-  const csv = [
-    headers.join(","),
-    ...rows.map((r) => headers.map((h) => escape(r[h])).join(",")),
-  ].join("\n");
+  const csv = [headers.join(","), ...rows.map((r) => headers.map((h) => escape(r[h])).join(","))].join("\n");
 
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -94,305 +119,211 @@ export default function AdminAnalytics() {
   const [elections, setElections] = useState<ElectionOption[]>([]);
   const [selectedElectionId, setSelectedElectionId] = useState<string>("ALL");
 
-  const [globalStats, setGlobalStats] = useState({
-    totalEligible: 0,
-    votedCount: 0,
-    turnoutRate: 0,
-    totalRegistered: 0, // keep registered count for ALL scope clarity
+  const [snapshot, setSnapshot] = useState<OpsSnapshot>({
+    proof: [],
+    artifacts: [],
+    auth: { totalEvents60m: 0, topEventTypes: [] },
+    sessions: { activeSessions: 0, expiringSoon: 0, topActions60m: [] },
   });
 
-  const [perElectionStats, setPerElectionStats] = useState<ElectionStats[]>([]);
-  const [hourlyData, setHourlyData] = useState<{ time: string; votes: number }[]>(
-    []
-  );
-
-  const [ops, setOps] = useState<OpsMetrics>({
-    votesLast60m: 0,
-    votesLast15m: 0,
-    activeSessions: 0,
-    sessionsExpiringSoon: 0,
-  });
+  const selectedLabel = useMemo(() => {
+    if (selectedElectionId === "ALL") return "All elections";
+    return elections.find((e) => e.id === selectedElectionId)?.title ?? "Selected election";
+  }, [selectedElectionId, elections]);
 
   useEffect(() => {
-    loadAnalytics();
+    void loadOps();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedElectionId]);
 
-  const loadAnalytics = async () => {
+  const loadOps = async () => {
     setLoading(true);
     setErrorMsg(null);
 
     try {
-      // 1) Elections list (include eligible_orgs for correct denominators)
-      const { data: electionsDataRaw, error: electionsError } = await supabase
+      // 1) Elections list for scoping + labels
+      const { data: electionsRaw, error: electionsError } = await supabase
         .from("elections")
-        .select("id, title, start_date, eligible_orgs")
+        .select("id, title, start_date, end_date, is_active, is_final, is_archived")
         .order("start_date", { ascending: false });
 
       if (electionsError) throw electionsError;
 
-      const electionsData = (electionsDataRaw || []) as unknown as ElectionRow[];
+      const electionRows = (electionsRaw || []) as unknown as ElectionRow[];
+      setElections(electionRows.map((e) => ({ id: e.id, title: e.title })));
 
-      const electionOptions =
-        (electionsData || []).map((e) => ({ id: e.id, title: e.title })) ?? [];
-      setElections(electionOptions);
+      const scoped = selectedElectionId === "ALL" ? electionRows : electionRows.filter((e) => e.id === selectedElectionId);
+      // Helper: count rows with filters using head:true for lightweight queries
+      // NOTE: supabase.from() is strongly typed to known table names; use the Database type for safety.
+      type TableName = keyof Database["public"]["Tables"];
+      const countWhere = async (table: TableName, apply: (q: any) => any) => {
+        const { count, error } = await apply(
+          supabase.from(table).select("id", { head: true, count: "exact" })
+        );
+        if (error) throw error;
+        return count ?? 0;
+      };
 
-      // 2) Registered voters (global count)
-      const { count: registeredCount, error: regErr } = await supabase
-        .from("voters")
-        .select("id", { count: "exact", head: true });
+      // 2) Proof-of-vote coverage (voter_election_status)
+      const proofRows: ProofCoverage[] = await Promise.all(
+        scoped.map(async (e) => {
+          const voted = await countWhere("voter_election_status", (q) =>
+            q.eq("election_id", e.id).eq("has_voted", true)
+          );
+          const withTx = await countWhere("voter_election_status", (q) =>
+            q.eq("election_id", e.id).eq("has_voted", true).not("tx_hash", "is", null)
+          );
+          const withToken = await countWhere("voter_election_status", (q) =>
+            q.eq("election_id", e.id).eq("has_voted", true).not("nft_token_id", "is", null)
+          );
 
-      if (regErr) throw regErr;
-
-      const totalRegistered = registeredCount || 0;
-
-      // 3) Eligibility stats (authoritative name-based eligibility, per election)
-      const { data: eligRowsRaw, error: eligErr } = await supabase.rpc(
-        "get_election_eligibility_stats" as any,
-        { p_election_id: null } as any
+          return { election_id: e.id, title: e.title, voted, withTx, withToken };
+        })
       );
 
-      if (eligErr) throw eligErr;
+      // 3) ZK artifacts readiness (minimal signal only)
+      const artifactRows: ArtifactReadiness[] = await Promise.all(
+        scoped.map(async (e) => {
+          const { data: manifest, error: manifestError } = await supabase
+            .from("election_manifests")
+            .select("id")
+            .eq("election_id", e.id)
+            .maybeSingle();
 
-      const eligRows = (eligRowsRaw || []) as any[];
-      const eligMap = new Map<
-        string,
-        { eligible_voters: number; voted_eligible: number }
-      >();
+          if (manifestError) throw manifestError;
 
-      for (const r of eligRows) {
-        eligMap.set(r.election_id, {
-          eligible_voters: Number(r.eligible_voters || 0),
-          voted_eligible: Number(r.voted_eligible || 0),
-        });
+          const chunkCount = await countWhere("election_vote_chunks", (q) => q.eq("election_id", e.id));
+
+          return { election_id: e.id, title: e.title, hasManifest: !!manifest?.id, chunkCount };
+        })
+      );
+
+      // 4) Auth health (last 60 minutes): compute top event types client-side
+      const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const { data: authRaw, error: authError } = await supabase
+        .from("auth_logs")
+        .select("event_type, created_at")
+        .gte("created_at", since)
+        .order("created_at", { ascending: false })
+        .limit(500);
+
+      if (authError) throw authError;
+
+      const authEvents = (authRaw || []) as Array<{ event_type: string | null }>;
+      const authCounts = new Map<string, number>();
+      for (const r of authEvents) {
+        const t = (r.event_type || "unknown").trim() || "unknown";
+        authCounts.set(t, (authCounts.get(t) ?? 0) + 1);
       }
+      const topEventTypes = [...authCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([event_type, count]) => ({ event_type, count }));
 
-      // 4) Global voted count (scoped)
-      let votedCountScoped = 0;
+      // 5) Session health
+      const nowISO = new Date().toISOString();
+      const soonISO = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
-      if (selectedElectionId === "ALL") {
-        const { data: statusRows, error: statusErr } = await supabase
-          .from("voter_election_status")
-          .select("voter_id")
-          .eq("has_voted", true);
+      const activeSessions = await countWhere("voter_sessions", (q) => q.gt("expires_at", nowISO));
+      const expiringSoon = await countWhere("voter_sessions", (q) => q.gt("expires_at", nowISO).lte("expires_at", soonISO));
 
-        if (statusErr) throw statusErr;
+      const { data: logsRaw, error: logsError } = await supabase
+        .from("voter_session_logs")
+        .select("action, created_at")
+        .gte("created_at", since)
+        .order("created_at", { ascending: false })
+        .limit(500);
 
-        const distinct = new Set((statusRows || []).map((r: any) => r.voter_id));
-        votedCountScoped = distinct.size;
-      } else {
-        votedCountScoped = eligMap.get(selectedElectionId)?.voted_eligible ?? 0;
+      if (logsError) throw logsError;
+
+      const logs = (logsRaw || []) as Array<{ action: string | null }>;
+      const actionCounts = new Map<string, number>();
+      for (const r of logs) {
+        const a = (r.action || "unknown").trim() || "unknown";
+        actionCounts.set(a, (actionCounts.get(a) ?? 0) + 1);
       }
+      const topActions60m = [...actionCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([action, count]) => ({ action, count }));
 
-      // 5) Compute eligible denominator for the current scope
-      // - ALL: uses total registered voters (SCC open-to-all baseline)
-      // - Specific election: uses authoritative roster eligibility counts
-      let scopeEligible = totalRegistered;
-
-      if (selectedElectionId !== "ALL") {
-        scopeEligible = eligMap.get(selectedElectionId)?.eligible_voters ?? 0;
-      }
-
-      setGlobalStats({
-        totalEligible: scopeEligible,
-        votedCount: votedCountScoped,
-        turnoutRate: scopeEligible ? (votedCountScoped / scopeEligible) * 100 : 0,
-        totalRegistered,
+      setSnapshot({
+        proof: proofRows,
+        artifacts: artifactRows,
+        auth: { totalEvents60m: authEvents.length, topEventTypes },
+        sessions: { activeSessions, expiringSoon, topActions60m },
       });
-
-      // 6) Per-election stats (eligible turnout is authoritative name-based eligibility)
-      const perStats: ElectionStats[] = [];
-      for (const e of electionsData || []) {
-        const eligibleVoters = eligMap.get(e.id)?.eligible_voters ?? 0;
-        const votedCount = eligMap.get(e.id)?.voted_eligible ?? 0;
-
-        perStats.push({
-          election_id: e.id,
-          title: e.title,
-          eligibleVoters,
-          votedCount,
-          turnoutRateVsEligible: eligibleVoters
-            ? (votedCount / eligibleVoters) * 100
-            : 0,
-        });
-      }
-      setPerElectionStats(perStats);
-
-      // 7) Timeline chart (votes per hour) — good for monitoring stalls/spikes
-      if (selectedElectionId === "ALL") {
-        const { data: voteTimes, error: votesError } = await supabase
-          .from("votes")
-          .select("created_at")
-          .order("created_at", { ascending: true });
-
-        if (votesError) throw votesError;
-
-        const hourlyMap = new Map<string, number>();
-        for (const v of voteTimes || []) {
-          const created = (v as any).created_at as string | null;
-          if (!created) continue;
-          const bucket = toHourBucketISO(created);
-          hourlyMap.set(bucket, (hourlyMap.get(bucket) || 0) + 1);
-        }
-
-        setHourlyData(
-          Array.from(hourlyMap.entries())
-            .map(([time, count]) => ({ time, votes: count }))
-            .sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0))
-        );
-      } else {
-        const { data: voteTimes, error: votesError } = await supabase
-          .from("votes")
-          .select("created_at")
-          .eq("election_id", selectedElectionId)
-          .order("created_at", { ascending: true });
-
-        if (votesError) throw votesError;
-
-        const hourlyMap = new Map<string, number>();
-        for (const v of voteTimes || []) {
-          const created = (v as any).created_at as string | null;
-          if (!created) continue;
-          const bucket = toHourBucketISO(created);
-          hourlyMap.set(bucket, (hourlyMap.get(bucket) || 0) + 1);
-        }
-
-        setHourlyData(
-          Array.from(hourlyMap.entries())
-            .map(([time, count]) => ({ time, votes: count }))
-            .sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0))
-        );
-      }
-
-      // 8) Operational metrics — intentionally NO candidate tallies (Results page owns that)
-      const now = new Date();
-      const isoNow = now.toISOString();
-
-      const isoMinusMins = (mins: number) =>
-        new Date(now.getTime() - mins * 60 * 1000).toISOString();
-
-      const isoPlusMins = (mins: number) =>
-        new Date(now.getTime() + mins * 60 * 1000).toISOString();
-
-      const votesBase = supabase
-        .from("votes")
-        .select("id", { count: "exact", head: true });
-
-      const votes60Query =
-        selectedElectionId === "ALL"
-          ? votesBase.gte("created_at", isoMinusMins(60))
-          : votesBase
-              .eq("election_id", selectedElectionId)
-              .gte("created_at", isoMinusMins(60));
-
-      const votes15Query =
-        selectedElectionId === "ALL"
-          ? supabase
-              .from("votes")
-              .select("id", { count: "exact", head: true })
-              .gte("created_at", isoMinusMins(15))
-          : supabase
-              .from("votes")
-              .select("id", { count: "exact", head: true })
-              .eq("election_id", selectedElectionId)
-              .gte("created_at", isoMinusMins(15));
-
-      const [{ count: v60 }, { count: v15 }] = await Promise.all([
-        votes60Query,
-        votes15Query,
-      ]);
-
-      // Active sessions / expiring sessions (global by design)
-      const { count: activeSess } = await supabase
-        .from("voter_sessions")
-        .select("voter_id", { count: "exact", head: true })
-        .gt("expires_at", isoNow);
-
-      const { count: expSoon } = await supabase
-        .from("voter_sessions")
-        .select("voter_id", { count: "exact", head: true })
-        .gt("expires_at", isoNow)
-        .lte("expires_at", isoPlusMins(10));
-
-      setOps({
-        votesLast60m: v60 || 0,
-        votesLast15m: v15 || 0,
-        activeSessions: activeSess || 0,
-        sessionsExpiringSoon: expSoon || 0,
-      });
-    } catch (err: any) {
-      console.error("AdminAnalytics load error:", err);
-      setErrorMsg(err?.message || "Failed to load analytics.");
-      toast.error("Failed to load analytics.");
+    } catch (e: any) {
+      console.error(e);
+      setErrorMsg(e?.message ?? "Failed to load operations snapshot.");
     } finally {
       setLoading(false);
     }
   };
 
-  const selectedElectionTitle = useMemo(() => {
-    if (selectedElectionId === "ALL") return "All elections";
-    return (
-      elections.find((e) => e.id === selectedElectionId)?.title ??
-      "Selected election"
-    );
-  }, [elections, selectedElectionId]);
+  const proofStatus = (r: ProofCoverage): Status => {
+    if (r.voted === 0) return "na";
+    const missingTx = Math.max(0, r.voted - r.withTx);
+    const missingToken = Math.max(0, r.voted - r.withToken);
+    const missing = Math.max(missingTx, missingToken);
 
-  const scopeDenominatorLabel =
-    selectedElectionId === "ALL"
-      ? "Registered voters used as denominator (overall participation)"
-      : "Eligible voters used as denominator (based on org membership)";
-
-  const totalEligibleLabel =
-    selectedElectionId === "ALL"
-      ? "Registered students (global)"
-      : "Eligible voters (based on org membership)";
-
-  const votedScopedLabel =
-    selectedElectionId === "ALL"
-      ? "Distinct voters who voted in any election"
-      : "Voters who voted in the selected election";
-
-  const exportPerElection = () => {
-    const rows = perElectionStats.map((e) => ({
-      election_id: e.election_id,
-      election_title: e.title,
-      eligible_voters: e.eligibleVoters,
-      voted_count: e.votedCount,
-      turnout_percent: Number(e.turnoutRateVsEligible.toFixed(2)),
-    }));
-    downloadCSV(`per-election-participation.csv`, rows);
+    if (missing === 0) return "ok";
+    // Conservative thresholds: 1–2 missing is warn, more is bad
+    if (missing <= 2) return "warn";
+    return "bad";
   };
 
-  const exportTimeline = () => {
-    const rows = hourlyData.map((h) => ({
-      scope: selectedElectionTitle,
-      hour_bucket: h.time,
-      votes: h.votes,
+  const artifactsStatus = (r: ArtifactReadiness): Status => {
+    // If no voting happened yet, artifacts may not be required; keep as warn only when missing manifest AND chunks.
+    if (!r.hasManifest && r.chunkCount === 0) return "warn";
+    if (r.hasManifest && r.chunkCount > 0) return "ok";
+    return "warn";
+  };
+
+  const sessionStatus: Status = useMemo(() => {
+    if (snapshot.sessions.activeSessions === 0) return "na";
+    if (snapshot.sessions.expiringSoon >= 10) return "warn";
+    return "ok";
+  }, [snapshot.sessions.activeSessions, snapshot.sessions.expiringSoon]);
+
+  const authStatus: Status = useMemo(() => {
+    if (snapshot.auth.totalEvents60m === 0) return "na";
+    // Without an explicit failure taxonomy, keep this informational unless clearly dominated by "fail"/"error" keywords.
+    const top = snapshot.auth.topEventTypes[0]?.event_type?.toLowerCase?.() ?? "";
+    if (/(fail|error|denied|mismatch)/.test(top)) return "warn";
+    return "ok";
+  }, [snapshot.auth.totalEvents60m, snapshot.auth.topEventTypes]);
+
+  const exportProofCSV = () => {
+    const rows = snapshot.proof.map((r) => ({
+      election_id: r.election_id,
+      election_title: r.title,
+      voted: r.voted,
+      with_tx_hash: r.withTx,
+      with_nft_token_id: r.withToken,
+      missing_tx: Math.max(0, r.voted - r.withTx),
+      missing_token: Math.max(0, r.voted - r.withToken),
     }));
-    downloadCSV(
-      `voting-timeline-${
-        selectedElectionId === "ALL" ? "ALL" : selectedElectionId
-      }.csv`,
-      rows
-    );
+    downloadCSV(`proof_coverage_${selectedElectionId === "ALL" ? "all" : selectedElectionId}.csv`, rows);
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      {/* Header */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Operations</h2>
+          <h2 className="text-xl font-semibold">Operations</h2>
           <p className="text-sm text-muted-foreground">
-            Scope: <span className="font-medium">{selectedElectionTitle}</span>
+            Procedural truth: guarantees, exceptions, and system health (not turnout).
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex items-center gap-2">
           <select
+            className="h-10 rounded-md border bg-background px-3 text-sm"
             value={selectedElectionId}
             onChange={(e) => setSelectedElectionId(e.target.value)}
-            className="h-9 rounded-md border bg-background px-3 text-sm"
-            title="Election scope"
+            aria-label="Select election scope"
           >
             <option value="ALL">All elections</option>
             {elections.map((e) => (
@@ -402,217 +333,179 @@ export default function AdminAnalytics() {
             ))}
           </select>
 
-          <Button variant="outline" onClick={loadAnalytics} disabled={loading}>
-            {loading ? "Refreshing..." : "Refresh"}
+          <Button variant="outline" onClick={loadOps} disabled={loading}>
+            <RefreshCcw className="mr-2 h-4 w-4" />
+            Refresh
           </Button>
         </div>
       </div>
 
-      {errorMsg ? (
-        <Card>
+      {/* Error */}
+      {errorMsg && (
+        <Card className="border-rose-200">
           <CardHeader>
-            <CardTitle>Analytics Error</CardTitle>
-            <CardDescription>{errorMsg}</CardDescription>
+            <CardTitle className="text-rose-700">Couldn&apos;t load operations snapshot</CardTitle>
+            <CardDescription className="text-rose-700/80">{errorMsg}</CardDescription>
           </CardHeader>
-          <CardContent>
-            <Button onClick={loadAnalytics}>Try again</Button>
-          </CardContent>
         </Card>
-      ) : null}
+      )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">
-                {selectedElectionId === "ALL"
-                  ? "Total Registered"
-                  : "Total Eligible"}
-              </CardTitle>
-              <Users className="h-4 w-4 text-muted-foreground" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {loading ? "…" : globalStats.totalEligible}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {totalEligibleLabel}
-            </p>
-
-            {selectedElectionId !== "ALL" ? (
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Registered (global): {loading ? "…" : globalStats.totalRegistered}
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Voted (Scoped)</CardTitle>
-              <Vote className="h-4 w-4 text-green-600" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-600">
-              {loading ? "…" : globalStats.votedCount}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">{votedScopedLabel}</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">
-                {selectedElectionId === "ALL"
-                  ? "Overall Participation"
-                  : "Turnout vs Eligible"}
-              </CardTitle>
-              <TrendingUp className="h-4 w-4 text-feu-green" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-feu-green">
-              {loading ? "…" : globalStats.turnoutRate.toFixed(1)}%
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {scopeDenominatorLabel}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Votes (last 15 min)</CardTitle>
-              <Vote className="h-4 w-4 text-muted-foreground" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{loading ? "…" : ops.votesLast15m}</div>
-            <p className="text-xs text-muted-foreground mt-1">Quick stall/spike indicator</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Votes (last 60 min)</CardTitle>
-              <TrendingUp className="h-4 w-4 text-muted-foreground" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{loading ? "…" : ops.votesLast60m}</div>
-            <p className="text-xs text-muted-foreground mt-1">Rolling activity window</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Active Sessions</CardTitle>
-              <Users className="h-4 w-4 text-muted-foreground" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{loading ? "…" : ops.activeSessions}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              voter_sessions.expires_at &gt; now
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Expiring Soon</CardTitle>
-              <Users className="h-4 w-4 text-muted-foreground" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{loading ? "…" : ops.sessionsExpiringSoon}</div>
-            <p className="text-xs text-muted-foreground mt-1">Within next 10 minutes</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+      {/* Section 2: Guarantees & Exceptions */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
             <div>
-              <CardTitle>Per-Election Participation</CardTitle>
+              <CardTitle>Guarantee: Proof-of-vote pointers issued</CardTitle>
               <CardDescription>
-                Turnout computed using <span className="font-medium">eligible voters</span> per election (based on org
-                membership). Elections with no eligible_orgs are treated as open to all registered voters.
+                For each election, compares voters who have voted vs those with tx_hash and nft_token_id recorded.
               </CardDescription>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={exportPerElection}
-              disabled={loading || perElectionStats.length === 0}
-              title="Export per-election participation CSV"
-            >
-              <Download className="h-4 w-4 mr-2" />
+            <Button variant="outline" onClick={exportProofCSV} disabled={loading || snapshot.proof.length === 0}>
+              <Download className="mr-2 h-4 w-4" />
               Export CSV
             </Button>
-          </div>
+          </CardHeader>
+
+          <CardContent>
+            <div className="space-y-3">
+              {loading ? (
+                <div className="text-sm text-muted-foreground">Loading…</div>
+              ) : snapshot.proof.length === 0 ? (
+                <div className="text-sm text-muted-foreground">No elections found for scope: {selectedLabel}.</div>
+              ) : (
+                snapshot.proof.map((r) => {
+                  const s = proofStatus(r);
+                  return (
+                    <div
+                      key={r.election_id}
+                      className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="flex items-start gap-3">
+                        {statusIcon(s)}
+                        <div>
+                          <div className="font-medium">{r.title}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {statusLabel(s)} • Voted: {r.voted} • tx_hash: {r.withTx} • token_id: {r.withToken}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-xs text-muted-foreground">
+                        Missing tx: {Math.max(0, r.voted - r.withTx)} • Missing token: {Math.max(0, r.voted - r.withToken)}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>System Health</CardTitle>
+            <CardDescription>Signals for the last 60 minutes.</CardDescription>
+          </CardHeader>
+
+          <CardContent className="space-y-4">
+            <div className="rounded-lg border p-3">
+              <div className="flex items-start gap-3">
+                {statusIcon(authStatus)}
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">Authentication</div>
+                  <div className="text-xs text-muted-foreground">
+                    {statusLabel(authStatus)} • Events (60m): {snapshot.auth.totalEvents60m}
+                  </div>
+                </div>
+              </div>
+
+              {snapshot.auth.topEventTypes.length > 0 && (
+                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                  {snapshot.auth.topEventTypes.map((t) => (
+                    <div key={t.event_type} className="flex items-center justify-between gap-2">
+                      <span className="truncate">{t.event_type}</span>
+                      <span className="tabular-nums">{t.count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg border p-3">
+              <div className="flex items-start gap-3">
+                {statusIcon(sessionStatus)}
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">Sessions</div>
+                  <div className="text-xs text-muted-foreground">
+                    {statusLabel(sessionStatus)} • Active: {snapshot.sessions.activeSessions} • Expiring soon:{" "}
+                    {snapshot.sessions.expiringSoon}
+                  </div>
+                </div>
+              </div>
+
+              {snapshot.sessions.topActions60m.length > 0 && (
+                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                  {snapshot.sessions.topActions60m.map((a) => (
+                    <div key={a.action} className="flex items-center justify-between gap-2">
+                      <span className="truncate">{a.action}</span>
+                      <span className="tabular-nums">{a.count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Minimal readiness signal (no deep ZK UI) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Readiness: Verification artifacts present</CardTitle>
+          <CardDescription>
+            Minimal indicator only (full details live in the ZK tab). Scope: {selectedLabel}.
+          </CardDescription>
         </CardHeader>
+
         <CardContent>
-          {loading ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
-          ) : perElectionStats.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No elections found.</p>
-          ) : (
-            <ul>
-              {perElectionStats.map((e) => (
-                <li key={e.election_id} className="flex justify-between py-1">
-                  <span className="truncate pr-3">{e.title}</span>
-                  <span className="font-bold">
-                    {e.votedCount}/{e.eligibleVoters} ({e.turnoutRateVsEligible.toFixed(1)}%)
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
+          <div className="grid gap-3 md:grid-cols-2">
+            {loading ? (
+              <div className="text-sm text-muted-foreground">Loading…</div>
+            ) : snapshot.artifacts.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No elections found for scope: {selectedLabel}.</div>
+            ) : (
+              snapshot.artifacts.map((r) => {
+                const s = artifactsStatus(r);
+                return (
+                  <div key={r.election_id} className="flex items-start gap-3 rounded-lg border p-3">
+                    {statusIcon(s)}
+                    <div className="min-w-0">
+                      <div className="font-medium">{r.title}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {statusLabel(s)} • Manifest: {r.hasManifest ? "yes" : "no"} • Chunks: {r.chunkCount}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </CardContent>
       </Card>
 
+      {/* Note about interventions */}
       <Card>
         <CardHeader>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <CardTitle>Voting Activity Timeline</CardTitle>
-              <CardDescription>Votes per hour (scoped)</CardDescription>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={exportTimeline}
-              disabled={loading || hourlyData.length === 0}
-              title="Export voting timeline CSV"
-            >
-              <Download className="h-4 w-4 mr-2" />
-              Export CSV
-            </Button>
-          </div>
+          <CardTitle>Manual interventions</CardTitle>
+          <CardDescription>
+            Destructive actions (e.g., voter reset) remain in the Operations tab container (Admin.tsx) under a separate
+            &quot;Danger Zone&quot; section.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={hourlyData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="time" tick={{ fontSize: 12 }} interval="preserveStartEnd" />
-              <YAxis allowDecimals={false} />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="votes" stroke="#1a5f3f" name="Votes Cast" dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
+          <div className="text-sm text-muted-foreground">
+            This page focuses on procedural truth signals. Actions are intentionally separated to reduce accidental use.
+          </div>
         </CardContent>
       </Card>
     </div>
