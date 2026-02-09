@@ -25,10 +25,10 @@ type OrgMemberRow = {
 
 type EmployeeRow = {
   id: string;
-  email: string;
-  email_norm?: string | null;
-  full_name?: string | null; // optional (only if your table has it)
-  created_at?: string | null;
+  full_name: string;
+  full_name_norm: string;
+  source: string | null;
+  created_at: string;
 };
 
 function normalizeLine(s: string) {
@@ -43,30 +43,81 @@ function parseLines(raw: string) {
 }
 
 /**
- * Accept formats:
- *  - "email@feualabang.edu.ph"
- *  - "email@feualabang.edu.ph, Full Name"
- *  - "email@feualabang.edu.ph | Full Name"
+ * Basic name normalization for client-side de-dupe.
+ * (DB trigger will compute the authoritative *_norm.)
  */
-function parseEmployeeLines(raw: string) {
-  const lines = parseLines(raw);
-  return lines
-    .map((line) => {
-      const parts = line.includes("|")
-        ? line.split("|").map((x) => normalizeLine(x))
-        : line.split(",").map((x) => normalizeLine(x));
+function normNameClient(s: string) {
+  return normalizeLine(s).toLowerCase();
+}
 
-      const email = (parts[0] ?? "").trim();
-      const full_name = (parts[1] ?? "").trim();
+/**
+ * Very small CSV reader: returns the first column for each row.
+ * - Supports quoted first cell.
+ * - Skips empty rows.
+ * - Skips common headers (name, full_name, member, etc).
+ */
+function parseCsvFirstColumn(raw: string) {
+  const lines = raw.split(/\r?\n/);
+  const out: string[] = [];
 
-      if (!email || !email.includes("@")) return null;
+  for (const lineRaw of lines) {
+    const line = lineRaw.trim();
+    if (!line) continue;
 
-      return {
-        email,
-        full_name: full_name || null,
-      };
-    })
-    .filter(Boolean) as { email: string; full_name: string | null }[];
+    let cell = "";
+    if (line.startsWith("\"")) {
+      // Read first quoted cell, supporting escaped quotes ("").
+      let i = 1;
+      while (i < line.length) {
+        const ch = line[i];
+        if (ch === "\"" && line[i + 1] === "\"") {
+          cell += "\"";
+          i += 2;
+          continue;
+        }
+        if (ch === "\"") break;
+        cell += ch;
+        i++;
+      }
+    } else {
+      cell = line.split(",")[0] ?? "";
+    }
+
+    const v = normalizeLine(cell);
+    if (!v) continue;
+
+    const header = v.toLowerCase();
+    if (
+      [
+        "name",
+        "full name",
+        "full_name",
+        "member",
+        "member name",
+        "employee",
+        "employee name",
+      ].includes(header)
+    ) {
+      continue;
+    }
+
+    out.push(v);
+  }
+
+  return out;
+}
+
+function dedupeNames(names: string[]) {
+  const seen = new Set<string>();
+  const uniq: string[] = [];
+  for (const n of names) {
+    const k = normNameClient(n);
+    if (!k) continue;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    uniq.push(n);
+  }
+  return uniq;
 }
 
 export default function RostersManagement() {
@@ -85,11 +136,13 @@ export default function RostersManagement() {
   const [orgMemberSearch, setOrgMemberSearch] = useState("");
   const [orgMemberPaste, setOrgMemberPaste] = useState("");
   const [orgMemberSource, setOrgMemberSource] = useState("Admin import");
-
   const [orgMemberBusy, setOrgMemberBusy] = useState(false);
 
+  const [orgMemberCsvFile, setOrgMemberCsvFile] = useState<File | null>(null);
+  const [orgMemberCsvPreview, setOrgMemberCsvPreview] = useState<string[]>([]);
+
   // ----------------------------
-  // Employee registry UI
+  // Employee registry (name-only) UI
   // ----------------------------
   const [employeeLoading, setEmployeeLoading] = useState(false);
   const [employeeRows, setEmployeeRows] = useState<EmployeeRow[]>([]);
@@ -97,8 +150,9 @@ export default function RostersManagement() {
   const [employeePaste, setEmployeePaste] = useState("");
   const [employeeBusy, setEmployeeBusy] = useState(false);
 
-  // If your employee_registry table has NO full_name column, keep this OFF.
-  const [employeeIncludeNames, setEmployeeIncludeNames] = useState(true);
+  const [employeeCsvFile, setEmployeeCsvFile] = useState<File | null>(null);
+  const [employeeCsvPreview, setEmployeeCsvPreview] = useState<string[]>([]);
+  const [employeeSource, setEmployeeSource] = useState("Admin import");
 
   // ----------------------------
   // Loaders
@@ -116,7 +170,6 @@ export default function RostersManagement() {
       setOrgs([]);
     } else {
       setOrgs((data as any) || []);
-      // Auto-select first org if nothing selected
       if (!selectedOrg && data && data.length > 0) {
         setSelectedOrg((data as any)[0].code);
       }
@@ -148,19 +201,16 @@ export default function RostersManagement() {
   const loadEmployees = async () => {
     setEmployeeLoading(true);
 
-    // NOTE: we select full_name optionally (won't break if column exists).
-    // If your table doesn't have full_name, Supabase will error.
-    // If you hit that, tell me and I'll adjust to select only email fields.
+    // Name-only registry lives in employee_names (Option A).
+    // Cast table name to any to avoid typegen drift until you regenerate Supabase types.
     const { data, error } = await supabase
-      .from("employee_registry")
-      .select("id, email, email_norm, full_name, created_at")
+      .from("employee_names" as any)
+      .select("id, full_name, full_name_norm, source, created_at")
       .order("created_at", { ascending: false });
 
     if (error) {
       console.error(error);
-      toast.error(
-        "Failed to load employee registry. If your table has no full_name column, tell me and I’ll adjust the select()."
-      );
+      toast.error("Failed to load employee names registry.");
       setEmployeeRows([]);
     } else {
       setEmployeeRows((data as any) || []);
@@ -198,9 +248,9 @@ export default function RostersManagement() {
     if (!q) return orgMemberRows;
     return orgMemberRows.filter((r) => {
       return (
-        r.full_name?.toLowerCase().includes(q) ||
-        r.full_name_norm?.toLowerCase().includes(q) ||
-        r.source?.toLowerCase().includes(q)
+        (r.full_name ?? "").toLowerCase().includes(q) ||
+        (r.full_name_norm ?? "").toLowerCase().includes(q) ||
+        (r.source ?? "").toLowerCase().includes(q)
       );
     });
   }, [orgMemberRows, orgMemberSearch]);
@@ -209,13 +259,27 @@ export default function RostersManagement() {
     const q = employeeSearch.trim().toLowerCase();
     if (!q) return employeeRows;
     return employeeRows.filter((r) => {
-      return (
-        r.email?.toLowerCase().includes(q) ||
-        (r.email_norm ?? "").toLowerCase().includes(q) ||
-        (r.full_name ?? "").toLowerCase().includes(q)
-      );
+      const a = (r.full_name ?? "").toLowerCase();
+      const b = (r.full_name_norm ?? "").toLowerCase();
+      const c = (r.source ?? "").toLowerCase();
+      return a.includes(q) || b.includes(q) || c.includes(q);
     });
   }, [employeeRows, employeeSearch]);
+
+  // ----------------------------
+  // CSV readers
+  // ----------------------------
+  const readOrgMemberCsv = async (file: File) => {
+    const text = await file.text();
+    const names = parseCsvFirstColumn(text);
+    setOrgMemberCsvPreview(dedupeNames(names));
+  };
+
+  const readEmployeeCsv = async (file: File) => {
+    const text = await file.text();
+    const names = parseCsvFirstColumn(text);
+    setEmployeeCsvPreview(dedupeNames(names));
+  };
 
   // ----------------------------
   // Actions: Org roster
@@ -226,24 +290,23 @@ export default function RostersManagement() {
       return;
     }
 
-    const lines = parseLines(orgMemberPaste);
-    if (lines.length === 0) {
-      toast.error("Paste at least one name.");
+    const fromCsv = orgMemberCsvPreview.length > 0 ? orgMemberCsvPreview : [];
+    const fromPaste = orgMemberPaste ? parseLines(orgMemberPaste) : [];
+    const combined = fromCsv.length > 0 ? fromCsv : fromPaste;
+
+    if (combined.length === 0) {
+      toast.error("Add at least one member name (CSV or paste).");
       return;
     }
 
-    // Dedupe in this payload
-    const unique = Array.from(new Set(lines.map((x) => x.toLowerCase()))).map((lc) => {
-      const original = lines.find((x) => x.toLowerCase() === lc) ?? lc;
-      return original;
-    });
+    const unique = dedupeNames(combined);
 
     setOrgMemberBusy(true);
     try {
       const payload = unique.map((name) => ({
         org_code: selectedOrg,
         full_name: name,
-        source: orgMemberSource.trim() || null,
+        source: normalizeLine(orgMemberSource) || null,
       }));
 
       const { error } = await supabase.from("org_member_names").insert(payload as any);
@@ -256,6 +319,8 @@ export default function RostersManagement() {
 
       toast.success(`Imported ${unique.length} member(s) to ${selectedOrg}.`);
       setOrgMemberPaste("");
+      setOrgMemberCsvFile(null);
+      setOrgMemberCsvPreview([]);
       await loadOrgMembers(selectedOrg);
     } finally {
       setOrgMemberBusy(false);
@@ -293,43 +358,38 @@ export default function RostersManagement() {
   };
 
   // ----------------------------
-  // Actions: Employee registry
+  // Actions: Employee registry (name-only)
   // ----------------------------
   const addEmployees = async () => {
-    const parsed = parseEmployeeLines(employeePaste);
-    if (parsed.length === 0) {
-      toast.error("Paste at least one email.");
+    const fromCsv = employeeCsvPreview.length > 0 ? employeeCsvPreview : [];
+    const fromPaste = employeePaste ? parseLines(employeePaste) : [];
+    const combined = fromCsv.length > 0 ? fromCsv : fromPaste;
+
+    if (combined.length === 0) {
+      toast.error("Add at least one employee name (CSV or paste).");
       return;
     }
 
-    // Dedupe by email_norm-ish behavior
-    const map = new Map<string, { email: string; full_name: string | null }>();
-    for (const p of parsed) {
-      map.set(p.email.trim().toLowerCase(), p);
-    }
-    const unique = Array.from(map.values());
+    const unique = dedupeNames(combined);
 
     setEmployeeBusy(true);
     try {
-      // Insert only fields that are safe:
-      // - always send email
-      // - only send full_name if the admin wants it AND input contains it
-      const payload = unique.map((x) => {
-        const base: any = { email: x.email.trim() };
-        if (employeeIncludeNames && x.full_name) base.full_name = x.full_name;
-        return base;
-      });
+      const payload = unique.map((full_name) => ({
+        full_name,
+        source: normalizeLine(employeeSource) || null,
+      }));
 
-      const { error } = await supabase.from("employee_registry").insert(payload);
-
+      const { error } = await supabase.from("employee_names" as any).insert(payload as any);
       if (error) {
         console.error(error);
         toast.error(error.message);
         return;
       }
 
-      toast.success(`Imported ${unique.length} employee email(s).`);
+      toast.success(`Imported ${unique.length} employee name(s).`);
       setEmployeePaste("");
+      setEmployeeCsvFile(null);
+      setEmployeeCsvPreview([]);
       await loadEmployees();
     } finally {
       setEmployeeBusy(false);
@@ -337,9 +397,9 @@ export default function RostersManagement() {
   };
 
   const deleteEmployee = async (rowId: string) => {
-    if (!confirm("Delete this employee registry entry?")) return;
+    if (!confirm("Delete this employee entry?")) return;
 
-    const { error } = await supabase.from("employee_registry").delete().eq("id", rowId);
+    const { error } = await supabase.from("employee_names" as any).delete().eq("id", rowId);
     if (error) {
       toast.error(error.message);
       return;
@@ -353,7 +413,8 @@ export default function RostersManagement() {
 
     setEmployeeBusy(true);
     try {
-      const { error } = await supabase.from("employee_registry").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      // Supabase delete requires at least one filter. This condition matches all rows.
+      const { error } = await supabase.from("employee_names" as any).delete().not("id", "is", null);
       if (error) {
         toast.error(error.message);
         return;
@@ -363,6 +424,23 @@ export default function RostersManagement() {
     } finally {
       setEmployeeBusy(false);
     }
+  };
+
+  const CsvPreview = ({ items }: { items: string[] }) => {
+    if (items.length === 0) return null;
+    return (
+      <div className="rounded-md border bg-muted/30 p-2 text-xs">
+        <div className="font-medium">Preview ({items.length})</div>
+        <div className="mt-1 max-h-[110px] overflow-auto space-y-1">
+          {items.slice(0, 12).map((n, idx) => (
+            <div key={idx} className="truncate">{n}</div>
+          ))}
+          {items.length > 12 ? (
+            <div className="text-muted-foreground">+{items.length - 12} more…</div>
+          ) : null}
+        </div>
+      </div>
+    );
   };
 
   // ----------------------------
@@ -376,7 +454,7 @@ export default function RostersManagement() {
           <div>
             <h2 className="text-xl font-bold text-feu-green">Rosters & Eligibility Data</h2>
             <p className="text-sm text-muted-foreground">
-              Manage official org membership rosters (for org elections) and employee registry
+              Manage official org membership rosters (for org elections) and employee names registry
               (to exclude employees from org elections).
             </p>
           </div>
@@ -408,7 +486,7 @@ export default function RostersManagement() {
               {selectedOrg ? <Badge variant="outline">{selectedOrg}</Badge> : null}
             </div>
             <div className="text-sm text-muted-foreground">
-              This writes to <code>org_member_names</code>. Your trigger will normalize names automatically.
+              Writes to <code>org_member_names</code>. Your trigger will normalize names automatically.
             </div>
           </div>
 
@@ -437,12 +515,54 @@ export default function RostersManagement() {
           <div className="rounded-xl border p-4 space-y-3">
             <div className="font-semibold">Import names</div>
             <div className="text-xs text-muted-foreground">
-              Paste one full name per line (e.g., “Juan Dela Cruz”). Duplicates in the paste are auto-removed.
+              Upload a .csv file (first column = full name), or paste one full name per line. Duplicates are auto-removed client-side.
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs text-muted-foreground">
+                CSV format: first column is the member full name.
+              </div>
+
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                disabled={orgMemberBusy || orgMemberLoading || !selectedOrg}
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setOrgMemberCsvFile(f);
+                  setOrgMemberCsvPreview([]);
+                  if (f) {
+                    readOrgMemberCsv(f).catch((err) => {
+                      console.error(err);
+                      toast.error("Failed to read CSV.");
+                    });
+                  }
+                }}
+              />
+
+              <CsvPreview items={orgMemberCsvPreview} />
+
+              {orgMemberCsvFile ? (
+                <div className="flex items-center justify-between text-xs">
+                  <div className="text-muted-foreground truncate">Selected file: {orgMemberCsvFile.name}</div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setOrgMemberCsvFile(null);
+                      setOrgMemberCsvPreview([]);
+                    }}
+                    disabled={orgMemberBusy}
+                  >
+                    Clear file
+                  </Button>
+                </div>
+              ) : null}
             </div>
 
             <textarea
               className="w-full min-h-[170px] rounded-md border border-border bg-background px-3 py-2 text-sm"
-              placeholder="Juan Dela Cruz&#10;Maria Santos&#10;..."
+              placeholder={"Juan Dela Cruz\nMaria Santos\n..."}
               value={orgMemberPaste}
               onChange={(e) => setOrgMemberPaste(e.target.value)}
               disabled={orgMemberBusy || orgMemberLoading || !selectedOrg}
@@ -504,12 +624,7 @@ export default function RostersManagement() {
                           {r.source ? `Source: ${r.source}` : "Source: —"} • {new Date(r.created_at).toLocaleString()}
                         </div>
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => deleteOrgMember(r.id)}
-                        disabled={orgMemberBusy}
-                      >
+                      <Button variant="outline" size="sm" onClick={() => deleteOrgMember(r.id)} disabled={orgMemberBusy}>
                         Delete
                       </Button>
                     </div>
@@ -529,43 +644,77 @@ export default function RostersManagement() {
             <Badge variant="outline">{filteredEmployees.length}</Badge>
           </div>
           <div className="text-sm text-muted-foreground">
-            This writes to <code>employee_registry</code>. The DB trigger keeps <code>email_norm</code> consistent.
+            Writes to <code>employee_names</code>. The DB trigger keeps <code>full_name_norm</code> consistent.
           </div>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
           {/* Import */}
           <div className="rounded-xl border p-4 space-y-3">
-            <div className="font-semibold">Import employee emails</div>
+            <div className="font-semibold">Import employee names</div>
             <div className="text-xs text-muted-foreground">
-              Paste one per line:
-              <div className="mt-1">
-                <span className="font-medium">email</span>
-                {"  "}or{"  "}
-                <span className="font-medium">email, Full Name</span>
+              Upload a .csv file (first column = full name), or paste one full name per line.
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs text-muted-foreground">
+                CSV format: first column is the employee full name.
               </div>
+
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                disabled={employeeBusy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setEmployeeCsvFile(f);
+                  setEmployeeCsvPreview([]);
+                  if (f) {
+                    readEmployeeCsv(f).catch((err) => {
+                      console.error(err);
+                      toast.error("Failed to read CSV.");
+                    });
+                  }
+                }}
+              />
+
+              <CsvPreview items={employeeCsvPreview} />
+
+              {employeeCsvFile ? (
+                <div className="flex items-center justify-between text-xs">
+                  <div className="text-muted-foreground truncate">Selected file: {employeeCsvFile.name}</div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setEmployeeCsvFile(null);
+                      setEmployeeCsvPreview([]);
+                    }}
+                    disabled={employeeBusy}
+                  >
+                    Clear file
+                  </Button>
+                </div>
+              ) : null}
             </div>
 
             <textarea
               className="w-full min-h-[170px] rounded-md border border-border bg-background px-3 py-2 text-sm"
-              placeholder={"employee@feualabang.edu.ph\nemployee2@feualabang.edu.ph, Juan Dela Cruz\n..."}
+              placeholder={"Juan Dela Cruz\nMaria Santos\n..."}
               value={employeePaste}
               onChange={(e) => setEmployeePaste(e.target.value)}
               disabled={employeeBusy}
             />
 
-            <div className="flex items-center justify-between gap-2">
-              <label className="text-xs text-muted-foreground flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={employeeIncludeNames}
-                  onChange={(e) => setEmployeeIncludeNames(e.target.checked)}
-                />
-                Include names if provided (requires <code>full_name</code> column)
-              </label>
-
-              <div className="flex gap-2">
-                <Button variant="destructive" size="sm" onClick={clearEmployeeRegistry} disabled={employeeBusy}>
+            <div className="flex flex-col md:flex-row gap-2 md:items-center">
+              <Input
+                placeholder="Source label (optional) e.g., HR list 2026"
+                value={employeeSource}
+                onChange={(e) => setEmployeeSource(e.target.value)}
+                disabled={employeeBusy}
+              />
+              <div className="flex gap-2 md:ml-auto">
+                <Button variant="destructive" onClick={clearEmployeeRegistry} disabled={employeeBusy}>
                   Clear registry
                 </Button>
                 <Button onClick={addEmployees} disabled={employeeBusy}>
@@ -579,11 +728,11 @@ export default function RostersManagement() {
           <div className="rounded-xl border p-4 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="font-semibold">Employee entries</div>
-              <Badge variant="outline">{employeeRows.length}</Badge>
+              <Badge variant="outline">{filteredEmployees.length}</Badge>
             </div>
 
             <Input
-              placeholder="Search email/name…"
+              placeholder="Search name/source…"
               value={employeeSearch}
               onChange={(e) => setEmployeeSearch(e.target.value)}
               disabled={employeeLoading}
@@ -599,20 +748,13 @@ export default function RostersManagement() {
                   {filteredEmployees.map((r) => (
                     <div key={r.id} className="p-3 flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="font-medium truncate">{r.email}</div>
-                        {r.full_name ? (
-                          <div className="text-xs text-muted-foreground truncate">{r.full_name}</div>
-                        ) : (
-                          <div className="text-xs text-muted-foreground truncate">—</div>
-                        )}
+                        <div className="font-medium truncate">{r.full_name}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          {r.source ? `Source: ${r.source}` : "Source: —"} • {new Date(r.created_at).toLocaleString()}
+                        </div>
                       </div>
 
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => deleteEmployee(r.id)}
-                        disabled={employeeBusy}
-                      >
+                      <Button variant="outline" size="sm" onClick={() => deleteEmployee(r.id)} disabled={employeeBusy}>
                         Delete
                       </Button>
                     </div>
@@ -622,7 +764,7 @@ export default function RostersManagement() {
             </div>
 
             <div className="text-xs text-muted-foreground">
-              Next step: we will enforce “employees cannot vote for org elections” in the eligibility RPC.
+              Next step: enforce “employees cannot vote for org elections” in the eligibility RPC.
             </div>
           </div>
         </div>

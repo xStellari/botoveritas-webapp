@@ -28,9 +28,6 @@ const formatFullName = (v?: RequestRow["voters"] | null) => {
   return `${v.first_name} ${v.last_name}${suffix}`;
 };
 
-
-const normNameClient = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
-
 const prettyTime = (iso: string) =>
   new Date(iso).toLocaleString(undefined, {
     year: "numeric",
@@ -111,38 +108,8 @@ export default function OrgMembershipRequests() {
       }
 
       if (action === "approved") {
-  toast.success("Approved. Voter eligibility updated (and roster synced).");
-
-  // Best-effort roster sync:
-  // If your RPC already inserts into org_member_names, this will no-op via our pre-check.
-  const req = rows.find((x) => x.id === reqId) ?? null;
-  const orgCode = req?.requested_org ?? null;
-  const fullName = formatFullName(req?.voters ?? null);
-
-  if (orgCode && fullName && fullName !== "Unknown voter") {
-    const fullNameNorm = normNameClient(fullName);
-
-    try {
-      const { data: existing, error: existsErr } = await supabase
-        .from("org_member_names")
-        .select("id")
-        .eq("org_code", orgCode)
-        .eq("full_name_norm", fullNameNorm)
-        .limit(1);
-
-      if (!existsErr && (!existing || (existing as any).length === 0)) {
-        await supabase.from("org_member_names").insert({
-          org_code: orgCode,
-          full_name: fullName,
-          source: "Membership request approval",
-        } as any);
-      }
-    } catch (e) {
-      // silent (don't block approval)
-      console.warn("Roster sync skipped:", e);
-    }
-  }
-} else {
+        toast.success("Approved. Voter eligibility updated.");
+      } else {
         toast.success("Rejected.");
       }
 
