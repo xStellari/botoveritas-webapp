@@ -11,11 +11,48 @@ import { ElectionStatusBadge } from "@/components/elections/ElectionStatusBadge"
 import { sortElections } from "@/utils/sortElections";
 import { toast } from "sonner";
 
+const APP_SETTING_KEYS = {
+  registrationEnabled: "registration_enabled",
+} as const;
+
+// Edit this text as needed for your school’s timeline.
+const REGISTRATION_PHASE_NOTE = "Note: Registration is opened during the official registration phase.";
+
 const Index = () => {
   const navigate = useNavigate();
 
-  const [registrationEnabled, setRegistrationEnabled] = useState(true);
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
+  const [registrationLoading, setRegistrationLoading] = useState(true);
   const [elections, setElections] = useState<any[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRegistrationSetting() {
+      setRegistrationLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from("app_settings")
+          .select("value")
+          .eq("key", APP_SETTING_KEYS.registrationEnabled)
+          .maybeSingle();
+
+        if (error) throw error;
+        const value = data?.value ?? false;
+        if (!cancelled) setRegistrationEnabled(Boolean(value));
+      } catch {
+        // Fail closed on homepage (safer): disable registration.
+        if (!cancelled) setRegistrationEnabled(false);
+      } finally {
+        if (!cancelled) setRegistrationLoading(false);
+      }
+    }
+
+    loadRegistrationSetting();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [timeLeftMap, setTimeLeftMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
 
@@ -91,8 +128,14 @@ const Index = () => {
   }, [active]);
 
   const handleRegister = () => {
+    if (registrationLoading) {
+      toast.message("Checking registration window…");
+      return;
+    }
     if (!registrationEnabled) {
-      toast.error("Registration is currently closed.");
+      toast.error("Registration is currently closed.", {
+        description: REGISTRATION_PHASE_NOTE,
+      });
       return;
     }
     navigate("/register");
@@ -164,8 +207,12 @@ const Index = () => {
                   <p className="text-sm text-muted-foreground">
                     Register as a voter for upcoming elections.
                   </p>
-                  <Button className="w-full mt-2" disabled={!registrationEnabled}>
-                    Register
+
+                  {!registrationLoading && !registrationEnabled && (
+                    <p className="text-xs text-muted-foreground mt-2">{REGISTRATION_PHASE_NOTE}</p>
+                  )}
+                  <Button className="w-full mt-2" disabled={registrationLoading || !registrationEnabled}>
+                    {registrationLoading ? "Checking…" : registrationEnabled ? "Register" : "Registration Closed"}
                   </Button>
                 </div>
               </Card>
