@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus, RotateCcw, UserPlus } from "lucide-react";
+import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus, RotateCcw, UserPlus, Activity } from "lucide-react";
 
 import AdminAnalytics from "@/components/admin/AdminAnalytics";
 import VoterManagement from "@/components/admin/VoterManagement";
@@ -44,6 +44,20 @@ export default function Admin() {
       id: number;
       created_at: string;
       admin_id: string | null;
+      entity_id: string;
+      details: any;
+    }>
+  >([]);
+
+
+  const [opsAuditLoading, setOpsAuditLoading] = useState(true);
+  const [opsAuditEntries, setOpsAuditEntries] = useState<
+    Array<{
+      id: number;
+      created_at: string;
+      admin_id: string | null;
+      action: string;
+      entity_type: string;
       entity_id: string;
       details: any;
     }>
@@ -83,6 +97,27 @@ export default function Admin() {
     }
   };
 
+  const loadOpsAuditFeed = async () => {
+    setOpsAuditLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("admin_audit_logs")
+        .select("id, created_at, admin_id, action, entity_type, entity_id, details")
+        .in("action", ["APP_SETTING_UPDATE", "RESET_VOTER_FOR_ELECTION"])
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      if (error) throw error;
+      setOpsAuditEntries(data ?? []);
+    } catch {
+      // Silent: convenience feed, not a blocker.
+      setOpsAuditEntries([]);
+    } finally {
+      setOpsAuditLoading(false);
+    }
+  };
+
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       console.log("ADMIN SESSION:", data.session);
@@ -90,6 +125,7 @@ export default function Admin() {
     });
 
     void loadRecentResets();
+    void loadOpsAuditFeed();
   }, []);
 
   useEffect(() => {
@@ -272,6 +308,7 @@ export default function Admin() {
         });
 
         await loadRecentResets();
+      void loadOpsAuditFeed();
       } catch {
         // ignore
       }
@@ -398,7 +435,65 @@ export default function Admin() {
                 </CardContent>
               </Card>
 
+              
               <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2">
+                    <Activity className="h-4 w-4" />
+                    Operations Audit Feed
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">
+                    Recent high-impact Operations actions (registration toggles and voter resets).
+                  </p>
+
+                  {opsAuditLoading ? (
+                    <p className="mt-3 text-sm text-muted-foreground">Loading…</p>
+                  ) : opsAuditEntries.length === 0 ? (
+                    <p className="mt-3 text-sm text-muted-foreground">No recent Operations actions.</p>
+                  ) : (
+                    <div className="mt-3 space-y-2">
+                      {opsAuditEntries.map((row) => {
+                        const actionLabel =
+                          row.action === "APP_SETTING_UPDATE" && row.details?.key === "registration_enabled"
+                            ? `Registration ${row.details?.to ? "opened" : "closed"}`
+                            : row.action === "RESET_VOTER_FOR_ELECTION"
+                              ? "Reset voter for election"
+                              : row.action;
+
+                        const meta =
+                          row.action === "RESET_VOTER_FOR_ELECTION"
+                            ? `Election: ${row.entity_id} • Voter: ${row.details?.voter_id ?? "—"}`
+                            : row.action === "APP_SETTING_UPDATE"
+                              ? `Setting: ${row.details?.key ?? row.entity_type}`
+                              : `${row.entity_type}: ${row.entity_id}`;
+
+                        return (
+                          <div key={row.id} className="rounded-lg border bg-background p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-medium text-foreground">{actionLabel}</p>
+                                <p className="text-xs text-muted-foreground mt-1">{meta}</p>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-xs text-muted-foreground">
+                                  {row.created_at ? new Date(row.created_at).toLocaleString() : "—"}
+                                </p>
+                                {row.details?.admin_email ? (
+                                  <p className="text-xs text-muted-foreground mt-1">{row.details.admin_email}</p>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+<Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2">
                     <RotateCcw className="h-4 w-4" />
