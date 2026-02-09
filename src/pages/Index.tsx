@@ -16,7 +16,7 @@ const APP_SETTING_KEYS = {
 } as const;
 
 // Edit this text as needed for your school’s timeline.
-const REGISTRATION_PHASE_NOTE = "Note: Registration is opened during the official registration phase.";
+const REGISTRATION_PHASE_NOTE = "Registration is currently disabled. Please ask the election admin when registration will be available.";
 
 const Index = () => {
   const navigate = useNavigate();
@@ -128,10 +128,6 @@ const Index = () => {
   }, [active]);
 
   const handleRegister = () => {
-    if (registrationLoading) {
-      toast.message("Checking registration window…");
-      return;
-    }
     if (!registrationEnabled) {
       toast.error("Registration is currently closed.", {
         description: REGISTRATION_PHASE_NOTE,
@@ -190,7 +186,7 @@ const Index = () => {
               </div>
             </section>
 
-            <section className="grid md:grid-cols-2 gap-6">
+                      <section className="grid md:grid-cols-2 gap-6">
               <Card
                 className={`p-8 border-2 rounded-xl transition ${
                   registrationEnabled
@@ -208,11 +204,26 @@ const Index = () => {
                     Register as a voter for upcoming elections.
                   </p>
 
-                  {!registrationLoading && !registrationEnabled && (
-                    <p className="text-xs text-muted-foreground mt-2">{REGISTRATION_PHASE_NOTE}</p>
+                  {!registrationEnabled && !registrationLoading && (
+                    <div className="mt-4 rounded-lg border border-border/60 bg-muted/50 p-3">
+                      <div className="text-xs font-semibold text-muted-foreground tracking-wide uppercase">
+                        Registration disabled
+                      </div>
+                      <div className="text-sm text-foreground/90 mt-1">
+                        {REGISTRATION_PHASE_NOTE}
+                      </div>
+                    </div>
                   )}
-                  <Button className="w-full mt-2" disabled={registrationLoading || !registrationEnabled}>
-                    {registrationLoading ? "Checking…" : registrationEnabled ? "Register" : "Registration Closed"}
+                  <Button
+                    className={`w-full mt-2 ${
+                      registrationLoading || !registrationEnabled
+                        ? "bg-muted text-muted-foreground border border-border cursor-not-allowed hover:bg-muted"
+                        : ""
+                    }`}
+                    variant={registrationLoading || !registrationEnabled ? "outline" : "default"}
+                    disabled={registrationLoading || !registrationEnabled}
+                  >
+                    {registrationLoading ? "Checking…" : registrationEnabled ? "Register" : "Registration Disabled"}
                   </Button>
                 </div>
               </Card>
