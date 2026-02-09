@@ -1,5 +1,6 @@
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { Image as ImageIcon, Save, Upload } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -34,6 +35,13 @@ type CandidateRowLike = {
   id: string;
   photo_url: string | null;
 };
+
+const MAX_CANDIDATE_PHOTO_BYTES = 1 * 1024 * 1024; // 1 MB
+const ALLOWED_CANDIDATE_PHOTO_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
 
 type Props = {
   open: boolean;
@@ -206,7 +214,7 @@ export function CandidateEditorDialog(props: Props) {
                   <div>
                     <div className="font-semibold">Candidate photo</div>
                     <div className="text-xs text-muted-foreground">
-                      Auto-cropped to a circle in admin + ballot UI.
+                      Auto-cropped to a circle in admin + ballot UI. JPG/PNG/WebP only, max 1 MB.
                     </div>
                   </div>
                 </div>
@@ -215,26 +223,51 @@ export function CandidateEditorDialog(props: Props) {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept="image/*"
+                    accept="image/jpeg,image/png,image/webp"
                     className="hidden"
                     onChange={(e) => {
-                      const f = e.target.files?.[0] || null;
-                      setPhotoFile(f);
+                      const inputEl = e.currentTarget;
+                      const f = inputEl.files?.[0] || null;
 
                       // Revoke previous blob preview if needed
-                      if (
-                        photoPreviewUrl &&
-                        photoPreviewUrl.startsWith("blob:")
-                      ) {
+                      if (photoPreviewUrl && photoPreviewUrl.startsWith("blob:")) {
                         URL.revokeObjectURL(photoPreviewUrl);
                       }
 
+                      // Validate before accepting the file
                       if (f) {
+                        const isAllowedType =
+                          ALLOWED_CANDIDATE_PHOTO_MIME_TYPES.has(f.type) &&
+                          // Extra guard: some browsers may mislabel GIF; also block by extension
+                          !f.name.toLowerCase().endsWith(".gif");
+
+                        if (!isAllowedType) {
+                          toast.error(
+                            "Unsupported image format. Please upload JPG, PNG, or WebP (GIF is not allowed)."
+                          );
+                          inputEl.value = "";
+                          setPhotoFile(null);
+                          setPhotoPreviewUrl(editingCandidate?.photo_url ?? null);
+                          return;
+                        }
+
+                        if (f.size > MAX_CANDIDATE_PHOTO_BYTES) {
+                          toast.error("Image is too large. Max size is 1 MB.");
+                          inputEl.value = "";
+                          setPhotoFile(null);
+                          setPhotoPreviewUrl(editingCandidate?.photo_url ?? null);
+                          return;
+                        }
+
+                        setPhotoFile(f);
                         const url = URL.createObjectURL(f);
                         setPhotoPreviewUrl(url);
-                      } else {
-                        setPhotoPreviewUrl(editingCandidate?.photo_url ?? null);
+                        return;
                       }
+
+                      // No file selected — revert to saved photo (if any)
+                      setPhotoFile(null);
+                      setPhotoPreviewUrl(editingCandidate?.photo_url ?? null);
                     }}
                   />
 
