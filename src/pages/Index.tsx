@@ -9,7 +9,6 @@ import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { ElectionStatusBadge } from "@/components/elections/ElectionStatusBadge";
 import { sortElections } from "@/utils/sortElections";
-import { toast } from "sonner";
 
 const APP_SETTING_KEYS = {
   registrationEnabled: "registration_enabled",
@@ -128,19 +127,13 @@ const Index = () => {
   }, [active]);
 
   const handleRegister = () => {
-    if (!registrationEnabled) {
-      toast.error("Registration is currently closed.", {
-        description: REGISTRATION_PHASE_NOTE,
-      });
-      return;
+    if (!registrationEnabled) {      return;
     }
     navigate("/register");
   };
 
   const handleVote = () => {
-    if (active.length === 0) {
-      toast.error("No active elections available.");
-      return;
+    if (active.length === 0) {      return;
     }
     navigate("/voting");
   };
@@ -186,7 +179,18 @@ const Index = () => {
               </div>
             </section>
 
-                      <section className="grid md:grid-cols-2 gap-6">
+                      {!registrationLoading && !registrationEnabled && (
+            <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 mb-6">
+              <div className="text-xs font-semibold text-destructive tracking-wide uppercase">
+                Registration not available
+              </div>
+              <div className="text-sm text-foreground/90 mt-1">
+                Voter registration is only available during the official registration period. Please wait for announcements on your organization’s Facebook page.
+              </div>
+            </div>
+          )}
+
+          <section className="grid md:grid-cols-2 gap-6">
               <Card
                 className={`p-8 border-2 rounded-xl transition ${
                   registrationEnabled
@@ -206,18 +210,7 @@ const Index = () => {
                   <p className="text-xs text-muted-foreground mt-2">
                     Registration availability depends on the current election phase.
                   </p>
-
-                  {!registrationEnabled && !registrationLoading && (
-                    <div className="mt-4 rounded-lg border border-border/60 bg-muted/50 p-3">
-                      <div className="text-xs font-semibold text-muted-foreground tracking-wide uppercase">
-                        Registration disabled
-                      </div>
-                      <div className="text-sm text-foreground/90 mt-1">
-                        {REGISTRATION_PHASE_NOTE}
-                      </div>
-                    </div>
-                  )}
-                  <Button
+<Button
                     className={`w-full mt-2 ${
                       registrationLoading || !registrationEnabled
                         ? "bg-muted text-muted-foreground border border-border cursor-not-allowed hover:bg-muted"
@@ -226,7 +219,7 @@ const Index = () => {
                     variant={registrationLoading || !registrationEnabled ? "outline" : "default"}
                     disabled={registrationLoading || !registrationEnabled}
                   >
-                    {registrationLoading ? "Checking…" : registrationEnabled ? "Register" : "Registration Not Available"}
+                    {registrationLoading ? "Checking…" : registrationEnabled ? "Register" : "Register"}
                   </Button>
                 </div>
               </Card>
