@@ -282,13 +282,9 @@ if (lockErr) {
 // 5) Proceed
     setVoterData(enriched);
 
-    // ✅ IMPORTANT: if only one active election, we auto-select it.
-    // But voterData state may not be ready yet, so pass voterRow.id and active.length.
-    if (active.length === 1) {
-      handleElectionSelect(active[0].id, active[0], voterRow.id, active.length);
-    } else {
-      setStep("election-select");
-    }
+    // ✅ UX CHANGE: always show election selection, even if only 1 eligible election.
+    // This lets voters see other elections (and why they may be ineligible) instead of being auto-routed to the ballot.
+    setStep("election-select");
   };
 
   // -----------------------------------------------------
