@@ -120,6 +120,60 @@ function dedupeNames(names: string[]) {
   return uniq;
 }
 
+function initials(name: string) {
+  const parts = normalizeLine(name).split(" ").filter(Boolean);
+  const a = parts[0]?.[0] ?? "";
+  const b = parts.length > 1 ? parts[parts.length - 1]?.[0] ?? "" : "";
+  const out = (a + b).toUpperCase();
+  return out || "•";
+}
+
+function SegButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "flex-1 md:flex-none px-4 py-2 text-sm rounded-xl transition",
+        active
+          ? "bg-feu-green text-white shadow-sm"
+          : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
+      ].join(" ")}
+    >
+      {children}
+    </button>
+  );
+}
+
+function CsvPreview({ items }: { items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="rounded-xl border bg-muted/30 p-3 text-xs">
+      <div className="font-medium">Preview ({items.length})</div>
+      <div className="mt-2 max-h-[140px] overflow-auto space-y-1">
+        {items.slice(0, 12).map((n, idx) => (
+          <div key={idx} className="truncate">
+            {n}
+          </div>
+        ))}
+        {items.length > 12 ? (
+          <div className="text-muted-foreground">
+            +{items.length - 12} more…
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export default function RostersManagement() {
   // ----------------------------
   // Organizations
@@ -127,6 +181,7 @@ export default function RostersManagement() {
   const [orgsLoading, setOrgsLoading] = useState(true);
   const [orgs, setOrgs] = useState<OrgRow[]>([]);
   const [selectedOrg, setSelectedOrg] = useState<string>("");
+  const [activePanel, setActivePanel] = useState<"org" | "employees">("org");
 
   // ----------------------------
   // Org member roster UI
@@ -426,42 +481,348 @@ export default function RostersManagement() {
     }
   };
 
-  const CsvPreview = ({ items }: { items: string[] }) => {
-    if (items.length === 0) return null;
-    return (
-      <div className="rounded-md border bg-muted/30 p-2 text-xs">
-        <div className="font-medium">Preview ({items.length})</div>
-        <div className="mt-1 max-h-[110px] overflow-auto space-y-1">
-          {items.slice(0, 12).map((n, idx) => (
-            <div key={idx} className="truncate">{n}</div>
-          ))}
-          {items.length > 12 ? (
-            <div className="text-muted-foreground">+{items.length - 12} more…</div>
-          ) : null}
+  const renderOrgPanel = () => (
+    <Card className="p-5 md:p-6 space-y-4">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <div className="text-lg font-semibold">Org Member Roster</div>
+            {selectedOrg ? <Badge variant="outline">{selectedOrg}</Badge> : null}
+          </div>
+          <div className="text-sm text-muted-foreground">
+            Writes to <code>org_member_names</code>. Names are normalized automatically.
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">Organization:</span>
+          <select
+            className="h-10 rounded-xl border border-border bg-background px-3 text-sm"
+            value={selectedOrg}
+            onChange={(e) => setSelectedOrg(e.target.value)}
+            disabled={orgsLoading}
+          >
+            <option value="" disabled>
+              Select org…
+            </option>
+            {orgs.map((o) => (
+              <option key={o.code} value={o.code}>
+                {o.name} ({o.code})
+              </option>
+            ))}
+          </select>
         </div>
       </div>
-    );
-  };
 
-  // ----------------------------
-  // UI
-  // ----------------------------
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* Import */}
+        <div className="rounded-2xl border p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="font-semibold">Import members</div>
+            <Badge variant="outline">{selectedOrg ? orgMemberRows.length : 0}</Badge>
+          </div>
+
+          <div className="text-xs text-muted-foreground">
+            Upload a CSV (first column = full name) or paste one full name per line.
+            Duplicates are removed client-side.
+          </div>
+
+          <div className="rounded-2xl border bg-muted/20 p-3 space-y-2">
+            <div className="text-xs text-muted-foreground">CSV upload</div>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              disabled={orgMemberBusy || orgMemberLoading || !selectedOrg}
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                setOrgMemberCsvFile(f);
+                setOrgMemberCsvPreview([]);
+                if (f) {
+                  readOrgMemberCsv(f).catch((err) => {
+                    console.error(err);
+                    toast.error("Failed to read CSV.");
+                  });
+                }
+              }}
+            />
+
+            {orgMemberCsvFile ? (
+              <div className="flex items-center justify-between text-xs">
+                <div className="text-muted-foreground truncate">Selected: {orgMemberCsvFile.name}</div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setOrgMemberCsvFile(null);
+                    setOrgMemberCsvPreview([]);
+                  }}
+                  disabled={orgMemberBusy}
+                >
+                  Clear
+                </Button>
+              </div>
+            ) : null}
+
+            <CsvPreview items={orgMemberCsvPreview} />
+          </div>
+
+          <div className="text-xs text-muted-foreground">Paste names (optional)</div>
+          <textarea
+            className="w-full min-h-[160px] rounded-xl border border-border bg-background px-3 py-2 text-sm"
+            placeholder={"Juan Dela Cruz\nMaria Santos\n..."}
+            value={orgMemberPaste}
+            onChange={(e) => setOrgMemberPaste(e.target.value)}
+            disabled={orgMemberBusy || orgMemberLoading || !selectedOrg}
+          />
+
+          <div className="flex flex-col md:flex-row gap-2 md:items-center">
+            <Input
+              placeholder="Source label (optional) e.g., 2026 official roster"
+              value={orgMemberSource}
+              onChange={(e) => setOrgMemberSource(e.target.value)}
+              disabled={orgMemberBusy}
+            />
+            <Button onClick={addOrgMembers} disabled={orgMemberBusy || !selectedOrg}>
+              Import
+            </Button>
+          </div>
+
+          <div className="flex justify-between items-center text-xs text-muted-foreground">
+            <div>
+              Selected: <span className="font-medium">{selectedOrgName}</span>
+            </div>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={clearOrgRoster}
+              disabled={orgMemberBusy || !selectedOrg}
+            >
+              Clear roster
+            </Button>
+          </div>
+        </div>
+
+        {/* List */}
+        <div className="rounded-2xl border p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="font-semibold">Roster entries</div>
+            <Badge variant="outline">{filteredOrgMembers.length}</Badge>
+          </div>
+
+          <Input
+            placeholder="Search name/source…"
+            value={orgMemberSearch}
+            onChange={(e) => setOrgMemberSearch(e.target.value)}
+            disabled={orgMemberLoading}
+          />
+
+          <div className="rounded-xl border max-h-[360px] overflow-auto">
+            {orgMemberLoading ? (
+              <div className="p-4 text-sm text-muted-foreground">Loading roster…</div>
+            ) : filteredOrgMembers.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground">No roster entries for this org.</div>
+            ) : (
+              <div className="divide-y">
+                {filteredOrgMembers.map((r) => (
+                  <div key={r.id} className="p-3 flex items-start justify-between gap-3 hover:bg-muted/20">
+                    <div className="flex gap-3 min-w-0">
+                      <div className="h-9 w-9 shrink-0 rounded-xl bg-feu-green/10 flex items-center justify-center text-xs font-semibold text-feu-green">
+                        {initials(r.full_name)}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">{r.full_name}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          {r.source ? `Source: ${r.source}` : "Source: —"} •{" "}
+                          {new Date(r.created_at).toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => deleteOrgMember(r.id)}
+                      disabled={orgMemberBusy}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+
+  const renderEmployeePanel = () => (
+    <Card className="p-5 md:p-6 space-y-4">
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <div className="text-lg font-semibold">Employee Registry</div>
+          <Badge variant="outline">{filteredEmployees.length}</Badge>
+        </div>
+        <div className="text-sm text-muted-foreground">
+          Writes to <code>employee_names</code>. Names are normalized automatically.
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* Import */}
+        <div className="rounded-2xl border p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="font-semibold">Import employees</div>
+            <Badge variant="outline">{employeeRows.length}</Badge>
+          </div>
+
+          <div className="text-xs text-muted-foreground">
+            Upload a CSV (first column = full name) or paste one full name per line.
+          </div>
+
+          <div className="rounded-2xl border bg-muted/20 p-3 space-y-2">
+            <div className="text-xs text-muted-foreground">CSV upload</div>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              disabled={employeeBusy}
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                setEmployeeCsvFile(f);
+                setEmployeeCsvPreview([]);
+                if (f) {
+                  readEmployeeCsv(f).catch((err) => {
+                    console.error(err);
+                    toast.error("Failed to read CSV.");
+                  });
+                }
+              }}
+            />
+
+            {employeeCsvFile ? (
+              <div className="flex items-center justify-between text-xs">
+                <div className="text-muted-foreground truncate">Selected: {employeeCsvFile.name}</div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setEmployeeCsvFile(null);
+                    setEmployeeCsvPreview([]);
+                  }}
+                  disabled={employeeBusy}
+                >
+                  Clear
+                </Button>
+              </div>
+            ) : null}
+
+            <CsvPreview items={employeeCsvPreview} />
+          </div>
+
+          <div className="text-xs text-muted-foreground">Paste names (optional)</div>
+          <textarea
+            className="w-full min-h-[160px] rounded-xl border border-border bg-background px-3 py-2 text-sm"
+            placeholder={"Juan Dela Cruz\nMaria Santos\n..."}
+            value={employeePaste}
+            onChange={(e) => setEmployeePaste(e.target.value)}
+            disabled={employeeBusy}
+          />
+
+          <div className="flex flex-col md:flex-row gap-2 md:items-center">
+            <Input
+              placeholder="Source label (optional) e.g., HR list 2026"
+              value={employeeSource}
+              onChange={(e) => setEmployeeSource(e.target.value)}
+              disabled={employeeBusy}
+            />
+            <div className="flex gap-2 md:ml-auto">
+              <Button variant="destructive" onClick={clearEmployeeRegistry} disabled={employeeBusy}>
+                Clear
+              </Button>
+              <Button onClick={addEmployees} disabled={employeeBusy}>
+                Import
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* List */}
+        <div className="rounded-2xl border p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="font-semibold">Employee entries</div>
+            <Badge variant="outline">{filteredEmployees.length}</Badge>
+          </div>
+
+          <Input
+            placeholder="Search name/source…"
+            value={employeeSearch}
+            onChange={(e) => setEmployeeSearch(e.target.value)}
+            disabled={employeeLoading}
+          />
+
+          <div className="rounded-xl border max-h-[360px] overflow-auto">
+            {employeeLoading ? (
+              <div className="p-4 text-sm text-muted-foreground">Loading employees…</div>
+            ) : filteredEmployees.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground">No employee entries yet.</div>
+            ) : (
+              <div className="divide-y">
+                {filteredEmployees.map((r) => (
+                  <div key={r.id} className="p-3 flex items-start justify-between gap-3 hover:bg-muted/20">
+                    <div className="flex gap-3 min-w-0">
+                      <div className="h-9 w-9 shrink-0 rounded-xl bg-feu-green/10 flex items-center justify-center text-xs font-semibold text-feu-green">
+                        {initials(r.full_name)}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">{r.full_name}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          {r.source ? `Source: ${r.source}` : "Source: —"} •{" "}
+                          {new Date(r.created_at).toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+
+                    <Button variant="outline" size="sm" onClick={() => deleteEmployee(r.id)} disabled={employeeBusy}>
+                      Delete
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="text-xs text-muted-foreground">
+            Note: eligibility enforcement is server-side via <code>is_voter_eligible_for_election</code>.
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <Card className="p-4">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-bold text-feu-green">Rosters & Eligibility Data</h2>
-            <p className="text-sm text-muted-foreground">
-              Manage official org membership rosters (for org elections) and employee names registry
-              (to exclude employees from org elections).
-            </p>
+      <Card className="p-5 md:p-6">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-2xl bg-feu-green/10 flex items-center justify-center">
+                <span className="text-feu-green font-bold">BV</span>
+              </div>
+              <div>
+                <h2 className="text-xl md:text-2xl font-semibold tracking-tight">
+                  Rosters & Eligibility
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  Manage org rosters and employee name registry used for voter eligibility rules.
+                </p>
+              </div>
+            </div>
           </div>
 
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => loadOrganizations()} disabled={orgsLoading}>
-              Refresh Orgs
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Button variant="outline" onClick={() => loadOrganizations()} disabled={orgsLoading} className="justify-center">
+              Refresh orgs
             </Button>
             <Button
               variant="outline"
@@ -470,305 +831,43 @@ export default function RostersManagement() {
                 void loadEmployees();
               }}
               disabled={orgsLoading || orgMemberLoading || employeeLoading}
+              className="justify-center"
             >
-              Refresh Lists
+              Refresh lists
             </Button>
           </div>
         </div>
-      </Card>
 
-      {/* Org roster */}
-      <Card className="p-4 space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <div className="text-lg font-semibold">Org Member Roster</div>
-              {selectedOrg ? <Badge variant="outline">{selectedOrg}</Badge> : null}
-            </div>
-            <div className="text-sm text-muted-foreground">
-              Writes to <code>org_member_names</code>. Your trigger will normalize names automatically.
-            </div>
+        <div className="mt-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          {/* Segmented control */}
+          <div className="inline-flex w-full md:w-auto rounded-2xl border bg-background p-1">
+            <SegButton active={activePanel === "org"} onClick={() => setActivePanel("org")}>
+              Org roster
+            </SegButton>
+            <SegButton active={activePanel === "employees"} onClick={() => setActivePanel("employees")}>
+              Employee registry
+            </SegButton>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Organization:</span>
-            <select
-              className="h-10 rounded-md border border-border bg-background px-3 text-sm"
-              value={selectedOrg}
-              onChange={(e) => setSelectedOrg(e.target.value)}
-              disabled={orgsLoading}
-            >
-              <option value="" disabled>
-                Select org…
-              </option>
-              {orgs.map((o) => (
-                <option key={o.code} value={o.code}>
-                  {o.name} ({o.code})
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          {/* Import */}
-          <div className="rounded-xl border p-4 space-y-3">
-            <div className="font-semibold">Import names</div>
-            <div className="text-xs text-muted-foreground">
-              Upload a .csv file (first column = full name), or paste one full name per line. Duplicates are auto-removed client-side.
+          {/* Quick stats */}
+          <div className="flex flex-wrap gap-2 text-xs">
+            <div className="rounded-full border bg-muted/20 px-3 py-1">
+              <span className="text-muted-foreground">Orgs:</span>{" "}
+              <span className="font-medium">{orgs.length}</span>
             </div>
-
-            <div className="space-y-2">
-              <div className="text-xs text-muted-foreground">
-                CSV format: first column is the member full name.
-              </div>
-
-              <input
-                type="file"
-                accept=".csv,text/csv"
-                disabled={orgMemberBusy || orgMemberLoading || !selectedOrg}
-                onChange={(e) => {
-                  const f = e.target.files?.[0] ?? null;
-                  setOrgMemberCsvFile(f);
-                  setOrgMemberCsvPreview([]);
-                  if (f) {
-                    readOrgMemberCsv(f).catch((err) => {
-                      console.error(err);
-                      toast.error("Failed to read CSV.");
-                    });
-                  }
-                }}
-              />
-
-              <CsvPreview items={orgMemberCsvPreview} />
-
-              {orgMemberCsvFile ? (
-                <div className="flex items-center justify-between text-xs">
-                  <div className="text-muted-foreground truncate">Selected file: {orgMemberCsvFile.name}</div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setOrgMemberCsvFile(null);
-                      setOrgMemberCsvPreview([]);
-                    }}
-                    disabled={orgMemberBusy}
-                  >
-                    Clear file
-                  </Button>
-                </div>
-              ) : null}
+            <div className="rounded-full border bg-muted/20 px-3 py-1">
+              <span className="text-muted-foreground">Roster:</span>{" "}
+              <span className="font-medium">{selectedOrg ? orgMemberRows.length : 0}</span>
             </div>
-
-            <textarea
-              className="w-full min-h-[170px] rounded-md border border-border bg-background px-3 py-2 text-sm"
-              placeholder={"Juan Dela Cruz\nMaria Santos\n..."}
-              value={orgMemberPaste}
-              onChange={(e) => setOrgMemberPaste(e.target.value)}
-              disabled={orgMemberBusy || orgMemberLoading || !selectedOrg}
-            />
-
-            <div className="flex flex-col md:flex-row gap-2 md:items-center">
-              <Input
-                placeholder="Source label (optional) e.g., 2026 official roster"
-                value={orgMemberSource}
-                onChange={(e) => setOrgMemberSource(e.target.value)}
-                disabled={orgMemberBusy}
-              />
-              <Button onClick={addOrgMembers} disabled={orgMemberBusy || !selectedOrg}>
-                Import
-              </Button>
-            </div>
-
-            <div className="flex justify-between items-center text-xs text-muted-foreground">
-              <div>
-                Selected: <span className="font-medium">{selectedOrgName}</span>
-              </div>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={clearOrgRoster}
-                disabled={orgMemberBusy || !selectedOrg}
-              >
-                Clear roster
-              </Button>
-            </div>
-          </div>
-
-          {/* List */}
-          <div className="rounded-xl border p-4 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="font-semibold">Roster entries</div>
-              <Badge variant="outline">{filteredOrgMembers.length}</Badge>
-            </div>
-
-            <Input
-              placeholder="Search name/source…"
-              value={orgMemberSearch}
-              onChange={(e) => setOrgMemberSearch(e.target.value)}
-              disabled={orgMemberLoading}
-            />
-
-            <div className="rounded-md border max-h-[320px] overflow-auto">
-              {orgMemberLoading ? (
-                <div className="p-3 text-sm text-muted-foreground">Loading roster…</div>
-              ) : filteredOrgMembers.length === 0 ? (
-                <div className="p-3 text-sm text-muted-foreground">No roster entries for this org.</div>
-              ) : (
-                <div className="divide-y">
-                  {filteredOrgMembers.map((r) => (
-                    <div key={r.id} className="p-3 flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="font-medium truncate">{r.full_name}</div>
-                        <div className="text-xs text-muted-foreground truncate">
-                          {r.source ? `Source: ${r.source}` : "Source: —"} • {new Date(r.created_at).toLocaleString()}
-                        </div>
-                      </div>
-                      <Button variant="outline" size="sm" onClick={() => deleteOrgMember(r.id)} disabled={orgMemberBusy}>
-                        Delete
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
+            <div className="rounded-full border bg-muted/20 px-3 py-1">
+              <span className="text-muted-foreground">Employees:</span>{" "}
+              <span className="font-medium">{employeeRows.length}</span>
             </div>
           </div>
         </div>
       </Card>
 
-      {/* Employee registry */}
-      <Card className="p-4 space-y-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <div className="text-lg font-semibold">Employee Registry</div>
-            <Badge variant="outline">{filteredEmployees.length}</Badge>
-          </div>
-          <div className="text-sm text-muted-foreground">
-            Writes to <code>employee_names</code>. The DB trigger keeps <code>full_name_norm</code> consistent.
-          </div>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          {/* Import */}
-          <div className="rounded-xl border p-4 space-y-3">
-            <div className="font-semibold">Import employee names</div>
-            <div className="text-xs text-muted-foreground">
-              Upload a .csv file (first column = full name), or paste one full name per line.
-            </div>
-
-            <div className="space-y-2">
-              <div className="text-xs text-muted-foreground">
-                CSV format: first column is the employee full name.
-              </div>
-
-              <input
-                type="file"
-                accept=".csv,text/csv"
-                disabled={employeeBusy}
-                onChange={(e) => {
-                  const f = e.target.files?.[0] ?? null;
-                  setEmployeeCsvFile(f);
-                  setEmployeeCsvPreview([]);
-                  if (f) {
-                    readEmployeeCsv(f).catch((err) => {
-                      console.error(err);
-                      toast.error("Failed to read CSV.");
-                    });
-                  }
-                }}
-              />
-
-              <CsvPreview items={employeeCsvPreview} />
-
-              {employeeCsvFile ? (
-                <div className="flex items-center justify-between text-xs">
-                  <div className="text-muted-foreground truncate">Selected file: {employeeCsvFile.name}</div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setEmployeeCsvFile(null);
-                      setEmployeeCsvPreview([]);
-                    }}
-                    disabled={employeeBusy}
-                  >
-                    Clear file
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-
-            <textarea
-              className="w-full min-h-[170px] rounded-md border border-border bg-background px-3 py-2 text-sm"
-              placeholder={"Juan Dela Cruz\nMaria Santos\n..."}
-              value={employeePaste}
-              onChange={(e) => setEmployeePaste(e.target.value)}
-              disabled={employeeBusy}
-            />
-
-            <div className="flex flex-col md:flex-row gap-2 md:items-center">
-              <Input
-                placeholder="Source label (optional) e.g., HR list 2026"
-                value={employeeSource}
-                onChange={(e) => setEmployeeSource(e.target.value)}
-                disabled={employeeBusy}
-              />
-              <div className="flex gap-2 md:ml-auto">
-                <Button variant="destructive" onClick={clearEmployeeRegistry} disabled={employeeBusy}>
-                  Clear registry
-                </Button>
-                <Button onClick={addEmployees} disabled={employeeBusy}>
-                  Import
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          {/* List */}
-          <div className="rounded-xl border p-4 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="font-semibold">Employee entries</div>
-              <Badge variant="outline">{filteredEmployees.length}</Badge>
-            </div>
-
-            <Input
-              placeholder="Search name/source…"
-              value={employeeSearch}
-              onChange={(e) => setEmployeeSearch(e.target.value)}
-              disabled={employeeLoading}
-            />
-
-            <div className="rounded-md border max-h-[320px] overflow-auto">
-              {employeeLoading ? (
-                <div className="p-3 text-sm text-muted-foreground">Loading employees…</div>
-              ) : filteredEmployees.length === 0 ? (
-                <div className="p-3 text-sm text-muted-foreground">No employee entries yet.</div>
-              ) : (
-                <div className="divide-y">
-                  {filteredEmployees.map((r) => (
-                    <div key={r.id} className="p-3 flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="font-medium truncate">{r.full_name}</div>
-                        <div className="text-xs text-muted-foreground truncate">
-                          {r.source ? `Source: ${r.source}` : "Source: —"} • {new Date(r.created_at).toLocaleString()}
-                        </div>
-                      </div>
-
-                      <Button variant="outline" size="sm" onClick={() => deleteEmployee(r.id)} disabled={employeeBusy}>
-                        Delete
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="text-xs text-muted-foreground">
-              Next step: enforce “employees cannot vote for org elections” in the eligibility RPC.
-            </div>
-          </div>
-        </div>
-      </Card>
+      {activePanel === "org" ? renderOrgPanel() : renderEmployeePanel()}
     </div>
   );
 }
