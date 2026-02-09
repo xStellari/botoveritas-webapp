@@ -125,10 +125,86 @@ function pct(n: number, d: number) {
   return `${((n / d) * 100).toFixed(1)}%`;
 }
 
-function positionRank(posRaw: string) {
+
+// Canonical position sets per org (single-seat everywhere)
+const ORG_CANONICAL_POSITIONS: Record<string, string[]> = {
+  ICpEP: [
+    "President",
+    "Vice President - Internal",
+    "Vice President - External",
+    "Secretary",
+    "Assistant Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Relations Officer",
+    "1st Year Batch Representative",
+    "2nd Year Batch Representative",
+    "3rd Year Batch Representative",
+    "4th Year Batch Representative",
+    "Director for Publicity and Creatives",
+    "Director for Sports",
+    "Director for Programs",
+  ],
+  SCC: [
+    "President",
+    "Vice President",
+    "Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Relations Officer",
+    "Director for Creatives",
+  ],
+  HonSoc: [
+    "President",
+    "Vice President - Internal",
+    "Vice President - External",
+    "Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Relations Officer",
+    "Directors Board: Creatives & Technical",
+    "Directors Board: Secretariat & Documentation",
+    "Directors Board: Academics & Sports",
+    "Directors Board: Programs & Logistics",
+    "Directors Board: Publicity & External Events",
+  ],
+};
+
+function uniqPreserveOrder(items: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const it of items) {
+    const v = String(it ?? "").trim();
+    if (!v) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function getCanonicalPositionsForEligibleOrgs(eligibleOrgs: unknown): string[] {
+  const list = Array.isArray(eligibleOrgs) ? eligibleOrgs : [];
+  const codes = uniqPreserveOrder(list.map((x) => String(x ?? "").trim()));
+  const known = codes.filter((c) => Boolean(ORG_CANONICAL_POSITIONS[c]));
+  if (known.length === 0) return [];
+  return uniqPreserveOrder(known.flatMap((c) => ORG_CANONICAL_POSITIONS[c]));
+}
+
+function canonicalPositionIndex(position: string, canonicalOrder: string[]) {
+  const p = (position ?? "").trim();
+  if (!p) return -1;
+  return canonicalOrder.indexOf(p);
+}
+
+function positionRank(posRaw: string, canonicalOrder: string[]) {
+  // Prefer canonical ordering when available
+  const idx = canonicalPositionIndex(posRaw, canonicalOrder);
+  if (idx >= 0) return idx + 1;
+
   const pos = (posRaw || "").toLowerCase().replace(/\s+/g, " ").trim();
 
-  // President -> VP-Internal -> VP-External -> Secretary -> Treasurer -> Auditor -> PRO
+  // Heuristic fallback (legacy / mixed elections)
   if (pos === "president") return 1;
 
   if (
@@ -160,6 +236,7 @@ function positionRank(posRaw: string) {
 
   return 999;
 }
+
 
 async function fetchBytes(url: string): Promise<Uint8Array> {
   const res = await fetch(url);
@@ -1000,10 +1077,12 @@ serve(async (req: Request) => {
       // -------------------------
       // RESULTS PER POSITION
       // -------------------------
+      const canonicalOrder = getCanonicalPositionsForEligibleOrgs(eligibleOrgs);
+
       const positionEntries = Array.from(byPosition.entries()).sort(
         ([a], [b]) => {
-          const ra = positionRank(a);
-          const rb = positionRank(b);
+          const ra = positionRank(a, canonicalOrder);
+          const rb = positionRank(b, canonicalOrder);
           if (ra !== rb) return ra - rb;
           return String(a).localeCompare(String(b));
         },

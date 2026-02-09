@@ -44,6 +44,8 @@ type Props = {
 
   candidates: CandidateRow[];
   candidatesByPosition: Record<string, CandidateRow[]>;
+  // Canonical position order (derived from election eligible_orgs); fallback handled internally
+  positionOrder?: string[];
   candidatesLoading: boolean;
   saving: boolean;
 
@@ -67,6 +69,7 @@ export function CandidatesManager({
   selectedElectionId,
   candidates,
   candidatesByPosition,
+  positionOrder,
   candidatesLoading,
   saving,
   isSelectedFinal,
@@ -161,15 +164,14 @@ export function CandidatesManager({
               </div>
             ) : (
               <div className="space-y-6">
-                {Object.keys(candidatesByPosition)
-                  .sort((a, b) => a.localeCompare(b))
+                {(positionOrder?.length ? positionOrder : Object.keys(candidatesByPosition).sort((a, b) => a.localeCompare(b)))
                   .map((pos) => (
                     <div key={pos} className="rounded-2xl border p-4">
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <div className="font-semibold">{pos}</div>
                           <div className="text-xs text-muted-foreground">
-                            {candidatesByPosition[pos].length} candidate(s)
+                            {(candidatesByPosition[pos] ?? []).length} candidate(s)
                           </div>
                           <div className="text-xs text-muted-foreground mt-1">
                             Drag candidates to reorder (auto-saves).
@@ -189,7 +191,7 @@ export function CandidatesManager({
                       <Separator className="my-4" />
 
                       <div className="space-y-3">
-                        {candidatesByPosition[pos].map((c) => (
+                        {(candidatesByPosition[pos] ?? []).map((c) => (
                           <div
                             key={c.id}
                             className="rounded-xl border p-3 flex items-start justify-between gap-3"

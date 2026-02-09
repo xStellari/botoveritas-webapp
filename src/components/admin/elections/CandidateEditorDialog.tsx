@@ -48,6 +48,9 @@ type Props = {
   fileInputRef: RefObject<HTMLInputElement>;
 
   positions: string[];
+
+  // Optional alias used by some callers (kept for backwards-compat)
+  positionOrder?: string[];
   cForm: CandidateFormState;
   setCForm: Dispatch<SetStateAction<CandidateFormState>>;
 
@@ -123,20 +126,38 @@ export function CandidateEditorDialog(props: Props) {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="grid gap-2">
                     <Label>Position</Label>
-                    <Input
-                      value={cForm.position}
-                      onChange={(e) =>
-                        setCForm((p) => ({ ...p, position: e.target.value }))
-                      }
-                      placeholder="e.g., President"
-                    />
+
+                    {positions.length > 0 ? (
+                      <Select
+                        value={cForm.position}
+                        onValueChange={(value) =>
+                          setCForm((p) => ({ ...p, position: value }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select a position" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {positions.map((pos) => (
+                            <SelectItem key={pos} value={pos}>
+                              {pos}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Input
+                        value={cForm.position}
+                        onChange={(e) =>
+                          setCForm((p) => ({ ...p, position: e.target.value }))
+                        }
+                        placeholder="e.g., President"
+                      />
+                    )}
+
                     {positions.length > 0 ? (
                       <div className="text-xs text-muted-foreground">
-                        Existing positions:{" "}
-                        <span className="font-medium">
-                          {positions.slice(0, 6).join(", ")}
-                          {positions.length > 6 ? "…" : ""}
-                        </span>
+                        Positions are now standardized per organization to avoid typos.
                       </div>
                     ) : null}
                   </div>

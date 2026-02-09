@@ -110,14 +110,80 @@ const normalizePosition = (raw: string) => {
   return s;
 };
 
-const positionPriority = (normalized: string) => {
-  // Your required order:
-  // President
-  // Vice President (or VP-Internal and VP-External)
-  // Secretary
-  // Treasurer
-  // Auditor
-  // Public Relations Officer
+
+// Canonical position sets per org (single-seat everywhere)
+const ORG_CANONICAL_POSITIONS: Record<string, string[]> = {
+  ICpEP: [
+    "President",
+    "Vice President - Internal",
+    "Vice President - External",
+    "Secretary",
+    "Assistant Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Relations Officer",
+    "1st Year Batch Representative",
+    "2nd Year Batch Representative",
+    "3rd Year Batch Representative",
+    "4th Year Batch Representative",
+    "Director for Publicity and Creatives",
+    "Director for Sports",
+    "Director for Programs",
+  ],
+  SCC: [
+    "President",
+    "Vice President",
+    "Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Relations Officer",
+    "Director for Creatives",
+  ],
+  HonSoc: [
+    "President",
+    "Vice President - Internal",
+    "Vice President - External",
+    "Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Relations Officer",
+    "Directors Board: Creatives & Technical",
+    "Directors Board: Secretariat & Documentation",
+    "Directors Board: Academics & Sports",
+    "Directors Board: Programs & Logistics",
+    "Directors Board: Publicity & External Events",
+  ],
+};
+
+function uniqPreserveOrder(items: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const it of items) {
+    const v = String(it ?? "").trim();
+    if (!v) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function getCanonicalPositionsForElection(electionData: any): string[] {
+  const eligibleOrgs = Array.isArray(electionData?.eligible_orgs)
+    ? electionData.eligible_orgs.filter(Boolean).map((x: any) => String(x).trim())
+    : [];
+  const known = uniqPreserveOrder(eligibleOrgs).filter((c) => Boolean(ORG_CANONICAL_POSITIONS[c]));
+  if (known.length === 0) return [];
+  return uniqPreserveOrder(known.flatMap((c) => ORG_CANONICAL_POSITIONS[c]));
+}
+
+const positionPriority = (normalized: string, canonicalOrder: string[]) => {
+  if (canonicalOrder.length > 0) {
+    const idx = canonicalOrder.indexOf(normalized);
+    if (idx >= 0) return idx + 1; // 1..N
+  }
+
+  // Fallback heuristic order (legacy elections)
   switch (normalized) {
     case "President":
       return 10;
@@ -129,6 +195,8 @@ const positionPriority = (normalized: string) => {
       return 22;
     case "Secretary":
       return 30;
+    case "Assistant Secretary":
+      return 31;
     case "Treasurer":
       return 40;
     case "Auditor":
@@ -136,7 +204,7 @@ const positionPriority = (normalized: string) => {
     case "Public Relations Officer":
       return 60;
     default:
-      return 1000;
+      return 999;
   }
 };
 
@@ -222,13 +290,15 @@ const BallotScreenWithAbstain = ({
       return { ...p, candidates: sorted };
     });
 
-    // Sort positions using your fixed order, with fallback A–Z for unknown positions
+    // Sort positions using canonical order for the election (based on eligible_orgs)
+    const canonicalOrder = getCanonicalPositionsForElection(electionData);
+
     positionsArray.sort((a, b) => {
       const an = normalizePosition(a.title);
       const bn = normalizePosition(b.title);
 
-      const ap = positionPriority(an);
-      const bp = positionPriority(bn);
+      const ap = positionPriority(an, canonicalOrder);
+      const bp = positionPriority(bn, canonicalOrder);
 
       if (ap !== bp) return ap - bp;
 

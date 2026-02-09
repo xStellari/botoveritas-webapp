@@ -27,6 +27,74 @@ import {
 } from "lucide-react";
 
 
+
+
+// Canonical position sets per org (single-seat everywhere)
+const ORG_CANONICAL_POSITIONS: Record<string, string[]> = {
+  ICpEP: [
+    "President",
+    "Vice President - Internal",
+    "Vice President - External",
+    "Secretary",
+    "Assistant Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Relations Officer",
+    "1st Year Batch Representative",
+    "2nd Year Batch Representative",
+    "3rd Year Batch Representative",
+    "4th Year Batch Representative",
+    "Director for Publicity and Creatives",
+    "Director for Sports",
+    "Director for Programs",
+  ],
+  SCC: [
+    "President",
+    "Vice President",
+    "Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Relations Officer",
+    "Director for Creatives",
+  ],
+  HonSoc: [
+    "President",
+    "Vice President - Internal",
+    "Vice President - External",
+    "Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Relations Officer",
+    "Directors Board: Creatives & Technical",
+    "Directors Board: Secretariat & Documentation",
+    "Directors Board: Academics & Sports",
+    "Directors Board: Programs & Logistics",
+    "Directors Board: Publicity & External Events",
+  ],
+};
+
+function uniqPreserveOrder(items: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const it of items) {
+    const v = String(it ?? "").trim();
+    if (!v) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function getCanonicalPositionsForEligibleOrgs(eligibleOrgs: unknown): string[] {
+  const list = Array.isArray(eligibleOrgs) ? eligibleOrgs : [];
+  const codes = uniqPreserveOrder(list.map((x) => String(x ?? "").trim()));
+  const known = codes.filter((c) => Boolean(ORG_CANONICAL_POSITIONS[c]));
+  if (known.length === 0) return [];
+  // If multiple orgs are selected, merge (rare; but safe).
+  return uniqPreserveOrder(known.flatMap((c) => ORG_CANONICAL_POSITIONS[c]));
+}
+
 type CandidateRow = {
   id: string;
   election_id: string;
@@ -282,26 +350,45 @@ export default function ElectionManagement() {
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const canonicalPositions = useMemo(() => {
+    return getCanonicalPositionsForEligibleOrgs((selectedElection as any)?.eligible_orgs);
+  }, [selectedElection]);
+
   const positions = useMemo(() => {
+    // If the election matches one of our org templates, prefer canonical ordering.
+    // Safety: if there are legacy/typo positions in the DB, append them at the end so they remain visible for cleanup.
+    if (canonicalPositions.length > 0) {
+      const existing = uniqPreserveOrder(candidates.map((c) => c.position));
+      const extras = existing.filter((p) => !canonicalPositions.includes(p));
+      return [...canonicalPositions, ...extras];
+    }
+
+    // Fallback: derive from existing candidates (legacy elections)
     const set = new Set<string>();
     candidates.forEach((c) => set.add(c.position));
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [candidates]);
+  }, [candidates, canonicalPositions]);
 
   const candidatesByPosition = useMemo(() => {
     const map: Record<string, CandidateRow[]> = {};
+
+    // Seed canonical positions so admin can add candidates even when a position is still empty.
+    for (const pos of canonicalPositions) {
+      map[pos] = [];
+    }
+
     for (const c of candidates) {
       const key = c.position || "Unassigned";
       map[key] = map[key] || [];
       map[key].push(c);
     }
+
     for (const key of Object.keys(map)) {
-      map[key].sort(
-        (a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)
-      );
+      map[key].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
     }
+
     return map;
-  }, [candidates]);
+  }, [candidates, canonicalPositions]);
 
   useEffect(() => {
     // Organizations are loaded via useOrganizations()
@@ -1172,6 +1259,7 @@ export default function ElectionManagement() {
         setPhotoFile={setPhotoFile}
         fileInputRef={fileInputRef}
         positions={positions}
+        positionOrder={positions}
         cForm={cForm}
         setCForm={setCForm}
         onClearPhoto={() => {
