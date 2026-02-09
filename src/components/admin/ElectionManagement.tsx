@@ -1224,6 +1224,7 @@ export default function ElectionManagement() {
         onDropCandidate={onDropCandidate}
         formatDateTimeShort={formatDateTimeShort}
         getCandidateDisplayName={getCandidateDisplayName}
+        positionOrder={positions}
       />
 
       {/* Election dialog */}
