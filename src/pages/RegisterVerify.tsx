@@ -1,7 +1,7 @@
 /** FULL UPDATED RegisterVerify.tsx WITH ONE-SHOT SUBMIT (prevents double insert) **/
 
 import { useLocation, useNavigate } from "react-router-dom";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -17,6 +17,10 @@ import { supabase } from "@/integrations/supabase/client";
 
 import { Radio, ScanFace, CheckCircle2 } from "lucide-react";
 import * as faceapi from "face-api.js";
+
+const APP_SETTING_KEYS = {
+  registrationEnabled: "registration_enabled",
+} as const;
 
 export default function RegisterVerify() {
   const navigate = useNavigate();
@@ -38,8 +42,44 @@ export default function RegisterVerify() {
   const [faceDescriptor, setFaceDescriptor] = useState<Float32Array | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
 
+  const [registrationEnabled, setRegistrationEnabled] = useState<boolean>(false);
+  const [registrationLoading, setRegistrationLoading] = useState<boolean>(true);
+
   // ✅ One-shot submit guard (prevents double click / double insert)
   const hasSubmittedRef = useRef(false);
+
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRegistrationSetting() {
+      setRegistrationLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from("app_settings")
+          .select("value")
+          .eq("key", APP_SETTING_KEYS.registrationEnabled)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        const value = data?.value ?? false;
+        if (!cancelled) setRegistrationEnabled(Boolean(value));
+      } catch (e) {
+        // Fail closed if settings fetch fails
+        if (!cancelled) setRegistrationEnabled(false);
+      } finally {
+        if (!cancelled) setRegistrationLoading(false);
+      }
+    }
+
+    loadRegistrationSetting();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
 
   // Temporary function to simulate RFID scan for testing
   const generateSimulatedRFID = () => {
@@ -87,6 +127,15 @@ export default function RegisterVerify() {
     // ✅ Hard guard: never run twice
     if (hasSubmittedRef.current) return;
     if (!rfid || !faceDescriptor) return;
+
+    // 🔒 Enforce registration phase at the point of DB write
+    if (registrationLoading) return;
+    if (!registrationEnabled) {
+      navigate("/registration-error", {
+        state: { message: "Registration is currently closed. Please return during the official registration window." },
+      });
+      return;
+    }
 
     hasSubmittedRef.current = true;
     setLoading(true);
