@@ -266,8 +266,8 @@ function htmlPage(p: {
 
   const headline = p.nftOk ? "Receipt Verified" : "Receipt Not Verified";
   const subhead = p.nftOk
-    ? "Your receipt token exists on-chain. We also confirm it is included in the finalized election audit data."
-    : "We could not confirm this receipt token on-chain. Please check the token ID or try again later.";
+    ? "Your on-chain receipt is verified in the finalized election audit"
+    : "Receipt token not found on-chain. Please try again.";
 
   const stepReceipt: StepState = p.nftOk ? "ok" : "bad";
   const stepDetails: StepState = p.meta ? "ok" : "warn";
