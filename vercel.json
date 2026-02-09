@@ -35,6 +35,10 @@
       "dest": "/api/verify/nft/$1"
     },
     {
+      "src": "^/api/verify/vote/([^/]+)/?$",
+      "dest": "/api/verify/vote/$1"
+    },
+    {
       "src": "^/api/verify/nft/([^/]+)/?$",
       "dest": "/api/verify/nft/$1"
     },
