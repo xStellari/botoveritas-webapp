@@ -9,9 +9,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus, RotateCcw } from "lucide-react";
+import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus, RotateCcw, UserPlus } from "lucide-react";
 
 import AdminAnalytics from "@/components/admin/AdminAnalytics";
 import VoterManagement from "@/components/admin/VoterManagement";
@@ -20,12 +21,20 @@ import ZKVerification from "@/components/admin/ZKVerification";
 import OrgMembershipRequests from "@/components/admin/OrgMembershipRequests";
 import RostersManagement from "@/components/admin/RostersManagement";
 
+const APP_SETTING_KEYS = {
+  registrationEnabled: "registration_enabled",
+} as const;
+
 export default function Admin() {
   const navigate = useNavigate();
 
   const [resetElectionId, setResetElectionId] = useState("");
   const [resetVoterId, setResetVoterId] = useState("");
   const [resetBusy, setResetBusy] = useState(false);
+
+  const [registrationEnabled, setRegistrationEnabled] = useState<boolean>(false);
+  const [registrationLoading, setRegistrationLoading] = useState(true);
+  const [registrationSaving, setRegistrationSaving] = useState(false);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -38,6 +47,77 @@ export default function Admin() {
       console.log("ADMIN USER ID:", data.session?.user?.id);
     });
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRegistrationSetting() {
+      setRegistrationLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from("app_settings")
+          .select("value")
+          .eq("key", APP_SETTING_KEYS.registrationEnabled)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        // If missing, default false (closed).
+        const value = data?.value ?? false;
+
+        if (!cancelled) setRegistrationEnabled(Boolean(value));
+      } catch (e) {
+        if (!cancelled) {
+          toast.error("Failed to load registration setting", {
+            description: e instanceof Error ? e.message : String(e),
+          });
+          setRegistrationEnabled(false);
+        }
+      } finally {
+        if (!cancelled) setRegistrationLoading(false);
+      }
+    }
+
+    loadRegistrationSetting();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleToggleRegistration = async (next: boolean) => {
+    setRegistrationEnabled(next); // optimistic
+    setRegistrationSaving(true);
+
+    try {
+      const { error } = await supabase
+        .from("app_settings")
+        .upsert(
+          {
+            key: APP_SETTING_KEYS.registrationEnabled,
+            value: next,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "key" }
+        );
+
+      if (error) throw error;
+
+      toast.success(`Registration ${next ? "enabled" : "disabled"}`, {
+        description: next
+          ? "Voters can now start registering for the upcoming election."
+          : "Registration is now closed. Voters will be blocked from starting registration.",
+      });
+    } catch (e) {
+      // rollback
+      setRegistrationEnabled((prev) => !prev);
+      toast.error("Failed to update registration setting", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setRegistrationSaving(false);
+    }
+  };
 
   const handleAdminResetVoter = async () => {
     const electionId = resetElectionId.trim();
@@ -87,9 +167,7 @@ export default function Admin() {
             <img src={feuLogo} alt="FEU" className="h-12" />
             <div>
               <h1 className="text-2xl font-bold text-feu-green">Admin Dashboard</h1>
-              <p className="text-sm text-muted-foreground">
-                BotoVeritas Election Management
-              </p>
+              <p className="text-sm text-muted-foreground">BotoVeritas Election Management</p>
             </div>
           </div>
 
@@ -142,7 +220,51 @@ export default function Admin() {
           <TabsContent value="analytics">
             <AdminAnalytics />
 
-            <div className="mt-6">
+            <div className="mt-6 space-y-6">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2">
+                    <UserPlus className="h-4 w-4" />
+                    Registration Phase
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Controls whether students can start the voter registration flow. This is meant for your
+                    <span className="font-medium text-foreground"> registration window</span> (e.g., 1–2 weeks before elections).
+                  </p>
+
+                  <div className="flex items-center justify-between rounded-lg border bg-background p-4">
+                    <div className="space-y-1">
+                      <div className="font-semibold leading-none">
+                        {registrationEnabled ? "Registration is OPEN" : "Registration is CLOSED"}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {registrationEnabled
+                          ? "Voters can proceed to identity verification and complete registration."
+                          : "Voters will be blocked at the start of registration."}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-muted-foreground">
+                        {registrationLoading ? "Loading…" : registrationSaving ? "Saving…" : ""}
+                      </span>
+                      <Switch
+                        checked={registrationEnabled}
+                        disabled={registrationLoading || registrationSaving}
+                        onCheckedChange={handleToggleRegistration}
+                        aria-label="Toggle registration"
+                      />
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    Setting key: <code className="px-1 py-0.5 rounded bg-muted">{APP_SETTING_KEYS.registrationEnabled}</code>
+                  </p>
+                </CardContent>
+              </Card>
+
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2">
@@ -153,7 +275,8 @@ export default function Admin() {
                 <CardContent className="space-y-4">
                   <p className="text-sm text-muted-foreground">
                     This is intended for test resets only. It clears the selected voter's vote state for the given election
-                    (votes + voter_election_status) via the secure <code className="px-1 py-0.5 rounded bg-muted">admin-reset-voter</code> Edge Function.
+                    (votes + voter_election_status) via the secure{" "}
+                    <code className="px-1 py-0.5 rounded bg-muted">admin-reset-voter</code> Edge Function.
                   </p>
 
                   <div className="grid gap-4 md:grid-cols-2">
