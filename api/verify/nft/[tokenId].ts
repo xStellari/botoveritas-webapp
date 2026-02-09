@@ -357,7 +357,7 @@ function htmlPage(p: {
       margin:0;
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
       color: var(--ink);
-      background: linear-gradient(180deg, rgba(11,107,58,.06) 0%, #ffffff 38%, #ffffff 100%);
+      background: #ffffff;
       min-height: 100vh;
     }
     .bg{
@@ -365,10 +365,10 @@ function htmlPage(p: {
       inset: 0;
       pointer-events:none;
       background:
-        radial-gradient(1100px 620px at 50% -140px, rgba(11,107,58,.14), transparent 70%),
-        radial-gradient(920px 560px at 10% -120px, rgba(201,162,39,.14), transparent 68%),
-        radial-gradient(900px 540px at 110% 10%, rgba(11,107,58,.08), transparent 64%),
-        radial-gradient(900px 540px at -10% 38%, rgba(201,162,39,.08), transparent 62%);
+        radial-gradient(1100px 620px at 50% -140px, rgba(11,107,58,0), transparent 70%),
+        radial-gradient(920px 560px at 10% -120px, rgba(201,162,39,0), transparent 68%),
+        radial-gradient(900px 540px at 110% 10%, rgba(11,107,58,0), transparent 64%),
+        radial-gradient(900px 540px at -10% 38%, rgba(201,162,39,0), transparent 62%);
       filter: saturate(1.03);
     }
     .gridmask{
@@ -381,7 +381,7 @@ function htmlPage(p: {
       background-size: 32px 32px;
       -webkit-mask-image: radial-gradient(ellipse 80% 50% at 50% 0%, #000 0%, transparent 70%);
       mask-image: radial-gradient(ellipse 80% 50% at 50% 0%, #000 0%, transparent 70%);
-      opacity: .11;
+      opacity: 0;
     }
     .wrap{
       position: relative;
@@ -448,7 +448,7 @@ function htmlPage(p: {
       color: rgba(11,18,32,.88);
     }
     .badge .ic{width:16px; height:16px}
-    .badge-good{border-color: rgba(11,107,58,.28); background: rgba(11,107,58,.08); color: rgba(11,107,58,.96)}
+    .badge-good{border-color: rgba(11,107,58,.28); background: rgba(11,107,58,0); color: rgba(11,107,58,.96)}
     .badge-warn{border-color: rgba(201,162,39,.30); background: rgba(201,162,39,.10); color: rgba(128,92,0,.96)}
     .badge-bad{border-color: rgba(217,72,72,.28); background: rgba(217,72,72,.10); color: rgba(150,25,25,.96)}
     .card{
@@ -560,7 +560,7 @@ function htmlPage(p: {
       color: rgba(11,18,32,.80);
     }
     .tag .tag-ic{width: 14px; height: 14px}
-    .tag-ok{border-color: rgba(11,107,58,.28); background: rgba(11,107,58,.08); color: rgba(11,107,58,.96)}
+    .tag-ok{border-color: rgba(11,107,58,.28); background: rgba(11,107,58,0); color: rgba(11,107,58,.96)}
     .tag-warn{border-color: rgba(201,162,39,.30); background: rgba(201,162,39,.10); color: rgba(128,92,0,.96)}
     .tag-bad{border-color: rgba(217,72,72,.28); background: rgba(217,72,72,.10); color: rgba(150,25,25,.96)}
     .ic-spin{animation: spin 1s linear infinite}
