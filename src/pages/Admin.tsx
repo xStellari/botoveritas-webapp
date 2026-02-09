@@ -37,6 +37,18 @@ export default function Admin() {
   const [resetVoterId, setResetVoterId] = useState("");
   const [resetBusy, setResetBusy] = useState(false);
 
+  
+  const [resetAuditLoading, setResetAuditLoading] = useState(true);
+  const [recentResets, setRecentResets] = useState<
+    Array<{
+      id: number;
+      created_at: string;
+      admin_id: string | null;
+      entity_id: string;
+      details: any;
+    }>
+  >([]);
+
   const [registrationEnabled, setRegistrationEnabled] = useState<boolean>(false);
   const [registrationLoading, setRegistrationLoading] = useState(true);
   const [registrationSaving, setRegistrationSaving] = useState(false);
@@ -50,11 +62,34 @@ export default function Admin() {
     navigate("/");
   };
 
+
+  const loadRecentResets = async () => {
+    setResetAuditLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("admin_audit_logs")
+        .select("id, created_at, admin_id, entity_id, details")
+        .eq("action", "RESET_VOTER_FOR_ELECTION")
+        .order("created_at", { ascending: false })
+        .limit(5);
+
+      if (error) throw error;
+      setRecentResets(data ?? []);
+    } catch (e) {
+      // Silent: this is a convenience panel, not a blocker.
+      setRecentResets([]);
+    } finally {
+      setResetAuditLoading(false);
+    }
+  };
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       console.log("ADMIN SESSION:", data.session);
       console.log("ADMIN USER ID:", data.session?.user?.id);
     });
+
+    void loadRecentResets();
   }, []);
 
   useEffect(() => {
@@ -216,6 +251,30 @@ export default function Admin() {
       toast.success("Voter reset complete", {
         description: `Cleared vote state for voter ${voterId} in election ${electionId}.`,
       });
+
+
+      // Best-effort audit trail (do not block success UX)
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const admin = authData.user;
+        const adminEmail = admin?.email ?? null;
+
+        await supabase.from("admin_audit_logs").insert({
+          action: "RESET_VOTER_FOR_ELECTION",
+          entity_type: "election",
+          entity_id: electionId,
+          admin_id: admin?.id ?? null,
+          details: {
+            voter_id: voterId,
+            election_id: electionId,
+            admin_email: adminEmail,
+          },
+        });
+
+        await loadRecentResets();
+      } catch {
+        // ignore
+      }
     } catch (e) {
       toast.error("Reset failed", { description: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -352,6 +411,35 @@ export default function Admin() {
                     (votes + voter_election_status) via the secure{" "}
                     <code className="px-1 py-0.5 rounded bg-muted">admin-reset-voter</code> Edge Function.
                   </p>
+
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+                    <p className="text-xs font-medium text-destructive">Danger Zone</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Use only for testing/maintenance. This action removes recorded vote state for a voter in a specific election.
+                    </p>
+
+                    <div className="mt-3 space-y-1">
+                      <p className="text-xs font-medium text-foreground">Recent resets</p>
+                      {resetAuditLoading ? (
+                        <p className="text-xs text-muted-foreground">Loading…</p>
+                      ) : recentResets.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No recent reset actions logged.</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {recentResets.map((r) => (
+                            <div key={r.id} className="text-xs text-muted-foreground">
+                              <span className="text-foreground">
+                                {new Date(r.created_at).toLocaleString()}
+                              </span>{" "}
+                              — election <code className="px-1 py-0.5 rounded bg-muted">{r.entity_id}</code>, voter{" "}
+                              <code className="px-1 py-0.5 rounded bg-muted">{r.details?.voter_id ?? "—"}</code>
+                              {r.details?.admin_email ? ` (by ${r.details.admin_email})` : ""}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
