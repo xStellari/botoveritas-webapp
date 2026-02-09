@@ -45,6 +45,16 @@ function escapeHtml(s: string) {
     .replaceAll("'", "&#039;");
 }
 
+function extractTokenId(req: VercelRequest): string | null {
+  const q = req.query?.tokenId;
+  if (typeof q === "string" && q.trim()) return q.trim();
+
+  const url = req.url || "";
+  const parts = url.split("?")[0].split("/").filter(Boolean);
+  const last = parts[parts.length - 1];
+  return last || null;
+}
+
 function originFromReq(req: VercelRequest) {
   const proto = (req.headers["x-forwarded-proto"] || "https").toString().split(",")[0].trim();
   const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString().split(",")[0].trim();
@@ -701,7 +711,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
 
-  const tokenIdBI = parseTokenId(req.query.tokenId as any);
+  const tokenIdBI = parseTokenId(extractTokenId(req) as any);
   if (!tokenIdBI) return res.status(400).send("Invalid tokenId");
 
   const origin = originFromReq(req);
