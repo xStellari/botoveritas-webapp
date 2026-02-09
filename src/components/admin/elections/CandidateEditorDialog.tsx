@@ -134,10 +134,10 @@ export function CandidateEditorDialog(props: Props) {
                           setCForm((p) => ({ ...p, position: value }))
                         }
                       >
-                        <SelectTrigger>
+                        <SelectTrigger className="w-full h-10">
                           <SelectValue placeholder="Select a position" />
                         </SelectTrigger>
-                        <SelectContent>
+                        <SelectContent className="max-h-64 overflow-y-auto">
                           {positions.map((pos) => (
                             <SelectItem key={pos} value={pos}>
                               {pos}
@@ -147,6 +147,7 @@ export function CandidateEditorDialog(props: Props) {
                       </Select>
                     ) : (
                       <Input
+                        className="w-full h-10"
                         value={cForm.position}
                         onChange={(e) =>
                           setCForm((p) => ({ ...p, position: e.target.value }))
@@ -165,6 +166,7 @@ export function CandidateEditorDialog(props: Props) {
                   <div className="grid gap-2">
                     <Label>Slate (optional)</Label>
                     <Input
+                      className="w-full h-10"
                       value={cForm.slate}
                       onChange={(e) =>
                         setCForm((p) => ({ ...p, slate: e.target.value }))
@@ -267,10 +269,10 @@ export function CandidateEditorDialog(props: Props) {
                     setCForm((p) => ({ ...p, display_order: Number(v) }))
                   }
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className="w-full h-10">
                     <SelectValue placeholder="Select order" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-h-64 overflow-y-auto">
                     {Array.from({ length: 51 }).map((_, i) => (
                       <SelectItem key={i} value={String(i)}>
                         {i}
