@@ -246,7 +246,8 @@ export default function RegisterVerify() {
       if (emailErr) {
         console.warn("send-email-verification-link failed:", emailErr);
       }
-
+      console.log("signupData.session exists?", Boolean(signupData.session));
+      console.log("auth.getSession()", await supabase.auth.getSession());
       // 5) Navigate to confirmation
       navigate("/registration-confirmation", {
         state: {
