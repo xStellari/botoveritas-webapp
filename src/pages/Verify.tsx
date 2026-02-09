@@ -225,19 +225,6 @@ export default function Verify() {
                     </p>
                   </div>
                 </Card>
-
-                {/* Local dev note */}
-                <Card className="p-6 rounded-2xl border border-amber-200 bg-white">
-                  <h3 className="font-bold text-amber-900 mb-2">Local testing note</h3>
-                  <p className="text-sm text-muted-foreground">
-                    If you run <span className="font-mono">npm run dev</span>, Vercel rewrites won’t apply. Use{" "}
-                    <span className="font-mono">vercel dev</span> (recommended) or open the API routes directly:
-                  </p>
-                  <ul className="text-sm text-muted-foreground mt-2 space-y-1">
-                    <li>• <span className="font-mono">/api/verify/nft/&lt;tokenId&gt;</span></li>
-                    <li>• <span className="font-mono">/api/verify/vote/&lt;voteId&gt;</span></li>
-                  </ul>
-                </Card>
               </div>
             ) : null}
           </section>
