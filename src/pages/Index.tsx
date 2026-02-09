@@ -16,7 +16,7 @@ const APP_SETTING_KEYS = {
 } as const;
 
 // Edit this text as needed for your school’s timeline.
-const REGISTRATION_PHASE_NOTE = "Registration is currently disabled. Please ask the election admin when registration will be available.";
+const REGISTRATION_PHASE_NOTE = "Voter registration is only available during the official registration period. Please wait for announcements on your organization’s Facebook page.";
 
 const Index = () => {
   const navigate = useNavigate();
@@ -203,6 +203,9 @@ const Index = () => {
                   <p className="text-sm text-muted-foreground">
                     Register as a voter for upcoming elections.
                   </p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Registration availability depends on the current election phase.
+                  </p>
 
                   {!registrationEnabled && !registrationLoading && (
                     <div className="mt-4 rounded-lg border border-border/60 bg-muted/50 p-3">
@@ -223,7 +226,7 @@ const Index = () => {
                     variant={registrationLoading || !registrationEnabled ? "outline" : "default"}
                     disabled={registrationLoading || !registrationEnabled}
                   >
-                    {registrationLoading ? "Checking…" : registrationEnabled ? "Register" : "Registration Disabled"}
+                    {registrationLoading ? "Checking…" : registrationEnabled ? "Register" : "Registration Not Available"}
                   </Button>
                 </div>
               </Card>
@@ -243,6 +246,9 @@ const Index = () => {
                   <h3 className="text-xl font-bold">Cast Your Vote</h3>
                   <p className="text-sm text-muted-foreground">
                     Authenticate and submit your ballot.
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Voting eligibility will be verified in the next step.
                   </p>
                   <Button
                     className="w-full mt-2 bg-gradient-gold text-black hover:opacity-90"
