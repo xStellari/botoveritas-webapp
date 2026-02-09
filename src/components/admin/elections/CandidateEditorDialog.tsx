@@ -155,12 +155,6 @@ export function CandidateEditorDialog(props: Props) {
                         placeholder="e.g., President"
                       />
                     )}
-
-                    {positions.length > 0 ? (
-                      <div className="text-xs text-muted-foreground">
-                        Positions are now standardized per organization to avoid typos.
-                      </div>
-                    ) : null}
                   </div>
 
                   <div className="grid gap-2">
