@@ -16,23 +16,7 @@ import {
   User,
 } from "lucide-react";
 import feuLogo from "@/assets/feu-logo.png";
-import type { CandidateSelection } from "@/pages/VotingKiosk";
-
-export interface VoterData {
-  id: string;
-  email: string;
-  first_name: string;
-  middle_name?: string | null;
-  last_name: string;
-  suffix: string;
-  year_level: string;
-  org_affiliations?: string[] | null;
-  rfid_tag?: string | null;
-  face_id_hash?: string | null;
-  created_at: string;
-  rfidVerified?: boolean;
-  faceVerified?: boolean;
-}
+import type { CandidateSelection, VoterData } from "@/pages/VotingKiosk";
 
 interface ReviewScreenProps {
   voterData: VoterData;
