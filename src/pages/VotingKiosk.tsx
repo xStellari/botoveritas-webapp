@@ -25,13 +25,25 @@ import ElectionFinishedPopup from "@/components/voting/ElectionFinishedPopup";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
-import type { Tables } from "@/types/supabase";
 import { logSessionEvent } from "@/utils/logSessionEvent";
 import { useElectionCatalog } from "@/hooks/useElectionCatalog";
 import { useVotingSessionLock } from "@/hooks/useVotingSessionLock";
 import { useVotingTimer } from "@/hooks/useVotingTimer";
 
-export type VoterRow = Tables<"voters">;
+export type VoterRow = {
+  id: string;
+  email: string;
+  first_name: string;
+  middle_name: string | null;
+  last_name: string;
+  suffix: string | null;
+  year_level: string | null;
+  org_affiliations: string[] | null;
+  rfid_tag: string | null;
+  face_descriptor: string[] | null;
+  email_verified_at: string | null;
+  created_at?: string;
+};
 
 export interface VoterData extends VoterRow {
   rfidVerified?: boolean;
