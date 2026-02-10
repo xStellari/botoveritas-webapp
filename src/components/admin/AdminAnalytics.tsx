@@ -166,7 +166,8 @@ const [snapshot, setSnapshot] = useState<OpsSnapshot>({
   const [forceEndOpen, setForceEndOpen] = useState(false);
   const [forceEndLoading, setForceEndLoading] = useState(false);
   const [forceEndTarget, setForceEndTarget] = useState<{ voter_id: string } | null>(null);
-  const [forceEndReason, setForceEndReason] = useState("");
+  const [forceEndReasonCode, setForceEndReasonCode] = useState<"testing_no_vote" | "user_abandoned" | "kiosk_or_browser_issue" | "other" | "">("");
+  const [forceEndNotes, setForceEndNotes] = useState("");
   const [forceEndConfirm, setForceEndConfirm] = useState("");
 
 useEffect(() => {
@@ -446,67 +447,73 @@ const scoped = electionRows;
     }
   };
 
-  const loadInspectStuckSessions = async () => {
+  const loadInspectOpenSessions = async () => {
     setInspectSessionsLoading(true);
     try {
-      // Pull active sessions and their latest log event; identify sessions that look "stuck"
+      // Pull active sessions and their latest log event.
+      // This powers admin-terminated sessions for testing/recovery (not just "stuck" detection).
       const { data: sessionsRaw, error: sessionsErr } = await supabase
         .from("voter_sessions")
         .select("voter_id, created_at, expires_at")
         .order("created_at", { ascending: false })
-        .limit(200);
+        .limit(300);
 
       if (sessionsErr) throw sessionsErr;
 
       const sessions = (sessionsRaw || []) as Array<{ voter_id: string; created_at: string; expires_at: string }>;
       const now = new Date();
       const activeSessions = sessions.filter((s) => parseNoTz(s.expires_at) > now);
-      const voterIds = activeSessions.map((s) => s.voter_id);
 
-      let latestByVoter = new Map<string, { action: string | null; created_at: string | null; kiosk_id: string | null }>();
+      const voterIds = Array.from(new Set(activeSessions.map((s) => s.voter_id))).filter(Boolean);
+
+      const latestByVoter = new Map<string, { action: string | null; created_at: string | null; kiosk_id: string | null }>();
       if (voterIds.length > 0) {
         const { data: logsRaw, error: logsErr } = await supabase
           .from("voter_session_logs")
           .select("voter_id, action, created_at, kiosk_id")
           .in("voter_id", voterIds)
           .order("created_at", { ascending: false })
-          .limit(1000);
+          .limit(2000);
 
         if (logsErr) throw logsErr;
 
         const logs = (logsRaw || []) as Array<{ voter_id: string; action: string; created_at: string; kiosk_id: string | null }>;
         for (const l of logs) {
           if (!latestByVoter.has(l.voter_id)) {
-            latestByVoter.set(l.voter_id, { action: l.action ?? null, created_at: l.created_at ?? null, kiosk_id: l.kiosk_id ?? null });
+            latestByVoter.set(l.voter_id, {
+              action: l.action ?? null,
+              created_at: l.created_at ?? null,
+              kiosk_id: l.kiosk_id ?? null,
+            });
           }
         }
       }
 
-      const stuck: Array<{ voter_id: string; created_at: string; expires_at: string; last_action: string | null; last_action_at: string | null; kiosk_id: string | null }> = [];
-      const STUCK_AFTER_MS = 5 * 60 * 1000;
+      const rows: Array<{
+        voter_id: string;
+        created_at: string;
+        expires_at: string;
+        last_action: string | null;
+        last_action_at: string | null;
+        kiosk_id: string | null;
+      }> = [];
 
       for (const s of activeSessions) {
-        const ageMs = now.getTime() - parseNoTz(s.created_at).getTime();
         const last = latestByVoter.get(s.voter_id);
-        const lastAction = last?.action ?? null;
-
-        // consider stuck if older than threshold and we haven't seen a session_end
-        if (ageMs >= STUCK_AFTER_MS && lastAction !== "session_end") {
-          stuck.push({
-            voter_id: s.voter_id,
-            created_at: s.created_at,
-            expires_at: s.expires_at,
-            last_action: lastAction,
-            last_action_at: last?.created_at ?? null,
-            kiosk_id: last?.kiosk_id ?? null,
-          });
-        }
+        rows.push({
+          voter_id: s.voter_id,
+          created_at: s.created_at,
+          expires_at: s.expires_at,
+          last_action: last?.action ?? null,
+          last_action_at: last?.created_at ?? null,
+          kiosk_id: last?.kiosk_id ?? null,
+        });
       }
 
-      setInspectSessionsRows(stuck.slice(0, 50));
+      setInspectSessionsRows(rows.slice(0, 50));
     } catch (e: any) {
       console.error(e);
-      toast.error("Failed to load stuck session details");
+      toast.error("Failed to load open session details");
     } finally {
       setInspectSessionsLoading(false);
     }
@@ -514,19 +521,24 @@ const scoped = electionRows;
 
   const openForceEndSession = (voter_id: string) => {
     setForceEndTarget({ voter_id });
-    setForceEndReason("");
+    setForceEndReasonCode("");
+    setForceEndNotes("");
     setForceEndConfirm("");
     setForceEndOpen(true);
   };
 
   const confirmForceEndSession = async () => {
     if (!forceEndTarget) return;
+    if (!forceEndReasonCode) return;
     if (forceEndConfirm.trim().toUpperCase() !== "END") return;
 
     setForceEndLoading(true);
     try {
       const { error } = await supabase.functions.invoke("admin-force-end-session", {
-        body: { voterId: forceEndTarget.voter_id, reason: forceEndReason.trim() || undefined },
+        body: {
+          voterId: forceEndTarget.voter_id,
+          reason: `${forceEndReasonCode}${forceEndNotes.trim() ? `: ${forceEndNotes.trim()}` : ""}`,
+        },
       });
 
       if (error) throw error;
@@ -535,7 +547,7 @@ const scoped = electionRows;
       setForceEndOpen(false);
 
       // Refresh both the modal list and the main snapshot
-      await Promise.all([loadInspectStuckSessions(), loadOps()]);
+      await Promise.all([loadInspectOpenSessions(), loadOps()]);
     } catch (e: any) {
       toast.error(e?.message ?? "Failed to end session");
     } finally {
@@ -550,7 +562,7 @@ const scoped = electionRows;
 
   const openInspectSessions = async () => {
     setInspectSessionsOpen(true);
-    if (inspectSessionsRows.length === 0) await loadInspectStuckSessions();
+    if (inspectSessionsRows.length === 0) await loadInspectOpenSessions();
   };
 
 const exportProofCSV = () => {
@@ -719,7 +731,7 @@ const exportProofCSV = () => {
                   <div className="text-sm font-medium">Sessions</div>
                   <div className="text-xs text-muted-foreground">
                     {statusLabel(sessionStatus)} • Active: {snapshot.sessions.activeSessions} • Expiring soon:{" "}
-                    {snapshot.sessions.expiringSoon} • Stuck: {snapshot.sessions.stuckSessions}
+                    {snapshot.sessions.expiringSoon} • Unfinished (≥5m, no end): {snapshot.sessions.stuckSessions}
                   </div>
                 </div>
               </div>
@@ -730,9 +742,9 @@ const exportProofCSV = () => {
                   variant="outline"
                   size="sm"
                   onClick={openInspectSessions}
-                  disabled={inspectSessionsLoading || snapshot.sessions.stuckSessions === 0}
+                  disabled={inspectSessionsLoading || snapshot.sessions.activeSessions === 0}
                 >
-                  Inspect stuck sessions
+                  Inspect open sessions
                 </Button>
               </div>
 
@@ -749,7 +761,7 @@ const exportProofCSV = () => {
 
               {snapshot.sessions.stuckSample.length > 0 && (
                 <div className="mt-3 rounded-md border bg-muted/30 p-2">
-                  <div className="text-xs font-medium">Stuck sessions (sample)</div>
+                  <div className="text-xs font-medium">Unfinished sessions (≥5m, no end)</div>
                   <div className="mt-1 space-y-1 text-xs text-muted-foreground">
                     {snapshot.sessions.stuckSample.map((s) => (
                       <div key={s.voter_id} className="flex items-center justify-between gap-2">
@@ -792,16 +804,6 @@ const exportProofCSV = () => {
                       <div className="text-xs text-muted-foreground">
                         {statusLabel(s)} • Manifest: {r.hasManifest ? "yes" : "no"} • Chunks: {r.chunkCount}
                       </div>
-                    </div>
-
-                    <div className="shrink-0">
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => openForceEndSession(r.voter_id)}
-                      >
-                        Force end
-                      </Button>
                     </div>
                   </div>
                 );
@@ -860,11 +862,11 @@ const exportProofCSV = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Inspect: Stuck sessions */}
+      {/* Inspect: Open voting sessions */}
       <Dialog open={inspectSessionsOpen} onOpenChange={setInspectSessionsOpen}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
-            <DialogTitle>Stuck sessions</DialogTitle>
+            <DialogTitle>Open voting sessions</DialogTitle>
             <DialogDesc>
               Sessions older than 5 minutes without a <code className="rounded bg-muted px-1">session_end</code>. These
               often indicate kiosk interruptions or network hiccups.
@@ -872,8 +874,8 @@ const exportProofCSV = () => {
           </DialogHeader>
 
           <div className="flex items-center justify-between gap-2">
-            <div className="text-sm text-muted-foreground">Showing up to 50 stuck sessions.</div>
-            <Button variant="outline" size="sm" onClick={loadInspectStuckSessions} disabled={inspectSessionsLoading}>
+            <div className="text-sm text-muted-foreground">Showing up to 50 active sessions.</div>
+            <Button variant="outline" size="sm" onClick={loadInspectOpenSessions} disabled={inspectSessionsLoading}>
               <RefreshCcw className="mr-2 h-4 w-4" />
               Refresh
             </Button>
@@ -883,7 +885,7 @@ const exportProofCSV = () => {
             {inspectSessionsLoading ? (
               <div className="p-4 text-sm text-muted-foreground">Loading…</div>
             ) : inspectSessionsRows.length === 0 ? (
-              <div className="p-4 text-sm text-muted-foreground">No stuck sessions detected.</div>
+              <div className="p-4 text-sm text-muted-foreground">No active sessions right now.</div>
             ) : (
               <div className="divide-y">
                 {inspectSessionsRows.map((r, i) => (
@@ -915,7 +917,7 @@ const exportProofCSV = () => {
             <DialogTitle>Force end session</DialogTitle>
             <DialogDesc>
               This will immediately expire the selected voter session by setting <code className="rounded bg-muted px-1">expires_at</code> to now.
-              This is logged to the audit trail.
+              This is logged to the audit trail with your stated reason.
             </DialogDesc>
           </DialogHeader>
 
@@ -925,8 +927,23 @@ const exportProofCSV = () => {
             </div>
 
             <div className="space-y-1">
-              <div className="text-xs text-muted-foreground">Reason (optional)</div>
-              <Input value={forceEndReason} onChange={(e) => setForceEndReason(e.target.value)} placeholder="e.g., kiosk froze / user walked away" />
+              <div className="text-xs text-muted-foreground">Reason <span className="text-destructive">*</span></div>
+              <select
+                className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={forceEndReasonCode}
+                onChange={(e) => setForceEndReasonCode(e.target.value as any)}
+              >
+                <option value="">Select a reason…</option>
+                <option value="testing_no_vote">Testing: did not complete vote (avoid mint/gas)</option>
+                <option value="user_abandoned">User abandoned / walked away</option>
+                <option value="kiosk_or_browser_issue">Kiosk / browser interruption</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Notes (optional)</div>
+              <Input value={forceEndNotes} onChange={(e) => setForceEndNotes(e.target.value)} placeholder="Add short context for the audit log" />
             </div>
 
             <div className="space-y-1">
@@ -941,7 +958,7 @@ const exportProofCSV = () => {
               <Button
                 variant="destructive"
                 onClick={confirmForceEndSession}
-                disabled={forceEndLoading || !forceEndTarget || forceEndConfirm.trim().toUpperCase() !== "END"}
+                disabled={forceEndLoading || !forceEndTarget || !forceEndReasonCode || forceEndConfirm.trim().toUpperCase() !== "END"}
               >
                 {forceEndLoading ? "Ending…" : "End session"}
               </Button>
