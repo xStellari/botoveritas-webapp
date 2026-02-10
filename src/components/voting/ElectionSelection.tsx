@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState} from "react";
+import { useNavigate } from "react-router-dom";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +16,7 @@ import {
 import { toast } from "sonner";
 
 import feuLogo from "@/assets/feu-logo.png";
+import { Navigate } from "react-router-dom";
 
 interface ElectionSelectionProps {
   voterData: any;
@@ -50,6 +52,7 @@ const ElectionSelection = ({
   const [localExpired, setLocalExpired] = useState<any[]>(
     Array.isArray(expiredElections) ? expiredElections : []
   );
+  const navigate = useNavigate();
 
   // Track changes by IDs (stable even if array reference is reused)
   const activeKey = useMemo(() => {
@@ -156,10 +159,9 @@ const ElectionSelection = ({
           <div className="flex items-center gap-3">
             <img src={feuLogo} className="h-12" alt="FEU Logo" />
           </div>
-
-          <div className="text-xs text-muted-foreground hidden md:block">
-            Voting Kiosk
-          </div>
+          <Button variant="outline" onClick={() => navigate("/")}>
+              Back
+          </Button>
         </div>
       </header>
 
