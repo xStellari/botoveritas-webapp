@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription as DialogDesc } from "@/components/ui/dialog";
 import { AlertTriangle, CheckCircle2, CircleMinus, Download, RefreshCcw } from "lucide-react";
 
@@ -161,6 +162,13 @@ const [snapshot, setSnapshot] = useState<OpsSnapshot>({
   const [inspectSessionsRows, setInspectSessionsRows] = useState<
     Array<{ voter_id: string; created_at: string; expires_at: string; last_action: string | null; last_action_at: string | null; kiosk_id: string | null }>
   >([]); 
+
+  const [forceEndOpen, setForceEndOpen] = useState(false);
+  const [forceEndLoading, setForceEndLoading] = useState(false);
+  const [forceEndTarget, setForceEndTarget] = useState<{ voter_id: string } | null>(null);
+  const [forceEndReason, setForceEndReason] = useState("");
+  const [forceEndConfirm, setForceEndConfirm] = useState("");
+
 useEffect(() => {
     void loadOps();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -504,6 +512,37 @@ const scoped = electionRows;
     }
   };
 
+  const openForceEndSession = (voter_id: string) => {
+    setForceEndTarget({ voter_id });
+    setForceEndReason("");
+    setForceEndConfirm("");
+    setForceEndOpen(true);
+  };
+
+  const confirmForceEndSession = async () => {
+    if (!forceEndTarget) return;
+    if (forceEndConfirm.trim().toUpperCase() !== "END") return;
+
+    setForceEndLoading(true);
+    try {
+      const { error } = await supabase.functions.invoke("admin-force-end-session", {
+        body: { voterId: forceEndTarget.voter_id, reason: forceEndReason.trim() || undefined },
+      });
+
+      if (error) throw error;
+
+      toast.success("Session ended");
+      setForceEndOpen(false);
+
+      // Refresh both the modal list and the main snapshot
+      await Promise.all([loadInspectStuckSessions(), loadOps()]);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Failed to end session");
+    } finally {
+      setForceEndLoading(false);
+    }
+  };
+
   const openInspectAuth = async () => {
     setInspectAuthOpen(true);
     if (inspectAuthRows.length === 0) await loadInspectAuthFailures();
@@ -754,6 +793,16 @@ const exportProofCSV = () => {
                         {statusLabel(s)} • Manifest: {r.hasManifest ? "yes" : "no"} • Chunks: {r.chunkCount}
                       </div>
                     </div>
+
+                    <div className="shrink-0">
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => openForceEndSession(r.voter_id)}
+                      >
+                        Force end
+                      </Button>
+                    </div>
                   </div>
                 );
               })
@@ -854,6 +903,49 @@ const exportProofCSV = () => {
                 ))}
               </div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+
+      {/* Confirm: Force end session */}
+      <Dialog open={forceEndOpen} onOpenChange={(o) => !forceEndLoading && setForceEndOpen(o)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Force end session</DialogTitle>
+            <DialogDesc>
+              This will immediately expire the selected voter session by setting <code className="rounded bg-muted px-1">expires_at</code> to now.
+              This is logged to the audit trail.
+            </DialogDesc>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="text-sm">
+              Target voter: <span className="font-mono">{forceEndTarget ? maskId(forceEndTarget.voter_id) : "—"}</span>
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Reason (optional)</div>
+              <Input value={forceEndReason} onChange={(e) => setForceEndReason(e.target.value)} placeholder="e.g., kiosk froze / user walked away" />
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Type <span className="font-mono">END</span> to confirm</div>
+              <Input value={forceEndConfirm} onChange={(e) => setForceEndConfirm(e.target.value)} placeholder="END" />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={() => setForceEndOpen(false)} disabled={forceEndLoading}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={confirmForceEndSession}
+                disabled={forceEndLoading || !forceEndTarget || forceEndConfirm.trim().toUpperCase() !== "END"}
+              >
+                {forceEndLoading ? "Ending…" : "End session"}
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
