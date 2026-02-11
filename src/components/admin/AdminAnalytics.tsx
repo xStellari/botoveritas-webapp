@@ -92,9 +92,12 @@ function statusIcon(s: Status) {
 }
 
 function parseNoTz(ts: string) {
-  // Supabase may return timestamp without timezone; treat as UTC for consistent comparisons.
-  const clean = ts.includes("Z") ? ts : `${ts}Z`;
-  return new Date(clean);
+  // Supabase returns a mix of timestamp types:
+  // - timestamptz strings often include `Z` or an explicit offset like `+08:00`
+  // - timestamp (no tz) strings contain no zone info
+  // For "no tz" values, treat as UTC for consistent comparisons.
+  const hasZone = /Z$/.test(ts) || /[+-]\d{2}:\d{2}$/.test(ts);
+  return new Date(hasZone ? ts : `${ts}Z`);
 }
 
 function maskId(id: string | null | undefined, visible = 8) {
@@ -585,7 +588,7 @@ const exportProofCSV = () => {
         <div>
           <h2 className="text-xl font-semibold">Operations</h2>
           <p className="text-sm text-muted-foreground">
-            Procedural truth: guarantees, exceptions, and system health (not turnout).
+            Procedural truth: guarantees, exceptions, and system health.
           </p>
         </div>
 
@@ -868,8 +871,8 @@ const exportProofCSV = () => {
           <DialogHeader>
             <DialogTitle>Open voting sessions</DialogTitle>
             <DialogDesc>
-              Sessions older than 5 minutes without a <code className="rounded bg-muted px-1">session_end</code>. These
-              often indicate kiosk interruptions or network hiccups.
+              Active sessions (not yet expired). Includes test sessions (e.g., you authenticated but intentionally did
+              not finish voting), user-abandoned sessions, or sessions affected by browser/kiosk interruptions.
             </DialogDesc>
           </DialogHeader>
 
@@ -900,6 +903,15 @@ const exportProofCSV = () => {
                         expires: {parseNoTz(r.expires_at).toLocaleString()} • last at:{" "}
                         {r.last_action_at ? parseNoTz(r.last_action_at).toLocaleString() : "—"}
                       </div>
+                    </div>
+                    <div className="shrink-0">
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => openForceEndSession(r.voter_id)}
+                      >
+                        Force end
+                      </Button>
                     </div>
                   </div>
                 ))}

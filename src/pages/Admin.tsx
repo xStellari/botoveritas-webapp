@@ -389,11 +389,6 @@ export default function Admin() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <p className="text-sm text-muted-foreground">
-                    Controls whether students can start the voter registration flow. This is meant for your
-                    <span className="font-medium text-foreground"> registration window</span> (e.g., 1–2 weeks before elections).
-                  </p>
-
                   <div className="flex items-center justify-between rounded-lg border bg-background p-4">
                     <div className="space-y-1">
                       <div className="font-semibold leading-none">
@@ -418,10 +413,6 @@ export default function Admin() {
                       />
                     </div>
                   </div>
-
-                  <p className="text-xs text-muted-foreground">
-                    Setting key: <code className="px-1 py-0.5 rounded bg-muted">{APP_SETTING_KEYS.registrationEnabled}</code>
-                  </p>
 
                   <p className="text-xs text-muted-foreground">
                     Last changed:{" "}
