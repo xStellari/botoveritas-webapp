@@ -13,6 +13,9 @@ import {
 import feuLogo from "@/assets/feu-logo.png";
 import { supabase } from "@/integrations/supabase/client";
 
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+
 import RFIDScanner from "./RFIDScanner";
 import FacialRecognition from "./FacialRecognition";
 import { compareDescriptors } from "@/utils/faceMatching";
@@ -126,6 +129,16 @@ const StepCard = ({
 const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   const navigate = useNavigate();
 
+  // In production, the kiosk can run as anon unless election staff signs in.
+  // If RLS restricts voter reads to authenticated users, RFID lookups will return 0 rows.
+  // We keep voters login-free — only the kiosk/staff account signs in once per device.
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isStaffSignedIn, setIsStaffSignedIn] = useState(false);
+  const [staffEmail, setStaffEmail] = useState("");
+  const [staffPassword, setStaffPassword] = useState("");
+  const [staffSigningIn, setStaffSigningIn] = useState(false);
+  const [staffSignInError, setStaffSignInError] = useState<string | null>(null);
+
   const [voterId, setVoterId] = useState<string | null>(null);
   const [step, setStep] = useState<Step>("rfid");
 
@@ -153,6 +166,33 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
     return () => clearTimeout(timer);
   }, [step]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function checkAuth() {
+      const { data } = await supabase.auth.getSession();
+      if (cancelled) return;
+
+      // If a user session exists, requests will be made as "authenticated" instead of "anon".
+      setIsStaffSignedIn(Boolean(data.session?.user));
+      setAuthChecked(true);
+    }
+
+    void checkAuth();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setIsStaffSignedIn(Boolean(session?.user));
+      setAuthChecked(true);
+    });
+
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
+  }, []);
+
   const logAttempt = async (
     type: string,
     rfid: string,
@@ -178,12 +218,51 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
     return { error };
   };
 
+  const handleStaffSignIn = async () => {
+    if (!staffEmail.trim() || !staffPassword) {
+      setStaffSignInError("Please enter the staff email and password.");
+      return;
+    }
+
+    setStaffSignInError(null);
+    setStaffSigningIn(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: staffEmail.trim(),
+        password: staffPassword,
+      });
+
+      if (error) throw error;
+
+      setIsStaffSignedIn(Boolean(data.session?.user));
+      setStaffPassword("");
+      setStatusMessage("Ready. Please tap your Student ID.");
+    } catch (e) {
+      setStaffSignInError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStaffSigningIn(false);
+    }
+  };
+
   // ---------------------------------------------------------------------
   // 1️⃣ HANDLE RFID TAP
   // ---------------------------------------------------------------------
   const handleRFID = async (uid: string) => {
     const normalized = uid?.trim();
     if (!normalized) return;
+
+    // If the kiosk isn't signed in, RLS may hide the voter row in production.
+    // Keep voters login-free; only staff signs in once per kiosk device.
+    if (authChecked && !isStaffSignedIn) {
+      setWarningMessage(null);
+      setStep("rfid");
+      setRfidTag(normalized);
+      setStatusMessage(
+        "This kiosk is not signed in. Please ask election staff to sign in to enable RFID authentication."
+      );
+      await logAttempt("KIOSK_NOT_SIGNED_IN", normalized);
+      return;
+    }
 
     setWarningMessage(null);
 
@@ -197,7 +276,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
       .from("voters")
       .select("id, face_descriptor, email_verified_at")
       .eq("rfid_tag", normalized)
-      .single();
+      .maybeSingle();
 
     if (error || !data) {
       console.error("RFID not found:", error?.message);
@@ -323,6 +402,67 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
               Two-factor voter authentication
             </p>
           </div>
+
+          {/* Staff sign-in (kiosk device only) */}
+          {authChecked && !isStaffSignedIn ? (
+            <div className="mt-6 rounded-2xl border border-primary/15 bg-primary/5 px-4 py-4">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <ShieldCheck className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 w-full">
+                  <div className="text-sm font-semibold text-foreground">
+                    Staff sign-in required (kiosk)
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Voters do not sign in. This is only for election staff to enable RFID lookup on this kiosk.
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Input
+                      type="email"
+                      placeholder="Staff email"
+                      value={staffEmail}
+                      onChange={(e) => setStaffEmail(e.target.value)}
+                      autoComplete="username"
+                    />
+                    <Input
+                      type="password"
+                      placeholder="Password"
+                      value={staffPassword}
+                      onChange={(e) => setStaffPassword(e.target.value)}
+                      autoComplete="current-password"
+                    />
+                  </div>
+
+                  {staffSignInError ? (
+                    <div className="mt-3 text-xs text-destructive">{staffSignInError}</div>
+                  ) : null}
+
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    <Button
+                      onClick={handleStaffSignIn}
+                      disabled={staffSigningIn}
+                      className="rounded-xl"
+                    >
+                      {staffSigningIn ? (
+                        <span className="inline-flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Signing in…
+                        </span>
+                      ) : (
+                        "Sign in"
+                      )}
+                    </Button>
+
+                    <div className="text-xs text-muted-foreground">
+                      Tip: use your existing admin account credentials.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {/* Warnings (non-blocking) */}
           <div className="mt-6 space-y-3">
