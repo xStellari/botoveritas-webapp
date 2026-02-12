@@ -54,6 +54,7 @@ const Index = () => {
   }, []);
   const [timeLeftMap, setTimeLeftMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [electionView, setElectionView] = useState<"active" | "upcoming" | "finished">("active");
 
   // Load elections
   useEffect(() => {
@@ -103,6 +104,13 @@ const Index = () => {
 
     return timeEnded || finalized;
   });
+
+  useEffect(() => {
+    if (active.length > 0) setElectionView("active");
+    else if (upcoming.length > 0) setElectionView("upcoming");
+    else setElectionView("finished");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active.length, upcoming.length, finished.length]);
 
   // Countdown handler (ONLY for active operational elections)
   useEffect(() => {
@@ -292,110 +300,145 @@ const Index = () => {
 
           </div>
 
-          <section className="flex-1 min-h-0 mt-8 space-y-10 kiosk-portrait-scroll no-scrollbar">
-            {/* ACTIVE */}
-            <div>
-              <h2 className="text-xl font-bold text-emerald-800 flex items-center gap-2 mb-4">
-                <Flame className="h-5 w-5 text-emerald-700" />
-                Active Elections
-              </h2>
-
-              {loading ? (
-                <p className="text-sm text-muted-foreground">Loading…</p>
-              ) : active.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No active elections at the moment.
-                </p>
-              ) : (
-                <div className="space-y-4">
-                  {active.map((election) => (
-                    <Card key={election.id} className="p-5 border hover:bg-emerald-50/50">
-                      <div className="flex items-center justify-between mb-1">
-                        <h3 className="font-semibold">{election.title}</h3>
-                        <ElectionStatusBadge election={election} />
-                      </div>
-
-                      <p className="text-xs text-muted-foreground flex items-center gap-1">
-                        <CalendarDays className="h-3 w-3" />
-                        {new Date(election.start_date).toLocaleString()} →{" "}
-                        {new Date(election.end_date).toLocaleString()}
-                      </p>
-
-                      <p className="text-xs text-destructive mt-1">
-                        {timeLeftMap[election.id] ?? ""}
-                      </p>
-                    </Card>
-                  ))}
+                    <section className="flex-1 min-h-0 mt-8 space-y-6 kiosk-portrait-scroll no-scrollbar">
+            <Card className="border-emerald-100/70 bg-white/70 backdrop-blur">
+              <div className="p-4 sm:p-5 border-b border-emerald-100/70 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <div className="h-9 w-9 rounded-full bg-emerald-50 border border-emerald-100 grid place-items-center">
+                      <Flame className="h-4 w-4 text-emerald-700" />
+                    </div>
+                    <div className="min-w-0">
+                      <h1 className="text-lg font-semibold text-emerald-900 leading-tight">Elections</h1>
+                      <p className="text-xs text-muted-foreground">Browse live, upcoming, and closed elections.</p>
+                    </div>
+                  </div>
                 </div>
-              )}
-            </div>
 
-            {/* UPCOMING */}
-            <div>
-              <h2 className="text-xl font-bold text-blue-800 flex items-center gap-2 mb-4">
-                <Clock className="h-5 w-5 text-blue-700" />
-                Upcoming Elections
-              </h2>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant={electionView === "active" ? "default" : "outline"}
+                    className={
+                      electionView === "active"
+                        ? "bg-emerald-700 hover:bg-emerald-700 text-white"
+                        : "border-emerald-200 text-emerald-800 bg-white/70"
+                    }
+                    onClick={() => setElectionView("active")}
+                  >
+                    Live
+                    <span className="ml-2 text-[11px] opacity-90">({active.length})</span>
+                  </Button>
 
-              {loading ? (
-                <p className="text-sm text-muted-foreground">Loading…</p>
-              ) : upcoming.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No upcoming elections scheduled.
-                </p>
-              ) : (
-                <div className="space-y-4">
-                  {upcoming.map((election) => (
-                    <Card key={election.id} className="p-5 border hover:bg-blue-50/50">
-                      <div className="flex items-center justify-between mb-1">
-                        <h3 className="font-semibold">{election.title}</h3>
-                        <ElectionStatusBadge election={election} />
-                      </div>
+                  <Button
+                    type="button"
+                    variant={electionView === "upcoming" ? "default" : "outline"}
+                    className={
+                      electionView === "upcoming"
+                        ? "bg-blue-700 hover:bg-blue-700 text-white"
+                        : "border-blue-200 text-blue-800 bg-white/70"
+                    }
+                    onClick={() => setElectionView("upcoming")}
+                  >
+                    Upcoming
+                    <span className="ml-2 text-[11px] opacity-90">({upcoming.length})</span>
+                  </Button>
 
-                      <p className="text-xs text-muted-foreground flex items-center gap-1">
-                        <CalendarDays className="h-3 w-3" />
-                        Starts: {new Date(election.start_date).toLocaleString()}
-                      </p>
-                    </Card>
-                  ))}
+                  <Button
+                    type="button"
+                    variant={electionView === "finished" ? "default" : "outline"}
+                    className={
+                      electionView === "finished"
+                        ? "bg-rose-600 hover:bg-rose-600 text-white"
+                        : "border-rose-200 text-rose-700 bg-white/70"
+                    }
+                    onClick={() => setElectionView("finished")}
+                  >
+                    Closed
+                    <span className="ml-2 text-[11px] opacity-90">({finished.length})</span>
+                  </Button>
                 </div>
-              )}
-            </div>
+              </div>
 
-            {/* FINISHED */}
-            <div>
-              <h2 className="text-xl font-bold text-red-500 flex items-center gap-2 mb-4">
-                <CheckCircle className="h-5 w-5 text-red-500" />
-                Finished Elections
-              </h2>
-
-              {loading ? (
-                <p className="text-sm text-muted-foreground">Loading…</p>
-              ) : finished.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No finished elections.</p>
-              ) : (
-                <div className="space-y-4">
-                  {finished.map((election) => (
-                    <Card key={election.id} className="p-5 border hover:bg-red-50/50">
-                      <div className="flex items-center justify-between mb-1">
-                        <h3 className="font-semibold">{election.title}</h3>
-                        <ElectionStatusBadge election={election} />
-                      </div>
-
-                      <p className="text-xs text-muted-foreground flex items-center gap-1">
-                        <CalendarDays className="h-3 w-3" />
-                        {new Date(election.start_date).toLocaleString()} →{" "}
-                        {new Date(election.end_date).toLocaleString()}
-                      </p>
-
-                      <p className="text-xs text-red-500 mt-1 font-medium">
-                        {getClosedLabel(election)}
-                      </p>
-                    </Card>
-                  ))}
-                </div>
-              )}
-            </div>
+              <div className="p-4 sm:p-5 min-h-0 space-y-4">
+                {loading ? (
+                  <p className="text-sm text-muted-foreground">Loading elections…</p>
+                ) : electionView === "active" ? (
+                  active.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No active elections at the moment.</p>
+                  ) : (
+                    <div className="space-y-4">
+                      {active.map((election) => (
+                        <Card key={election.id} className="p-5 border hover:bg-emerald-50/50">
+                          <div className="flex items-start justify-between gap-3 mb-1">
+                            <div className="min-w-0">
+                              <h3 className="font-semibold leading-tight truncate">{election.title}</h3>
+                              <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                                <CalendarDays className="h-3 w-3" />
+                                {new Date(election.start_date).toLocaleString()} → {new Date(election.end_date).toLocaleString()}
+                              </p>
+                            </div>
+                            <div className="shrink-0 flex flex-col items-end gap-1">
+                              <ElectionStatusBadge election={election} />
+                              <p className="text-[11px] text-emerald-800">
+                                {timeLeftMap[election.id] ?? ""}
+                              </p>
+                            </div>
+                          </div>
+                        </Card>
+                      ))}
+                    </div>
+                  )
+                ) : electionView === "upcoming" ? (
+                  upcoming.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No upcoming elections scheduled.</p>
+                  ) : (
+                    <div className="space-y-4">
+                      {upcoming.map((election) => (
+                        <Card key={election.id} className="p-5 border hover:bg-blue-50/50">
+                          <div className="flex items-start justify-between gap-3 mb-1">
+                            <div className="min-w-0">
+                              <h3 className="font-semibold leading-tight truncate">{election.title}</h3>
+                              <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                                <CalendarDays className="h-3 w-3" />
+                                Starts: {new Date(election.start_date).toLocaleString()}
+                              </p>
+                            </div>
+                            <div className="shrink-0">
+                              <ElectionStatusBadge election={election} />
+                            </div>
+                          </div>
+                        </Card>
+                      ))}
+                    </div>
+                  )
+                ) : finished.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No finished elections.</p>
+                ) : (
+                  <div className="space-y-4">
+                    {finished.map((election) => (
+                      <Card key={election.id} className="p-5 border hover:bg-rose-50/50">
+                        <div className="flex items-start justify-between gap-3 mb-1">
+                          <div className="min-w-0">
+                            <h3 className="font-semibold leading-tight truncate">{election.title}</h3>
+                            <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                              <CalendarDays className="h-3 w-3" />
+                              {new Date(election.start_date).toLocaleString()} → {new Date(election.end_date).toLocaleString()}
+                            </p>
+                            <p className="text-xs text-rose-700 mt-1 font-medium">
+                              {getClosedLabel(election)}
+                            </p>
+                          </div>
+                          <div className="shrink-0">
+                            <ElectionStatusBadge election={election} />
+                          </div>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Card>
           </section>
         </div>
       </main>
