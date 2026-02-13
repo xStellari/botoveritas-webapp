@@ -671,10 +671,6 @@ const exportProofCSV = () => {
             {(snapshot.auth.totalEvents60m === 0 && snapshot.sessions.activeSessions === 0) && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
                 <div className="font-medium">No recent health signals detected.</div>
-                <div className="mt-1 text-amber-800">
-                  If you just tested authentication or have active sessions but still see zeros here, this is usually caused by Row Level Security
-                  policies blocking reads on <code className="px-1">auth_logs</code>, <code className="px-1">voter_sessions</code>, or <code className="px-1">voter_session_logs</code>.
-                </div>
               </div>
             )}
 
