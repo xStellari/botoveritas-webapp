@@ -47,6 +47,30 @@ export default function RegistrationError() {
             animation: gradientShift 12s ease-in-out infinite;
           }
 
+          @keyframes fadeInUp {
+            0% { transform: translateY(10px); opacity: 0; }
+            100% { transform: translateY(0); opacity: 1; }
+          }
+
+          .animate-fade-in-up {
+            animation: fadeInUp 420ms ease-out both;
+          }
+
+          @keyframes floaty {
+            0%, 100% { transform: translate3d(0, 0, 0); }
+            50% { transform: translate3d(0, -12px, 0); }
+          }
+
+          .blob {
+            filter: blur(28px);
+            opacity: 0.35;
+            animation: floaty 7s ease-in-out infinite;
+          }
+
+          .blob-delay {
+            animation-delay: -2.5s;
+          }
+
           @keyframes errorPop {
             0% { transform: scale(0.6); opacity: 0; }
             60% { transform: scale(1.15); opacity: 1; }
@@ -67,6 +91,8 @@ export default function RegistrationError() {
 
       {/* Background animation */}
       <div className="absolute inset-0 -z-10 bg-gradient-to-br from-red-200/20 via-background to-red-400/20 animate-gradient" />
+      <div className="absolute -top-24 -left-24 h-72 w-72 rounded-full bg-red-400/30 blob" />
+      <div className="absolute -bottom-32 -right-28 h-96 w-96 rounded-full bg-red-300/30 blob blob-delay" />
 
       <Card className="max-w-lg w-full shadow-2xl border border-red-300 bg-white/95 backdrop-blur-md rounded-2xl animate-fade-in-up">
 
