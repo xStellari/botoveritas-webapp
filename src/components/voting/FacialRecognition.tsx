@@ -23,6 +23,7 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
 
   const [status, setStatus] = useState("Preparing camera…");
   const [modelsReady, setModelsReady] = useState(false);
+  const [recognitionReady, setRecognitionReady] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
 
   const [faceDetected, setFaceDetected] = useState(false);
@@ -35,18 +36,85 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
   const [faceBox, setFaceBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
 
   // -------------------------------------------------------
+  // Perf constants (tuneable)
+  // -------------------------------------------------------
+  // How often we run the heavy face-api pipeline while auto-capturing.
+  // ~6–8 fps is usually plenty for kiosk UX.
+  const DETECT_INTERVAL_MS = 140;
+  // Run brightness + tilt checks less frequently (they are expensive).
+  const QUALITY_INTERVAL_MS = 600;
+  // Smaller input sizes are significantly faster; 224 is a good balance.
+  const DETECTOR_INPUT_SIZE = 160;
+
+  // -------------------------------------------------------
+  // Refs to avoid re-creating the detection loop on every state change
+  // -------------------------------------------------------
+  const stoppedRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const lastDetectAtRef = useRef(0);
+  const lastQualityAtRef = useRef(0);
+  const faceDetectedRef = useRef(false);
+  const countdownRef = useRef<number | null>(null);
+  const brightnessCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const brightnessCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+
+  // Keep refs in sync with state (state drives UI; refs drive the loop)
+  useEffect(() => {
+    faceDetectedRef.current = faceDetected;
+  }, [faceDetected]);
+
+  useEffect(() => {
+    countdownRef.current = countdown;
+  }, [countdown]);
+
+  // -------------------------------------------------------
+  // Recognition net loader (lazy)
+  // -------------------------------------------------------
+  const ensureRecognitionNetLoaded = async (): Promise<void> => {
+    if (recognitionReady) return;
+
+    let p: Promise<void> | null = (window as any).__faceRecognitionLoadPromise ?? null;
+    if (!p) {
+      const MODEL_URL = `${window.location.origin}/models`;
+      p = faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL).then(() => undefined);
+      (window as any).__faceRecognitionLoadPromise = p;
+    }
+
+    await p;
+    setRecognitionReady(true);
+  };
+
+// -------------------------------------------------------
   // Load Models
   // -------------------------------------------------------
   useEffect(() => {
+    // Cache model loading across mounts so we don't re-download/re-init.
+    // This materially improves "boot" time when navigating between screens.
+    let modelsLoadPromise: Promise<void> | null = (window as any).__faceModelsLoadPromise ?? null;
+
     const load = async () => {
       try {
-        const MODEL_URL = `${window.location.origin}/models`;;
+        const MODEL_URL = `${window.location.origin}/models`;
 
-        await Promise.all([
-          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-        ]);
+        if (!modelsLoadPromise) {
+          modelsLoadPromise = Promise.all([
+            faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+            faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
+          ]).then(() => {
+            console.log("TinyLandmark loaded:", faceapi.nets.faceLandmark68TinyNet.isLoaded);
+            console.log("FullLandmark loaded:", faceapi.nets.faceLandmark68Net.isLoaded);
+          });
+
+          // Don’t block "boot" on the heavy recognition net; load it lazily on first capture.
+          // (We also warm it up in the background if bandwidth/CPU allows.)
+          ensureRecognitionNetLoaded().catch(() => {
+            /* ignore warm-up failures; capture will retry */
+          });
+
+          (window as any).__faceModelsLoadPromise = modelsLoadPromise;
+        }
+
+        await modelsLoadPromise;
 
         setModelsReady(true);
         setStatus("Starting camera…");
@@ -71,11 +139,22 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "user",
-            width: { ideal: 640, max:720 }, 
-            height: { ideal: 480, max:480 }},
+            // Kiosk perf: keep the camera feed modest; face-api downsamples anyway.
+            width: { ideal: 640, max: 640 },
+            height: { ideal: 480, max: 480 },
+            frameRate: { ideal: 24, max: 24 },
+          },
         });
 
-        if (videoRef.current) videoRef.current.srcObject = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          // Ensure playback starts ASAP.
+          videoRef.current.onloadedmetadata = () => {
+            videoRef.current?.play().catch(() => {
+              /* ignored */
+            });
+          };
+        }
         setStatus("Align your face inside the frame…");
 
       } catch (err) {
@@ -99,10 +178,22 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
   useEffect(() => {
     if (!modelsReady) return;
 
-    let stopped = false;
+    stoppedRef.current = false;
+    inFlightRef.current = false;
+    lastDetectAtRef.current = 0;
+    lastQualityAtRef.current = 0;
 
-    const loop = async () => {
-      if (stopped) return;
+    // Reuse a tiny canvas for brightness sampling (avoid creating one per frame)
+    if (!brightnessCanvasRef.current) {
+      const c = document.createElement("canvas");
+      c.width = 32;
+      c.height = 32;
+      brightnessCanvasRef.current = c;
+      brightnessCtxRef.current = c.getContext("2d");
+    }
+
+    const loop = async (ts: number) => {
+      if (stoppedRef.current) return;
 
       const video = videoRef.current;
       const container = containerRef.current;
@@ -117,23 +208,41 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
         return;
       }
 
+      // Throttle detection to reduce CPU usage and improve responsiveness.
+      if (inFlightRef.current || ts - lastDetectAtRef.current < DETECT_INTERVAL_MS) {
+        requestAnimationFrame(loop);
+        return;
+      }
+
+      inFlightRef.current = true;
+      lastDetectAtRef.current = ts;
+
       try {
-        const result = await faceapi
-          .detectSingleFace(
-            video,
-            new faceapi.TinyFaceDetectorOptions({
-              inputSize: 320,
-              scoreThreshold: 0.5,
-            })
-          )
-          .withFaceLandmarks()
-          .withFaceDescriptor();
+        // If it’s time to compute quality metrics, do landmarks (heavier) once.
+        const runQuality = ts - lastQualityAtRef.current >= QUALITY_INTERVAL_MS;
 
-        if (result) {
-          const { box } = result.detection;
-          const landmarks = result.landmarks;
+        const det = runQuality
+          ? await faceapi
+              .detectSingleFace(
+                video,
+                new faceapi.TinyFaceDetectorOptions({
+                  inputSize: DETECTOR_INPUT_SIZE,
+                  scoreThreshold: 0.55,
+                })
+              )
+              .withFaceLandmarks(true)
+          : await faceapi.detectSingleFace(
+              video,
+              new faceapi.TinyFaceDetectorOptions({
+                inputSize: DETECTOR_INPUT_SIZE,
+                scoreThreshold: 0.55,
+              })
+            );
+        
+        if (det) {
+          const box = "detection" in det ? det.detection.box : det.box;
 
-          // 🌟 NEW: SCALE FACE OUTLINE TO DISPLAY
+          // 🌟 SCALE FACE OUTLINE TO DISPLAY
           const videoWidth = video.videoWidth;
           const videoHeight = video.videoHeight;
 
@@ -150,27 +259,33 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
             h: box.height * scaleY,
           });
 
-          // v2.5 brightness
-          setBrightness(getVideoBrightness(video));
+          if (!faceDetectedRef.current) setFaceDetected(true);
 
-          // v2.5 tilt
-          const leftEye = landmarks.getLeftEye();
-          const rightEye = landmarks.getRightEye();
-          const tiltAmount = Math.abs(leftEye[0].y - rightEye[0].y);
-          setTilt(tiltAmount);
+          if (runQuality) {
+            lastQualityAtRef.current = ts;
 
-          if (!faceDetected) setFaceDetected(true);
+            // brightness (cheap, uses reused 32x32 canvas)
+            setBrightness(getVideoBrightness(video));
 
-          if (countdown === null) {
+            // tilt (needs landmarks)
+            if ("landmarks" in det) {
+              const leftEye = det.landmarks.getLeftEye();
+              const rightEye = det.landmarks.getRightEye();
+              const tiltAmount = Math.abs(leftEye[0].y - rightEye[0].y);
+              setTilt(tiltAmount);
+            }
+          }
+
+          if (countdownRef.current === null) {
             setCountdown(3);
             setStatus("Face detected — hold still… capturing in 3");
           }
         } else {
-          if (faceDetected) setFaceDetected(false);
+          if (faceDetectedRef.current) setFaceDetected(false);
 
           setFaceBox(null);
 
-          if (countdown !== null && countdown > 0) {
+          if (countdownRef.current !== null && (countdownRef.current ?? 0) > 0) {
             setCountdown(null);
           }
 
@@ -178,6 +293,8 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
         }
       } catch (err) {
         console.error("Detection error:", err);
+      } finally {
+        inFlightRef.current = false;
       }
 
       requestAnimationFrame(loop);
@@ -185,9 +302,9 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
 
     requestAnimationFrame(loop);
     return () => {
-      stopped = true;
+      stoppedRef.current = true;
     };
-  }, [modelsReady, countdown, autoCapture, faceDetected]);
+  }, [modelsReady, autoCapture]);
 
   // -------------------------------------------------------
   // Countdown (unchanged)
@@ -200,18 +317,26 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
 
       const video = videoRef.current;
       if (video) {
-        faceapi
-          .detectSingleFace(
-            video,
-            new faceapi.TinyFaceDetectorOptions({ inputSize: 320 })
-          )
-          .withFaceLandmarks()
-          .withFaceDescriptor()
-          .then((finalDet) => {
+        (async () => {
+          try {
+            // Lazy-load the heavy recognition net right before we need descriptors.
+            await ensureRecognitionNetLoaded();
+
+            const finalDet = await faceapi
+              .detectSingleFace(
+                video,
+                new faceapi.TinyFaceDetectorOptions({ inputSize: DETECTOR_INPUT_SIZE })
+              )
+              .withFaceLandmarks(true)
+              .withFaceDescriptor();
+
             if (finalDet) {
               onCapture(finalDet.descriptor);
             }
-          });
+          } catch (e) {
+            console.error("Capture error:", e);
+          }
+        })();
       }
       return;
     }
@@ -228,12 +353,10 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
   // Brightness Helper
   // -------------------------------------------------------
   function getVideoBrightness(video: HTMLVideoElement): number {
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
+    const ctx = brightnessCtxRef.current;
     if (!ctx) return 1;
 
-    canvas.width = 32;
-    canvas.height = 32;
+    // 32x32 sampling canvas is reused via refs.
     ctx.drawImage(video, 0, 0, 32, 32);
 
     const data = ctx.getImageData(0, 0, 32, 32).data;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type Params = {
   currentStep: string;
@@ -6,7 +6,6 @@ type Params = {
 
 /**
  * useVotingTimer
- * - Keeps the kiosk countdown behavior identical to the previous inline implementation.
  * - Starts with a total duration (ms) when requested.
  * - Counts down every second, but stops ticking during "submitting" and "complete".
  * - When <= 1s remains, it shows the timeout modal and does NOT force the timer to 0:00.
@@ -15,15 +14,21 @@ export function useVotingTimer({ currentStep }: Params) {
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [showTimeoutModal, setShowTimeoutModal] = useState(false);
 
-  const startTimerIfNeeded = (totalMs: number) => {
-    if (timeLeft !== null) return;
-    setTimeLeft(totalMs);
-  };
+  const startedRef = useRef(false);
+  const modalShownRef = useRef(false);
 
-  const resetTimer = () => {
+  const startTimerIfNeeded = useCallback((totalMs: number) => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    setTimeLeft(totalMs);
+  }, []);
+
+  const resetTimer = useCallback(() => {
+    startedRef.current = false;
+    modalShownRef.current = false;
     setTimeLeft(null);
     setShowTimeoutModal(false);
-  };
+  }, []);
 
   useEffect(() => {
     if (timeLeft === null) return;
@@ -35,7 +40,10 @@ export function useVotingTimer({ currentStep }: Params) {
 
         if (prev <= 1000) {
           clearInterval(interval);
-          if (!showTimeoutModal) setShowTimeoutModal(true);
+          if (!modalShownRef.current) {
+            modalShownRef.current = true;
+            setShowTimeoutModal(true);
+          }
           return prev; // keep last non-zero value (prevents showing 0:00)
         }
 
@@ -44,7 +52,7 @@ export function useVotingTimer({ currentStep }: Params) {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [timeLeft, currentStep, showTimeoutModal]);
+  }, [timeLeft, currentStep]);
 
   return {
     timeLeft,

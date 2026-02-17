@@ -1,12 +1,11 @@
-import type { Dispatch, RefObject, SetStateAction } from "react";
-import { Image as ImageIcon, Save, Upload } from "lucide-react";
+import type { Dispatch, SetStateAction } from "react";
+import { Image as ImageIcon, Save, Link as LinkIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -36,24 +35,24 @@ type CandidateRowLike = {
   photo_url: string | null;
 };
 
-const MAX_CANDIDATE_PHOTO_BYTES = 1 * 1024 * 1024; // 1 MB
-const ALLOWED_CANDIDATE_PHOTO_MIME_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-]);
-
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 
   editingCandidate: CandidateRowLike | null;
-  bucketName: string;
 
+  /**
+   * Candidate photo URL preview. This should be the final URL that ends up in `candidates.photo_url`.
+   * We intentionally do URL-only photos (no Supabase Storage uploads) to avoid storage plan limits.
+   */
   photoPreviewUrl: string | null;
   setPhotoPreviewUrl: Dispatch<SetStateAction<string | null>>;
+
+  /**
+   * Kept for backwards compatibility with callers that previously managed file uploads.
+   * In URL-only mode we always clear file state in the parent (if any) by calling `setPhotoFile(null)`.
+   */
   setPhotoFile: Dispatch<SetStateAction<File | null>>;
-  fileInputRef: RefObject<HTMLInputElement>;
 
   positions: string[];
 
@@ -68,16 +67,27 @@ type Props = {
   saving: boolean;
 };
 
+function normalizePhotoUrl(value: string): string {
+  return value.trim();
+}
+
+function isProbablyUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function CandidateEditorDialog(props: Props) {
   const {
     open,
     onOpenChange,
     editingCandidate,
-    bucketName,
     photoPreviewUrl,
     setPhotoPreviewUrl,
     setPhotoFile,
-    fileInputRef,
     positions,
     cForm,
     setCForm,
@@ -85,6 +95,8 @@ export function CandidateEditorDialog(props: Props) {
     onSave,
     saving,
   } = props;
+
+  const savedPhotoUrl = editingCandidate?.photo_url ?? null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -194,95 +206,80 @@ export function CandidateEditorDialog(props: Props) {
             </TabsContent>
 
             <TabsContent value="photo" className="mt-4">
-              <div className="rounded-xl border p-4 flex items-center justify-between gap-4">
-                <div className="flex items-center gap-4">
-                  <div className="w-16 h-16 rounded-full overflow-hidden border bg-muted flex items-center justify-center">
-                    {photoPreviewUrl ? (
-                      <img
-                        src={photoPreviewUrl}
-                        alt="Candidate preview"
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).src = "";
-                        }}
-                      />
-                    ) : (
-                      <ImageIcon className="h-7 w-7 text-muted-foreground" />
-                    )}
+              <div className="rounded-xl border p-4 grid gap-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-4">
+                    <div className="w-16 h-16 rounded-full overflow-hidden border bg-muted flex items-center justify-center">
+                      {photoPreviewUrl ? (
+                        <img
+                          src={photoPreviewUrl}
+                          alt="Candidate preview"
+                          className="w-full h-full object-cover"
+                          onError={() => {
+                            // If the URL is invalid / blocked, keep the text input but drop the broken preview.
+                            toast.error(
+                              "Could not load that image URL. Check that it is publicly accessible."
+                            );
+                            setPhotoPreviewUrl(null);
+                          }}
+                        />
+                      ) : (
+                        <ImageIcon className="h-7 w-7 text-muted-foreground" />
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="font-semibold">Candidate photo (URL)</div>
+                      <div className="text-xs text-muted-foreground">
+                        Paste a public HTTPS image URL (recommended). This avoids Supabase Storage limits.
+                      </div>
+                    </div>
                   </div>
 
-                  <div>
-                    <div className="font-semibold">Candidate photo</div>
-                    <div className="text-xs text-muted-foreground">
-                      Auto-cropped to a circle in admin + ballot UI. JPG/PNG/WebP only, max 1 MB.
-                    </div>
+                  <div className="flex items-center gap-2">
+                    <Button type="button" variant="outline" onClick={onClearPhoto}>
+                      Clear
+                    </Button>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    className="hidden"
+                <div className="grid gap-2">
+                  <Label htmlFor="candidate-photo-url">Photo URL</Label>
+                  <Input
+                    id="candidate-photo-url"
+                    value={photoPreviewUrl ?? ""}
+                    placeholder="https://example.com/candidate.jpg"
                     onChange={(e) => {
-                      const inputEl = e.currentTarget;
-                      const f = inputEl.files?.[0] || null;
+                      // URL-only mode: ensure any legacy file state is cleared in parent
+                      setPhotoFile(null);
 
-                      // Revoke previous blob preview if needed
-                      if (photoPreviewUrl && photoPreviewUrl.startsWith("blob:")) {
-                        URL.revokeObjectURL(photoPreviewUrl);
-                      }
-
-                      // Validate before accepting the file
-                      if (f) {
-                        const isAllowedType =
-                          ALLOWED_CANDIDATE_PHOTO_MIME_TYPES.has(f.type) &&
-                          // Extra guard: some browsers may mislabel GIF; also block by extension
-                          !f.name.toLowerCase().endsWith(".gif");
-
-                        if (!isAllowedType) {
-                          toast.error(
-                            "Unsupported image format. Please upload JPG, PNG, or WebP (GIF is not allowed)."
-                          );
-                          inputEl.value = "";
-                          setPhotoFile(null);
-                          setPhotoPreviewUrl(editingCandidate?.photo_url ?? null);
-                          return;
-                        }
-
-                        if (f.size > MAX_CANDIDATE_PHOTO_BYTES) {
-                          toast.error("Image is too large. Max size is 1 MB.");
-                          inputEl.value = "";
-                          setPhotoFile(null);
-                          setPhotoPreviewUrl(editingCandidate?.photo_url ?? null);
-                          return;
-                        }
-
-                        setPhotoFile(f);
-                        const url = URL.createObjectURL(f);
-                        setPhotoPreviewUrl(url);
+                      const next = normalizePhotoUrl(e.target.value);
+                      setPhotoPreviewUrl(next.length > 0 ? next : null);
+                    }}
+                    onBlur={(e) => {
+                      const next = normalizePhotoUrl(e.target.value);
+                      if (next.length === 0) {
+                        setPhotoPreviewUrl(null);
                         return;
                       }
 
-                      // No file selected — revert to saved photo (if any)
-                      setPhotoFile(null);
-                      setPhotoPreviewUrl(editingCandidate?.photo_url ?? null);
+                      if (!isProbablyUrl(next)) {
+                        toast.error("Please enter a valid http(s) URL.");
+                        setPhotoPreviewUrl(savedPhotoUrl);
+                        return;
+                      }
+
+                      // Normalize to trimmed string
+                      if (next !== e.target.value) {
+                        setPhotoPreviewUrl(next);
+                      }
                     }}
                   />
 
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Upload className="h-4 w-4 mr-2" />
-                    Choose
-                  </Button>
-
-                  <Button type="button" variant="outline" onClick={onClearPhoto}>
-                    Clear
-                  </Button>
+                  <div className="text-xs text-muted-foreground flex items-center gap-2">
+                    <LinkIcon className="h-3.5 w-3.5" />
+                    Tip: use a publicly accessible URL (CDN / GitHub raw / school site).
+                  </div>
                 </div>
               </div>
             </TabsContent>

@@ -28,3 +28,7 @@ dist-ssr
 
 .vercel
 .env*.local
+
+# Supabase Edge Functions local env files
+supabase/functions/.env
+supabase/functions/.env.*

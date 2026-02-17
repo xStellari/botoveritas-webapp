@@ -27,8 +27,32 @@ const APP_SETTING_KEYS = {
 
 // Stable UUIDs to group audit log entries for non-UUID entities (e.g., app_settings.key)
 const APP_SETTING_AUDIT_ENTITY_IDS = {
-  registrationEnabled: "00000000-0000-0000-0000-000000000001",
+  // Must satisfy UUID validator in admin-audit-log Edge Function.
+  // This is a stable, version-4-shaped UUID to represent the singleton app setting.
+  registrationEnabled: "00000000-0000-4000-8000-000000000000",
 } as const;
+
+type AuditLogPayload = {
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  details?: Record<string, unknown>;
+};
+
+async function writeAdminAuditLog(payload: AuditLogPayload) {
+  // Write audit logs via an Edge Function using the service role.
+  // This prevents client-side tampering and avoids needing direct INSERT grants.
+  const { error } = await supabase.functions.invoke("admin-audit-log", {
+    body: payload,
+  });
+
+  if (error) {
+    // Best-effort: the core admin action should still succeed even if audit logging fails.
+    // Keep this quiet (toast would be noisy for normal usage).
+    // eslint-disable-next-line no-console
+    console.warn("Failed to write admin audit log:", error);
+  }
+}
 
 export default function Admin() {
   const navigate = useNavigate();
@@ -119,11 +143,6 @@ export default function Admin() {
 
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      console.log("ADMIN SESSION:", data.session);
-      console.log("ADMIN USER ID:", data.session?.user?.id);
-    });
-
     void loadRecentResets();
     void loadOpsAuditFeed();
   }, []);
@@ -209,31 +228,23 @@ export default function Admin() {
       // Best-effort: write an audit log entry for attribution
       try {
         const { data: sessionData } = await supabase.auth.getSession();
-        const adminId = sessionData.session?.user?.id ?? null;
         const adminEmail = sessionData.session?.user?.email ?? null;
 
-        const { data: auditInserted, error: auditInsertErr } = await supabase
-          .from("admin_audit_logs")
-          .insert({
-            admin_id: adminId,
-            action: "APP_SETTING_UPDATE",
-            entity_type: "app_settings",
-            entity_id: APP_SETTING_AUDIT_ENTITY_IDS.registrationEnabled,
-            details: {
-              key: APP_SETTING_KEYS.registrationEnabled,
-              from: prev,
-              to: next,
-              admin_email: adminEmail,
-            },
-          })
-          .select("created_at, details")
-          .single();
+        await writeAdminAuditLog({
+          action: "APP_SETTING_UPDATE",
+          entity_type: "app_settings",
+          entity_id: APP_SETTING_AUDIT_ENTITY_IDS.registrationEnabled,
+          details: {
+            key: APP_SETTING_KEYS.registrationEnabled,
+            from: prev,
+            to: next,
+            admin_email: adminEmail,
+          },
+        });
 
-        if (auditInsertErr) throw auditInsertErr;
-
-        setRegistrationLastChangedAt(auditInserted?.created_at ?? new Date().toISOString());
-        const email = (auditInserted?.details as unknown as { admin_email?: string } | null)?.admin_email ?? adminEmail ?? null;
-        setRegistrationLastChangedBy(email);
+        // Refresh attribution (best-effort)
+        setRegistrationLastChangedAt(new Date().toISOString());
+        setRegistrationLastChangedBy(adminEmail);
       } catch {
         // Do not block the main operation if audit logging fails.
       }
@@ -295,11 +306,10 @@ export default function Admin() {
         const admin = authData.user;
         const adminEmail = admin?.email ?? null;
 
-        await supabase.from("admin_audit_logs").insert({
+        await writeAdminAuditLog({
           action: "RESET_VOTER_FOR_ELECTION",
           entity_type: "election",
           entity_id: electionId,
-          admin_id: admin?.id ?? null,
           details: {
             voter_id: voterId,
             election_id: electionId,
@@ -308,7 +318,7 @@ export default function Admin() {
         });
 
         await loadRecentResets();
-      void loadOpsAuditFeed();
+        void loadOpsAuditFeed();
       } catch {
         // ignore
       }

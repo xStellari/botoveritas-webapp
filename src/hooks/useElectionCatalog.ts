@@ -3,6 +3,23 @@ import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
 
+
+type Election = {
+  id: string;
+  start_date: string;
+  end_date: string;
+  is_active: boolean;
+  is_final: boolean;
+  is_archived: boolean;
+  // Allow additional columns without losing type safety for core fields
+  [key: string]: any;
+};
+
+const toValidDate = (value: any): Date | null => {
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
 /**
  * useElectionCatalog
  * Centralizes election loading + eligibility filtering + "already voted" status refresh
@@ -14,17 +31,17 @@ import { supabase } from "@/integrations/supabase/client";
  * - "Expired/Closed" includes ended-by-time OR ended-by-lifecycle (finalized/archived).
  */
 export function useElectionCatalog() {
-  const [activeElections, setActiveElections] = useState<any[]>([]);
-  const [expiredElections, setExpiredElections] = useState<any[]>([]);
+  const [activeElections, setActiveElections] = useState<Election[]>([]);
+  const [expiredElections, setExpiredElections] = useState<Election[]>([]);
   const [completedElections, setCompletedElections] = useState<string[]>([]);
 
   // Finalized or archived elections must NEVER be treated as "active/ongoing".
-  const isOperationalElection = useCallback((e: any) => !e?.is_final && !e?.is_archived, []);
+  const isOperationalElection = useCallback((e: Election) => !e?.is_final && !e?.is_archived, []);
 
-  const filterElectionsByEligibilityRpc = useCallback(async (elections: any[], voterId: string) => {
+  const filterElectionsByEligibilityRpc = useCallback(async (elections: Election[], voterId: string) => {
     if (!elections.length) return [];
 
-    let hadError = false;
+    const failedElectionIds: string[] = [];
 
     const results = await Promise.all(
       elections.map(async (e) => {
@@ -34,7 +51,7 @@ export function useElectionCatalog() {
         );
 
         if (error) {
-          hadError = true;
+          failedElectionIds.push(e.id);
           return null;
         }
 
@@ -42,8 +59,9 @@ export function useElectionCatalog() {
       })
     );
 
-    if (hadError) {
+    if (failedElectionIds.length > 0) {
       toast.error("Some eligibility checks failed. Please refresh.");
+      console.error("Eligibility checks failed for elections:", failedElectionIds);
     }
 
     return results.filter(Boolean);
@@ -66,8 +84,9 @@ export function useElectionCatalog() {
 
     // "Active" must exclude finalized/archived even if time window is valid
     const activeTimeWindow = elections.filter((e) => {
-      const start = new Date(e.start_date);
-      const end = new Date(e.end_date);
+      const start = toValidDate(e.start_date);
+      const end = toValidDate(e.end_date);
+      if (!start || !end) return false;
       return Boolean(e.is_active) && isOperationalElection(e) && start <= now && end > now;
     });
 
@@ -75,7 +94,8 @@ export function useElectionCatalog() {
     // - ended by time
     // - OR ended early due to lifecycle (finalized/archived)
     const expiredTimeWindow = elections.filter((e) => {
-      const end = new Date(e.end_date);
+      const end = toValidDate(e.end_date);
+      if (!end) return false;
       const endedByTime = end <= now;
       const endedByLifecycle = !isOperationalElection(e);
       return Boolean(e.is_active) && (endedByTime || endedByLifecycle);

@@ -11,3 +11,8 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, 
     autoRefreshToken: true,
   },
 });
+
+// after you create `supabase`
+if (import.meta.env.DEV) {
+  (window as any).supabase = supabase;
+}

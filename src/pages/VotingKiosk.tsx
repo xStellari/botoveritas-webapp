@@ -376,63 +376,80 @@ if (lockErr) {
     electionId: string,
     selections: CandidateSelection[]
   ) => {
-    // ✅ NEW: mid-flow safety check
+    // ✅ Mid-flow safety check (lifecycle + time window)
     const ok = await assertElectionStillOperational(electionId);
     if (!ok) {
-      await refreshElectionsAndStatus(voterData.id);
+      await refreshElectionsAndStatus(voterId);
       setSelectedElection(null);
       setCurrentSelections([]);
       setStep("election-select");
-      return;
+      return { ok: false as const };
     }
 
-    for (const sel of selections) {
-      await supabase.from("votes").insert({
-        voter_id: voterId,
-        election_id: electionId,
-        position: sel.position,
-        candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
-        is_abstain: sel.candidateId === "ABSTAIN",
-      });
+    // ✅ Batch insert votes (reduces network calls + lowers partial failure risk)
+    const voteRows = selections.map((sel) => ({
+      voter_id: voterId,
+      election_id: electionId,
+      position: sel.position,
+      candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
+      is_abstain: sel.candidateId === "ABSTAIN",
+    }));
+
+    const { error: votesErr } = await supabase.from("votes").insert(voteRows);
+
+    if (votesErr) {
+      console.error("Failed to persist votes:", votesErr);
+      toast.error("Failed to save your votes. Please try again.");
+      return { ok: false as const };
     }
+
+    return { ok: true as const };
   };
 
   const handleSubmissionComplete = async (txHash: string) => {
     setTransactionHash(txHash);
 
-    // ✅ NEW: mid-flow safety check before marking has_voted
     const electionId = selectedElection?.id;
-    if (!electionId) {
-      toast.error("Missing election.");
+    const voterId = voterData?.id;
+
+    if (!electionId || !voterId) {
+      toast.error("Missing voting session.");
       return;
     }
 
+    // ✅ Mid-flow safety check before marking has_voted
     const ok = await assertElectionStillOperational(electionId);
     if (!ok) {
-      await refreshElectionsAndStatus(voterData.id);
+      await refreshElectionsAndStatus(voterId);
       setSelectedElection(null);
       setCurrentSelections([]);
       setStep("election-select");
       return;
     }
 
-    await supabase.from("voter_election_status").upsert({
-      voter_id: voterData?.id,
+    const { error: statusErr } = await supabase.from("voter_election_status").upsert({
+      voter_id: voterId,
       election_id: electionId,
       has_voted: true,
       voted_at: new Date().toISOString(),
 
       // Keep denormalized voter info consistent with final-review flow
-      voter_first_name: voterData?.first_name,
-      voter_middle_name: voterData?.middle_name,
-      voter_last_name: voterData?.last_name,
-      voter_suffix: voterData?.suffix,
-      voter_email: voterData?.email,
-      year_level: voterData?.year_level,
+      voter_first_name: voterData.first_name,
+      voter_middle_name: voterData.middle_name,
+      voter_last_name: voterData.last_name,
+      voter_suffix: voterData.suffix,
+      voter_email: voterData.email,
+      year_level: voterData.year_level,
     });
 
-        // ✅ Refresh catalog from DB to update completed elections accurately
-    const catalog = await refreshElectionsAndStatus(voterData.id);
+    if (statusErr) {
+      console.error("Failed to mark election as voted:", statusErr);
+      toast.error("Failed to finalize your vote. Please try again.");
+      return;
+    }
+
+    // ✅ Refresh catalog from DB to update completed elections accurately
+    const catalog = await refreshElectionsAndStatus(voterId);
 
     const completed = catalog?.completedElections ?? completedElections;
     const remaining = activeElections.filter((e) => !completed.includes(e.id));
@@ -543,7 +560,8 @@ await logSessionEvent({
               return;
             }
 
-            await persistVotesForElection(voterData.id, selectedElection.id, currentSelections);
+            const res = await persistVotesForElection(voterData.id, selectedElection.id, currentSelections);
+            if (!res.ok) return;
             await handleSubmissionComplete("pending-hash");
           }}
           onEdit={() => setStep("ballot")}
@@ -560,32 +578,8 @@ await logSessionEvent({
           voterData={voterData}
           selections={allSelections}
           onConfirm={async () => {
-            for (const sel of allSelections) {
-              await supabase.from("votes").insert({
-                voter_id: voterData.id,
-                election_id: sel.electionId,
-                position: sel.position,
-                candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
-                is_abstain: sel.candidateId === "ABSTAIN",
-              });
-            }
-
-            for (const sel of allSelections) {
-              await supabase.from("voter_election_status").upsert({
-                voter_id: voterData.id,
-                election_id: sel.electionId,
-                has_voted: true,
-                voted_at: new Date().toISOString(),
-
-                voter_first_name: voterData.first_name,
-                voter_middle_name: voterData.middle_name,
-                voter_last_name: voterData.last_name,
-                voter_suffix: voterData.suffix,
-                voter_email: voterData.email,
-                year_level: voterData.year_level,
-              });
-            }
-
+            // Votes & status are persisted after each election submission.
+            // Final review only proceeds to the submission/receipt step.
             setStep("submitting");
           }}
           onEdit={() => setStep("election-select")}
