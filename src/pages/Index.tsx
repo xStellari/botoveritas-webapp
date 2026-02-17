@@ -289,7 +289,22 @@ const Index = () => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-neutral-50 kiosk-portrait-shell">
+    <div className="min-h-screen flex flex-col relative overflow-hidden bg-gradient-to-br from-feu-green/10 via-neutral-50 to-feu-gold/10 kiosk-portrait-shell">
+
+<style>{`
+  @keyframes blobFloat1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(16px,-18px) scale(1.05); } }
+  @keyframes blobFloat2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-14px,14px) scale(1.06); } }
+  @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  .animate-blob-1 { animation: blobFloat1 14s ease-in-out infinite; }
+  .animate-blob-2 { animation: blobFloat2 16s ease-in-out infinite; }
+  .animate-fade-in-up { animation: fadeInUp 420ms ease-out both; }
+`}</style>
+
+{/* Depth / motion background blobs */}
+<div className="pointer-events-none absolute -top-24 -left-24 h-72 w-72 rounded-full bg-feu-green/20 blur-3xl animate-blob-1" />
+<div className="pointer-events-none absolute -bottom-24 -right-24 h-80 w-80 rounded-full bg-feu-gold/20 blur-3xl animate-blob-2" />
+<div className="pointer-events-none absolute top-24 right-20 h-48 w-48 rounded-full bg-emerald-300/10 blur-3xl animate-blob-1" />
+
       {/* NAVBAR */}
       <header className="w-full border-b bg-white/80 backdrop-blur shrink-0">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
@@ -300,7 +315,7 @@ const Index = () => {
       </header>
 
       <main className="flex-1 kiosk-portrait-main">
-        <div className="max-w-6xl mx-auto px-6 py-8 h-full flex flex-col">
+        <div className="max-w-6xl mx-auto px-6 py-8 h-full flex flex-col animate-fade-in-up">
           <div className="shrink-0 space-y-8">
             <section className="text-center space-y-3">
               <h1 className="text-5xl font-bold bg-gradient-hero bg-clip-text text-transparent">

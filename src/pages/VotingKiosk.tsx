@@ -317,7 +317,7 @@ if (lockErr) {
     // ✅ NEW: Defensive guard (prevents edge-cases / stale UI selection)
     if (electionData?.is_final || electionData?.is_archived) {
       toast.error("This election is already finalized/archived and is no longer available for voting.");
-      await refreshElectionsAndStatus(voterData.id);
+      await refreshElectionsAndStatus(voterId);
       return;
     }
 
@@ -482,11 +482,25 @@ await logSessionEvent({ voterId: voterData.id, action: "session_end" });
   // RENDER UI
   // -----------------------------------------------------
   return (
-    <div className="min-h-screen bg-gradient-to-br from-emerald-400/40 via-white to-yellow-300/40 relative">
+    <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-emerald-400/35 via-white to-yellow-300/35">
+
+<style>{`
+  @keyframes blobFloat1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(12px,-14px) scale(1.04); } }
+  @keyframes blobFloat2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-10px,10px) scale(1.05); } }
+  @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  .animate-blob-1 { animation: blobFloat1 14s ease-in-out infinite; }
+  .animate-blob-2 { animation: blobFloat2 16s ease-in-out infinite; }
+  .animate-fade-in-up { animation: fadeInUp 420ms ease-out both; }
+`}</style>
+
+<div className="pointer-events-none absolute -top-28 -left-28 h-96 w-96 rounded-full bg-emerald-500/15 blur-3xl animate-blob-1" />
+<div className="pointer-events-none absolute -bottom-28 -right-28 h-96 w-96 rounded-full bg-amber-400/15 blur-3xl animate-blob-2" />
+<div className="pointer-events-none absolute top-24 right-20 h-56 w-56 rounded-full bg-white/30 blur-3xl animate-blob-1" />
+
       {/* TIMEOUT MODAL */}
       {showTimeoutModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
+          <div className="bg-white/95 backdrop-blur p-8 rounded-2xl shadow-2xl max-w-md w-full text-center animate-fade-in-up">
             <h2 className="text-2xl font-bold text-red-600 mb-4">Warning</h2>
 
             <p className="text-gray-700 mb-6 leading-relaxed">

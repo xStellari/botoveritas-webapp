@@ -330,8 +330,61 @@ export default function Admin() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-feu-green/10 to-feu-gold/10">
-      <header className="bg-background border-b border-border p-4">
+    <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-feu-green/10 via-background to-feu-gold/10 animate-fade-in-up">
+
+<style>{`
+@keyframes blobDance1 {
+  0%   { transform: translate(-20px, 10px) scale(1) rotate(0deg); }
+  25%  { transform: translate(55px, -35px) scale(1.18) rotate(8deg); }
+  50%  { transform: translate(15px, -70px) scale(0.96) rotate(-10deg); }
+  75%  { transform: translate(-50px, -15px) scale(1.12) rotate(14deg); }
+  100% { transform: translate(-20px, 10px) scale(1) rotate(0deg); }
+}
+
+@keyframes blobDance2 {
+  0%   { transform: translate(25px, -10px) scale(1) rotate(0deg); }
+  25%  { transform: translate(-60px, 25px) scale(1.16) rotate(-10deg); }
+  50%  { transform: translate(-20px, 70px) scale(0.98) rotate(12deg); }
+  75%  { transform: translate(65px, 30px) scale(1.12) rotate(-16deg); }
+  100% { transform: translate(25px, -10px) scale(1) rotate(0deg); }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(18px); filter: blur(2px); }
+  to   { opacity: 1; transform: translateY(0);   filter: blur(0); }
+}
+
+@keyframes floatPunch {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50%      { transform: translateY(-10px) rotate(3deg); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+.animate-blob-1 { animation: blobDance1 7.5s cubic-bezier(.2,.9,.2,1) infinite; }
+.animate-blob-2 { animation: blobDance2 9s cubic-bezier(.2,.9,.2,1) infinite; }
+.animate-fade-in-up { animation: fadeInUp 560ms cubic-bezier(.2,.8,.2,1) both; }
+.animate-float { animation: floatPunch 2.4s ease-in-out infinite; transform-origin: center; }
+
+.lift-hover { transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease; }
+.lift-hover:hover { transform: translateY(-4px) scale(1.01); box-shadow: 0 18px 55px rgba(0,0,0,0.16); border-color: rgba(0,0,0,0.08); }
+
+.shimmer-border {
+  background: linear-gradient(90deg, rgba(255,255,255,0.12), rgba(255,255,255,0.35), rgba(255,255,255,0.12));
+  background-size: 200% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+`}</style>
+
+{/* Depth / motion background blobs */}
+<div className="pointer-events-none absolute -top-28 -left-28 h-96 w-96 rounded-full bg-feu-green/15 blur-3xl animate-blob-1 animate-float" />
+<div className="pointer-events-none absolute -bottom-32 -right-32 h-[28rem] w-[28rem] rounded-full bg-feu-gold/15 blur-3xl animate-blob-2" />
+<div className="pointer-events-none absolute top-28 right-24 h-56 w-56 rounded-full bg-emerald-500/10 blur-3xl animate-blob-1" />
+
+      <header className="bg-background/80 backdrop-blur border-b border-border p-4 shimmer-border">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <img src={feuLogo} alt="FEU" className="h-12" />
@@ -353,7 +406,7 @@ export default function Admin() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-6">
+      <main className="max-w-7xl mx-auto p-6 animate-fade-in-up">
         <Tabs defaultValue="analytics" className="space-y-6">
           <TabsList className="grid w-full grid-cols-6">
             <TabsTrigger value="analytics">

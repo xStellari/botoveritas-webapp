@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { FunctionsHttpError } from "@supabase/supabase-js";
 import {
   Card,
   CardContent,
@@ -24,6 +25,8 @@ import {
   Legend,
 } from "recharts";
 
+const DEFAULT_POSITION = "General";
+
 type ElectionRow = {
   id: string;
   title: string;
@@ -43,7 +46,7 @@ type CandidateRow = {
 
 type VoteRow = {
   election_id: string;
-  position: string | null;
+  position: string;
   candidate_id: string | null;
   is_abstain: boolean | null;
 };
@@ -60,31 +63,121 @@ type PositionSummary = {
   abstain_count: number;
   leader_vote_count: number;
   leaders: string[];
-  is_tie?: boolean;
+  is_tie: boolean;
 };
 
-function formatDateTime(dt?: string | null) {
-  if (!dt) return "—";
-  const d = new Date(dt);
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+function formatDateTime(value: string) {
+  const d = new Date(value);
+  return Number.isFinite(d.getTime()) ? d.toLocaleString() : value;
 }
 
-function downloadTextFile(filename: string, content: string) {
-  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+
+const ORG_ORDER = ["ICpEP", "SCC", "HonSoc"] as const;
+
+const ICPEP_POS_ORDER = [
+  "President",
+  "Vice President - Internal",
+  "Vice President - External",
+  "Secretary",
+  "Assistant Secretary",
+  "Treasurer",
+  "Auditor",
+  "Public Relations Officer",
+  "1st Year Batch Representative",
+  "2nd Year Batch Representative",
+  "3rd Year Batch Representative",
+  "4th Year Batch Representative",
+  "Director for Publicity and Creatives",
+  "Director for Sports",
+  "Director for Programs",
+];
+
+const SCC_POS_ORDER = [
+  "President",
+  "Vice President",
+  "Secretary",
+  "Treasurer",
+  "Auditor",
+  "Public Relations Officer",
+  "Director for Creatives",
+];
+
+const HONSOC_POS_ORDER = [
+  "President",
+  "Vice President - Internal",
+  "Vice President - External",
+  "Secretary",
+  "Treasurer",
+  "Auditor",
+  "Public Relations Officer",
+];
+
+const HONSOC_DIRECTORS_ORDER = [
+  "Creatives & Technical",
+  "Secretariat & Documentation",
+  "Academics & Sports",
+  "Programs & Logistics",
+  "Publicity & External Events",
+];
+
+function norm(s: string) {
+  return s.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+type OrgKey = (typeof ORG_ORDER)[number] | null;
+
+function getOrgKeyFromElectionTitle(title?: string | null): OrgKey {
+  const t = norm(title ?? "");
+  if (t.includes("icpep")) return "ICpEP";
+  if (t.includes("scc")) return "SCC";
+  if (t.includes("honsoc") || t.includes("hon soc") || t.includes("honor society")) return "HonSoc";
+  return null;
+}
+
+function rankIn(list: string[], value: string) {
+  const v = norm(value);
+  const idx = list.findIndex((x) => norm(x) === v);
+  return idx === -1 ? Number.POSITIVE_INFINITY : idx;
+}
+
+function rankPositionForOrg(pos: string, org: OrgKey) {
+  const p = (pos || DEFAULT_POSITION).trim();
+
+  if (org === "ICpEP") return rankIn(ICPEP_POS_ORDER, p);
+  if (org === "SCC") return rankIn(SCC_POS_ORDER, p);
+
+  if (org === "HonSoc") {
+    const mainRank = rankIn(HONSOC_POS_ORDER, p);
+    if (mainRank !== Number.POSITIVE_INFINITY) return mainRank;
+
+    // Directors Board: accept either exact director role names or a prefixed label.
+    const directorsLabel = "directors board:";
+    const np = norm(p);
+    let directorName = p;
+    if (np.startsWith(directorsLabel)) {
+      directorName = p.slice(directorsLabel.length).trim();
+    }
+    const dirRank = rankIn(HONSOC_DIRECTORS_ORDER, directorName);
+    if (dirRank !== Number.POSITIVE_INFINITY) return 100 + dirRank;
+
+    return Number.POSITIVE_INFINITY;
+  }
+
+  // Unknown org: best-effort across known lists (keeps behavior stable for other elections)
+  return Math.min(
+    rankIn(ICPEP_POS_ORDER, p),
+    rankIn(SCC_POS_ORDER, p),
+    rankIn(HONSOC_POS_ORDER, p)
+  );
+}
+
+function comparePositionsForOrg(org: OrgKey, a: string, b: string) {
+  const ra = rankPositionForOrg(a, org);
+  const rb = rankPositionForOrg(b, org);
+  if (ra !== rb) return ra - rb;
+
+  // If both unknown in list, keep a stable alphabetical fallback.
+  return a.localeCompare(b);
 }
 
 function getElectionStatus(e?: ElectionRow | null) {
@@ -105,6 +198,8 @@ export default function Results() {
     null
   );
 
+  const orgKey = useMemo(() => getOrgKeyFromElectionTitle(selectedElection?.title), [selectedElection?.title]);
+
   const [candidates, setCandidates] = useState<CandidateWithCount[]>([]);
   const [positionSummaries, setPositionSummaries] = useState<
     Record<string, PositionSummary>
@@ -118,6 +213,13 @@ export default function Results() {
   const [refreshing, setRefreshing] = useState(false);
   const [pdfDownloading, setPdfDownloading] = useState(false);
   const [resultsLoading, setResultsLoading] = useState(false);
+  const loadResultsRequestId = useRef(0);
+  const scheduledReloadTimer = useRef<number | null>(null);
+
+  // Cache eligible voter count to avoid re-fetching the voters table on every realtime update.
+  const eligibleCountCacheSig = useRef<string | null>(null);
+  const eligibleCountCacheVal = useRef<number>(0);
+
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const channelsRef = useRef<{ candidates?: any; votes?: any; status?: any }>(
     {}
@@ -145,6 +247,7 @@ export default function Results() {
       const { data, error } = await supabase.functions.invoke("generate-results-pdf", {
         body: {
           election_id: selectedElection.id,
+          include_charts: false,
           signatories: [
             { label: "Prepared by", name: "Isaac Caubat", role: "Group Member" },
             { label: "Prepared by", name: "Lance Owen Miguel Cervantes", role: "Group Member" },
@@ -177,21 +280,35 @@ export default function Results() {
 
       // If you keep the fallback download, revoke after a short delay so the download can start
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("PDF error object:", e);
 
-      const body = e?.context?.body;
+      // Supabase non-2xx edge function responses
+      if (e instanceof FunctionsHttpError) {
+        const res = (e as any).context?.response as Response | undefined;
+        const text = res ? await res.text() : "";
+        console.error("PDF error response text:", text);
+        toast.error(text ? `PDF error: ${text}` : "Failed to download PDF report", { id: toastId });
+        return;
+      }
+
+      // Fallback: older error shapes may include context.body
+      const body = (e as any)?.context?.body;
       if (body) {
         try {
-          console.error("PDF error body:", JSON.parse(body));
-          toast.error(`PDF error: ${JSON.parse(body).error}`, { id: toastId });
+          const parsed = typeof body === "string" ? JSON.parse(body) : body;
+          console.error("PDF error body:", parsed);
+          const msg = parsed?.error ? String(parsed.error) : JSON.stringify(parsed);
+          toast.error(`PDF error: ${msg}`, { id: toastId });
         } catch {
           console.error("PDF error body (raw):", body);
-          toast.error(`PDF error: ${body}`, { id: toastId });
+          toast.error(`PDF error: ${String(body)}`, { id: toastId });
         }
-      } else {
-        toast.error(e?.message ?? "Failed to download PDF report", { id: toastId });
+        return;
       }
+
+      const msg = e instanceof Error ? e.message : "Failed to download PDF report";
+      toast.error(msg, { id: toastId });
     } finally {
       setPdfDownloading(false);
     }
@@ -200,7 +317,7 @@ export default function Results() {
   // ----------------------------
   // Load elections
   // ----------------------------
-  const loadElections = async () => {
+  const loadElections = async (): Promise<void> => {
     const { data, error } = await supabase
       .from("elections")
       .select("id,title,description,start_date,end_date,is_active,eligible_orgs")
@@ -244,7 +361,7 @@ export default function Results() {
     if (error) throw error;
 
     let eligible = 0;
-    for (const r of (data || []) as any[]) {
+    for (const r of (data || []) as Array<{ org_affiliations?: unknown }>) {
       const aff: string[] = Array.isArray(r?.org_affiliations)
         ? r.org_affiliations
         : [];
@@ -258,6 +375,7 @@ export default function Results() {
   // ----------------------------
   const loadResults = async (election: ElectionRow) => {
     setResultsLoading(true);
+    const requestId = ++loadResultsRequestId.current;
     try {
       const { data: candidatesData, error: candErr } = await supabase
         .from("candidates")
@@ -281,7 +399,7 @@ export default function Results() {
       const totalByPos = new Map<string, number>();
 
       for (const v of voteList) {
-        const pos = v.position || "General";
+        const pos = v.position || DEFAULT_POSITION;
         totalByPos.set(pos, (totalByPos.get(pos) || 0) + 1);
 
         if (v.is_abstain) {
@@ -296,16 +414,18 @@ export default function Results() {
       }
 
       const merged: CandidateWithCount[] = candList.map((c) => {
-        const pos = c.position || "General";
+        const pos = c.position || DEFAULT_POSITION;
         const m = countByPosCandidate.get(pos);
         const vote_count = m?.get(c.id) || 0;
         return { ...c, vote_count };
       });
 
       const summaries: Record<string, PositionSummary> = {};
+      const leaderInfoByPos: Record<string, { leaderIds: Set<string>; isTie: boolean; leaderCount: number }> = {};
+
       const grouped = merged.reduce(
         (acc: Record<string, CandidateWithCount[]>, c) => {
-          const pos = c.position || "General";
+          const pos = c.position || DEFAULT_POSITION;
           (acc[pos] ||= []).push(c);
           return acc;
         },
@@ -338,6 +458,25 @@ export default function Results() {
 
       }
 
+      
+      const flaggedMerged: CandidateWithCount[] = merged.map((c) => {
+        const pos = c.position || DEFAULT_POSITION;
+        const info = leaderInfoByPos[pos];
+        const leaderCount = info?.leaderCount ?? 0;
+        const leaderIds = info?.leaderIds;
+        const isTie = info?.isTie ?? false;
+
+        const isLeader = leaderCount > 0 && !!leaderIds?.has(c.id);
+        return {
+          ...c,
+          isWinner: !isTie && isLeader,
+          isTiedLeader: isTie && isLeader,
+        };
+      });
+
+      // If a newer request has started, ignore this response to avoid stale overwrites.
+      if (requestId !== loadResultsRequestId.current) return;
+
       const { count: votedCount, error: votedErr } = await supabase
         .from("voter_election_status")
         .select("*", { count: "exact", head: true })
@@ -346,18 +485,24 @@ export default function Results() {
 
       if (votedErr) throw votedErr;
 
-      const eligibleVoters = await loadEligibleVoterCount(election);
+      const sig = `${election.id}:${JSON.stringify(election.eligible_orgs || [])}`;
+      let eligibleVoters = eligibleCountCacheVal.current;
+      if (eligibleCountCacheSig.current !== sig) {
+        eligibleVoters = await loadEligibleVoterCount(election);
+        eligibleCountCacheSig.current = sig;
+        eligibleCountCacheVal.current = eligibleVoters;
+      }
       const votersWhoVoted = votedCount || 0;
       const turnoutRate = eligibleVoters ? (votersWhoVoted / eligibleVoters) * 100 : 0;
 
-      merged.sort((a, b) => {
-        const ap = a.position || "General";
-        const bp = b.position || "General";
-        if (ap !== bp) return ap.localeCompare(bp);
+      flaggedMerged.sort((a, b) => {
+        const ap = a.position || DEFAULT_POSITION;
+        const bp = b.position || DEFAULT_POSITION;
+        if (ap !== bp) return comparePositionsForOrg(orgKey, ap, bp);
         return b.vote_count - a.vote_count;
       });
 
-      setCandidates(merged);
+      setCandidates(flaggedMerged);
       setPositionSummaries(summaries);
       setStats({ eligibleVoters, votersWhoVoted, turnoutRate });
       setLastUpdatedAt(new Date());
@@ -390,6 +535,15 @@ export default function Results() {
 
     loadResults(selectedElection);
 
+    const scheduleResultsReload = () => {
+      if (!selectedElection) return;
+      if (scheduledReloadTimer.current) window.clearTimeout(scheduledReloadTimer.current);
+      scheduledReloadTimer.current = window.setTimeout(() => {
+        loadResults(selectedElection);
+      }, 400);
+    };
+
+
     const prev = channelsRef.current;
     if (prev.candidates) supabase.removeChannel(prev.candidates);
     if (prev.votes) supabase.removeChannel(prev.votes);
@@ -405,7 +559,7 @@ export default function Results() {
           table: "candidates",
           filter: `election_id=eq.${selectedElection.id}`,
         },
-        () => loadResults(selectedElection)
+        () => scheduleResultsReload()
       )
       .subscribe();
 
@@ -419,7 +573,7 @@ export default function Results() {
           table: "votes",
           filter: `election_id=eq.${selectedElection.id}`,
         },
-        () => loadResults(selectedElection)
+        () => scheduleResultsReload()
       )
       .subscribe();
 
@@ -433,7 +587,7 @@ export default function Results() {
           table: "voter_election_status",
           filter: `election_id=eq.${selectedElection.id}`,
         },
-        () => loadResults(selectedElection)
+        () => scheduleResultsReload()
       )
       .subscribe();
 
@@ -453,81 +607,13 @@ export default function Results() {
   const candidatesByPosition = useMemo(() => {
     return (candidates || []).reduce(
       (acc: Record<string, CandidateWithCount[]>, c) => {
-        const pos = c.position || "General";
+        const pos = c.position || DEFAULT_POSITION;
         (acc[pos] ||= []).push(c);
         return acc;
       },
       {}
     );
   }, [candidates]);
-
-  const exportCsv = () => {
-    if (!selectedElection) return;
-
-    const lines: string[] = [];
-    lines.push(
-      [
-        "row_type",
-        "election_title",
-        "position",
-        "candidate_name",
-        "slate",
-        "vote_count",
-        "abstain_count",
-        "total_ballots",
-        "rank",
-        "is_winner",
-      ].join(",")
-    );
-
-    const positions = Object.keys(candidatesByPosition).sort((a, b) =>
-      a.localeCompare(b)
-    );
-
-    for (const pos of positions) {
-      const sum = positionSummaries[pos];
-
-      lines.push(
-        [
-          "SUMMARY",
-          JSON.stringify(selectedElection.title),
-          JSON.stringify(pos),
-          "",
-          "",
-          "",
-          String(sum?.abstain_count ?? 0),
-          String(sum?.total_ballots ?? 0),
-          "",
-          "",
-        ].join(",")
-      );
-
-      const sorted = candidatesByPosition[pos]
-        .slice()
-        .sort((a, b) => b.vote_count - a.vote_count);
-
-      sorted.forEach((c, i) => {
-        lines.push(
-          [
-            "CANDIDATE",
-            JSON.stringify(selectedElection.title),
-            JSON.stringify(pos),
-            JSON.stringify(c.name),
-            JSON.stringify(c.slate || ""),
-            String(c.vote_count),
-            "",
-            "",
-            String(i + 1),
-            c.isWinner ? "TRUE" : "FALSE",
-          ].join(",")
-        );
-      });
-    }
-
-    const filename = `results_${selectedElection.title.replace(/[^\w]+/g, "_")}.csv`;
-    downloadTextFile(filename, lines.join("\n"));
-    toast.success("CSV exported");
-  };
 
   const electionBadge = (e: ElectionRow) => {
     const status = getElectionStatus(e);
@@ -574,7 +660,7 @@ export default function Results() {
             <Button
               variant="outline"
               onClick={refreshAll}
-              disabled={!selectedElection || refreshing || pdfDownloading}
+              disabled={!selectedElection || refreshing || resultsLoading || pdfDownloading}
             >
               <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
               Refresh
@@ -616,7 +702,7 @@ export default function Results() {
               <select
                 className="w-full border rounded-md px-3 py-2 text-sm bg-white"
                 value={selectedElection?.id || ""}
-                onChange={(e) => {
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => {
                   const next =
                     elections.find((el) => el.id === e.target.value) || null;
                   setSelectedElection(next);
@@ -701,7 +787,7 @@ export default function Results() {
         </div>
 
         {Object.entries(candidatesByPosition)
-          .sort(([a], [b]) => a.localeCompare(b))
+          .sort(([a], [b]) => comparePositionsForOrg(orgKey, a, b))
           .map(([position, positionCandidates]) => {
             const sum = positionSummaries[position];
             const chartData = positionCandidates
@@ -743,8 +829,8 @@ export default function Results() {
                     </div>
                   </CardTitle>
 
-                  <CardDescription className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Leader:</span>
+                  <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                    <span className="text-xs">Leader:</span>
                     <Badge
                       variant="outline"
                       className="border-emerald-500 text-emerald-700"
@@ -752,7 +838,7 @@ export default function Results() {
                       <CheckCircle2 className="h-3 w-3 mr-1" />
                       {leaderText}
                     </Badge>
-                  </CardDescription>
+                  </div>
                 </CardHeader>
 
                 <CardContent className="space-y-4">
@@ -853,3 +939,4 @@ export default function Results() {
     </div>
   );
 }
+

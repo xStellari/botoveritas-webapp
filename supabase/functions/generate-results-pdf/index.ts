@@ -47,6 +47,7 @@ type VotesVoterIdRow = { voter_id: string | null };
 
 type Body = {
   election_id?: string;
+  include_charts?: boolean;
   logo_url?: string;
 
   // Signatories (preferred)
@@ -505,6 +506,7 @@ serve(async (req: Request) => {
     const body: Body = await req.json().catch(() => ({} as Body));
 
     const election_id = body?.election_id;
+    const includeCharts = body?.include_charts ?? false;
 
     // Deployment decision: require election_id (no "all elections" export)
     if (!election_id) {
@@ -982,12 +984,25 @@ serve(async (req: Request) => {
             },
           };
 
-          try {
-            const pngBytes = await quickChartPng(
-              donutConfig as Record<string, unknown>,
-            );
-            const img = await pdf.embedPng(pngBytes);
+          if (includeCharts) {
 
+
+            try {
+
+
+              const pngBytes = await quickChartPng(
+
+
+                donutConfig as Record<string, unknown>,
+
+
+              );
+
+
+              const img = await pdf.embedPng(pngBytes);
+
+
+          
             const imgW = pageW - margin * 2;
             const imgH = (img.height / img.width) * imgW;
 
@@ -1061,8 +1076,12 @@ serve(async (req: Request) => {
                 14,
               );
             }
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
+
+
+            } catch (err: unknown) {
+
+
+                      const msg = err instanceof Error ? err.message : String(err);
             page.drawText(`Chart error: ${msg}`, {
               x: margin,
               y,
@@ -1070,6 +1089,23 @@ serve(async (req: Request) => {
               font,
               color: rgb(0.4, 0.2, 0.2),
             });
+
+
+            }
+
+
+          } else {
+
+
+            // Charts disabled (reduces CPU/time in Edge Function)
+
+
+            // Keep the table rendering below; just skip image generation.
+
+
+            // (No-op)
+
+
           }
         }
       }
@@ -1171,11 +1207,17 @@ serve(async (req: Request) => {
         };
 
         let imgHUsed = 0;
-        try {
-          const pngBytes = await quickChartPng(
-            pieConfig as Record<string, unknown>,
-          );
-          const img = await pdf.embedPng(pngBytes);
+        if (includeCharts) {
+
+          try {
+
+            const pngBytes = await quickChartPng(
+
+              pieConfig as Record<string, unknown>,
+
+            );
+
+                  const img = await pdf.embedPng(pngBytes);
 
           const imgW = pageW - margin * 2;
           const imgH = (img.height / img.width) * imgW;
@@ -1187,8 +1229,10 @@ serve(async (req: Request) => {
             width: imgW,
             height: imgH,
           });
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
+
+          } catch (err: unknown) {
+
+                  const msg = err instanceof Error ? err.message : String(err);
           page.drawText(`Chart error: ${msg}`, {
             x: margin,
             y,
@@ -1196,6 +1240,15 @@ serve(async (req: Request) => {
             font,
             color: rgb(0.4, 0.2, 0.2),
           });
+
+          }
+
+        } else {
+
+          // Charts disabled (reduces CPU/time in Edge Function)
+
+          // Leave space for content below.
+
         }
 
         y = imgHUsed ? y - imgHUsed - 18 : y - 22;
