@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from "react";
+import { useMemo, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { Image as ImageIcon, Save, Link as LinkIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -39,20 +39,20 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 
+  // Optional (some parents pass this for display/debug)
+  bucketName?: string;
+
   editingCandidate: CandidateRowLike | null;
 
-  /**
-   * Candidate photo URL preview. This should be the final URL that ends up in `candidates.photo_url`.
-   * We intentionally do URL-only photos (no Supabase Storage uploads) to avoid storage plan limits.
-   */
+  /** Candidate photo URL preview (existing URL OR a local blob URL while editing). */
   photoPreviewUrl: string | null;
   setPhotoPreviewUrl: Dispatch<SetStateAction<string | null>>;
 
-  /**
-   * Kept for backwards compatibility with callers that previously managed file uploads.
-   * In URL-only mode we always clear file state in the parent (if any) by calling `setPhotoFile(null)`.
-   */
+  /** Parent-managed file state used to upload to Supabase Storage. */
   setPhotoFile: Dispatch<SetStateAction<File | null>>;
+
+  /** Optional ref so the parent can reset the input value. */
+  fileInputRef?: RefObject<HTMLInputElement | null>;
 
   positions: string[];
 
@@ -80,6 +80,42 @@ function isProbablyUrl(value: string): boolean {
   }
 }
 
+async function convertToSquareWebp512(file: File, quality = 0.82): Promise<File> {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Please upload an image file.");
+  }
+  // Soft guard: avoid freezing low-end admin machines.
+  if (file.size > 10 * 1024 * 1024) {
+    throw new Error("Image is too large (max 10MB).");
+  }
+
+  const img = await createImageBitmap(file);
+  const srcW = img.width;
+  const srcH = img.height;
+  const side = Math.min(srcW, srcH);
+  const sx = Math.floor((srcW - side) / 2);
+  const sy = Math.floor((srcH - side) / 2);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas not supported.");
+
+  ctx.drawImage(img, sx, sy, side, side, 0, 0, 512, 512);
+
+  const blob: Blob = await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("Failed to encode image."))),
+      "image/webp",
+      quality
+    );
+  });
+
+  const outName = `candidate-${Date.now()}.webp`;
+  return new File([blob], outName, { type: "image/webp" });
+}
+
 export function CandidateEditorDialog(props: Props) {
   const {
     open,
@@ -88,6 +124,7 @@ export function CandidateEditorDialog(props: Props) {
     photoPreviewUrl,
     setPhotoPreviewUrl,
     setPhotoFile,
+    fileInputRef,
     positions,
     cForm,
     setCForm,
@@ -97,6 +134,59 @@ export function CandidateEditorDialog(props: Props) {
   } = props;
 
   const savedPhotoUrl = editingCandidate?.photo_url ?? null;
+
+  const [photoUrlInput, setPhotoUrlInput] = useState<string>("");
+  const [photoProcessing, setPhotoProcessing] = useState(false);
+
+  const showSavedTag = useMemo(() => {
+    if (!editingCandidate) return false;
+    if (!savedPhotoUrl) return false;
+    return photoPreviewUrl === savedPhotoUrl;
+  }, [editingCandidate, photoPreviewUrl, savedPhotoUrl]);
+
+  const handlePickFile = async (file: File | null) => {
+    if (!file) return;
+
+    setPhotoProcessing(true);
+    let toastId: string | number | undefined;
+    try {
+      toastId = toast.loading("Converting image to WebP (512×512)…");
+      const converted = await convertToSquareWebp512(file);
+
+      setPhotoFile(converted);
+
+      const localUrl = URL.createObjectURL(converted);
+      setPhotoPreviewUrl((prev) => {
+        if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
+        return localUrl;
+      });
+
+      setPhotoUrlInput("");
+      toast.success(`Ready (${Math.round(converted.size / 1024)} KB WebP)`);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Failed to process image.");
+      setPhotoFile(null);
+    } finally {
+      if (toastId !== undefined) toast.dismiss(toastId);
+      setPhotoProcessing(false);
+      if (fileInputRef?.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const applyUrlPhoto = () => {
+    const v = normalizePhotoUrl(photoUrlInput);
+    if (!v) {
+      toast.error("Paste an image URL first.");
+      return;
+    }
+    if (!isProbablyUrl(v)) {
+      toast.error("Please enter a valid http(s) URL.");
+      return;
+    }
+    setPhotoFile(null);
+    setPhotoPreviewUrl(v);
+    toast.success("Photo URL set.");
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -229,10 +319,15 @@ export function CandidateEditorDialog(props: Props) {
                     </div>
 
                     <div>
-                      <div className="font-semibold">Candidate photo (URL)</div>
+                      <div className="font-semibold">Candidate photo</div>
                       <div className="text-xs text-muted-foreground">
-                        Paste a public HTTPS image URL (recommended). This avoids Supabase Storage limits.
+                        Upload auto-converts to <b>WebP</b> and enforces <b>512×512</b> (square crop).
                       </div>
+                      {showSavedTag ? (
+                        <div className="text-[11px] text-muted-foreground mt-1">
+                          Using saved photo.
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
@@ -243,44 +338,62 @@ export function CandidateEditorDialog(props: Props) {
                   </div>
                 </div>
 
-                <div className="grid gap-2">
-                  <Label htmlFor="candidate-photo-url">Photo URL</Label>
-                  <Input
-                    id="candidate-photo-url"
-                    value={photoPreviewUrl ?? ""}
-                    placeholder="https://example.com/candidate.jpg"
-                    onChange={(e) => {
-                      // URL-only mode: ensure any legacy file state is cleared in parent
-                      setPhotoFile(null);
+                <Tabs defaultValue="upload" className="w-full">
+                  <TabsList className="w-full justify-start">
+                    <TabsTrigger value="upload">Upload</TabsTrigger>
+                    <TabsTrigger value="url">Use URL</TabsTrigger>
+                  </TabsList>
 
-                      const next = normalizePhotoUrl(e.target.value);
-                      setPhotoPreviewUrl(next.length > 0 ? next : null);
-                    }}
-                    onBlur={(e) => {
-                      const next = normalizePhotoUrl(e.target.value);
-                      if (next.length === 0) {
-                        setPhotoPreviewUrl(null);
-                        return;
-                      }
+                  <TabsContent value="upload" className="mt-3">
+                    <div className="grid gap-2">
+                      <Label>Upload image</Label>
+                      <Input
+                        ref={fileInputRef as any}
+                        type="file"
+                        accept="image/*"
+                        disabled={photoProcessing || saving}
+                        onChange={(e) => handlePickFile(e.target.files?.[0] ?? null)}
+                      />
+                      <div className="text-xs text-muted-foreground">
+                        Center-crop → resize to 512×512 → encode WebP.
+                      </div>
+                    </div>
+                  </TabsContent>
 
-                      if (!isProbablyUrl(next)) {
-                        toast.error("Please enter a valid http(s) URL.");
-                        setPhotoPreviewUrl(savedPhotoUrl);
-                        return;
-                      }
+                  <TabsContent value="url" className="mt-3">
+                    <div className="grid gap-2">
+                      <Label className="flex items-center gap-2">
+                        <LinkIcon className="h-4 w-4" />
+                        Image URL
+                      </Label>
 
-                      // Normalize to trimmed string
-                      if (next !== e.target.value) {
-                        setPhotoPreviewUrl(next);
-                      }
-                    }}
-                  />
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <Input
+                          value={photoUrlInput}
+                          placeholder="https://example.com/candidate.jpg"
+                          onChange={(e) => setPhotoUrlInput(e.target.value)}
+                          disabled={photoProcessing || saving}
+                          inputMode="url"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={applyUrlPhoto}
+                          className="shrink-0"
+                          disabled={photoProcessing || saving}
+                        >
+                          <LinkIcon className="h-4 w-4 mr-2" />
+                          Apply
+                        </Button>
+                      </div>
 
-                  <div className="text-xs text-muted-foreground flex items-center gap-2">
-                    <LinkIcon className="h-3.5 w-3.5" />
-                    Tip: use a publicly accessible URL (CDN / GitHub raw / school site).
-                  </div>
-                </div>
+                      <div className="text-xs text-muted-foreground flex items-center gap-2">
+                        <LinkIcon className="h-3.5 w-3.5" />
+                        URL photos won't be converted/compressed. Prefer upload for kiosk performance.
+                      </div>
+                    </div>
+                  </TabsContent>
+                </Tabs>
               </div>
             </TabsContent>
 
@@ -316,7 +429,7 @@ export function CandidateEditorDialog(props: Props) {
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={onSave} disabled={saving}>
+          <Button onClick={onSave} disabled={saving || photoProcessing}>
             <Save className="h-4 w-4 mr-2" />
             {saving ? "Saving…" : "Save"}
           </Button>

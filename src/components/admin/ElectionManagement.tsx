@@ -864,15 +864,16 @@ export default function ElectionManagement() {
     candidateId: string;
     file: File;
   }) => {
-    const ext = opts.file.name.split(".").pop() || "jpg";
-    const path = `${opts.electionId}/${opts.candidateId}-${safeUUID()}.${ext}`;
+    // Admin upload flow auto-converts to WebP 512×512. If a non-webp slips through, still
+    // store as .webp to keep storage predictable.
+    const path = `${opts.electionId}/${opts.candidateId}-${safeUUID()}.webp`;
 
     const { error: upErr } = await supabase.storage
       .from(CANDIDATE_PHOTO_BUCKET)
       .upload(path, opts.file, {
         upsert: true,
-        contentType: opts.file.type || "image/*",
-        cacheControl: "3600",
+        contentType: "image/webp",
+        cacheControl: "31536000",
       });
 
     if (upErr) throw upErr;
