@@ -386,7 +386,9 @@ if (lockErr) {
       return { ok: false as const };
     }
 
-    // ✅ Batch insert votes (reduces network calls + lowers partial failure risk)
+    // ✅ Batch UPSERT votes (idempotent)
+    // Why: if anything after vote persistence fails (e.g., RLS on voter_election_status),
+    // the user may retry — and INSERT would throw 409 due to unique_vote_per_position.
     const voteRows = selections.map((sel) => ({
       voter_id: voterId,
       election_id: electionId,
@@ -395,7 +397,9 @@ if (lockErr) {
       is_abstain: sel.candidateId === "ABSTAIN",
     }));
 
-    const { error: votesErr } = await supabase.from("votes").insert(voteRows);
+    const { error: votesErr } = await supabase
+      .from("votes")
+      .upsert(voteRows, { onConflict: "voter_id,election_id,position" });
 
     if (votesErr) {
       console.error("Failed to persist votes:", votesErr);
@@ -427,26 +431,10 @@ if (lockErr) {
       return;
     }
 
-    const { error: statusErr } = await supabase.from("voter_election_status").upsert({
-      voter_id: voterId,
-      election_id: electionId,
-      has_voted: true,
-      voted_at: new Date().toISOString(),
-
-      // Keep denormalized voter info consistent with final-review flow
-      voter_first_name: voterData.first_name,
-      voter_middle_name: voterData.middle_name,
-      voter_last_name: voterData.last_name,
-      voter_suffix: voterData.suffix,
-      voter_email: voterData.email,
-      year_level: voterData.year_level,
-    });
-
-    if (statusErr) {
-      console.error("Failed to mark election as voted:", statusErr);
-      toast.error("Failed to finalize your vote. Please try again.");
-      return;
-    }
+    // IMPORTANT: Do NOT write to voter_election_status from the client.
+    // That table is protected by RLS (403/42501) for kiosk voters.
+    // We rely on the AFTER INSERT trigger on votes (SECURITY DEFINER)
+    // to upsert voter_election_status safely.
 
     // ✅ Refresh catalog from DB to update completed elections accurately
     const catalog = await refreshElectionsAndStatus(voterId);
