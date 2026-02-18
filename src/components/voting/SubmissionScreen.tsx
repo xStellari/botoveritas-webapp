@@ -155,103 +155,89 @@ const SubmissionScreen = ({
   };
 
   // -------------------------------
-// Main pipeline (real on-chain mint)
-// -------------------------------
-useEffect(() => {
-  let cancelled = false;
+  // Main pipeline (real on-chain mint)
+  // -------------------------------
+  useEffect(() => {
+    const run = async () => {
+      if (isComplete) return;
+      if (startedRef.current) return;
+      startedRef.current = true;
 
-  const run = async () => {
-    if (isComplete) return;
-    if (startedRef.current) return;
-    startedRef.current = true;
+      setErrorMessage("");
+      setMintedReceipts([]);
+      setReceiptStatus("idle");
+      setShowSuccess(false);
+      setCanContinue(false);
 
-    setErrorMessage("");
-    setMintedReceipts([]);
-    setReceiptStatus("idle");
-    setShowSuccess(false);
-    setCanContinue(false);
+      try {
+        setCurrentStep("encrypting");
+        await sleep(700);
 
-    const kioskSecret = import.meta.env.VITE_KIOSK_SECRET as string | undefined;
+        setCurrentStep("recording");
+        await sleep(700);
 
-    if (!uniqueElections.length) {
-      setErrorMessage("No electionId found in selections. Cannot mint receipt.");
-      return;
-    }
+        setCurrentStep("minting");
 
-    // ✅ Start minting immediately (in parallel with the UI "Encrypting/Recording" steps)
-    // This reduces perceived wait time and overlaps network/chain latency with on-screen progress.
-    const mintAllReceipts = async (): Promise<MintReceiptResult[]> => {
-      const tasks = uniqueElections.map(async (e) => {
-        const requestBody = { voterId: voterData.id, electionId: e.electionId };
+        const kioskSecret = import.meta.env.VITE_KIOSK_SECRET as string | undefined;
 
-        const { data, error } = await supabase.functions.invoke("create-vote-receipt", {
-          body: requestBody,
-          headers: kioskSecret ? { "x-kiosk-secret": kioskSecret } : undefined,
-        });
+        if (!uniqueElections.length) {
+          throw new Error("No electionId found in selections. Cannot mint receipt.");
+        }
 
-        if (error) {
-          console.error("create-vote-receipt invoke error:", {
-            message: error.message,
-            name: (error as any).name,
-            context: (error as any).context,
-            details: (error as any).details,
-            requestBody,
+        const minted: MintReceiptResult[] = [];
+
+        for (const e of uniqueElections) {
+          const requestBody = { voterId: voterData.id, electionId: e.electionId };
+
+          const { data, error } = await supabase.functions.invoke("create-vote-receipt", {
+            body: requestBody,
+            headers: kioskSecret ? { "x-kiosk-secret": kioskSecret } : undefined,
           });
 
-          throw new Error(
-            (error.message || "Mint failed.") +
-              "\n\ncreate-vote-receipt returned an error. Most common causes: (1) missing/invalid x-kiosk-secret header, (2) votes not yet inserted for this voter/election (function returns 409), or (3) invalid voterId/electionId."
-          );
+          if (error) {
+            console.error("create-vote-receipt invoke error:", {
+              message: error.message,
+              name: (error as any).name,
+              context: (error as any).context,
+              details: (error as any).details,
+              requestBody,
+            });
+
+            throw new Error(
+              (error.message || "Mint failed.") +
+                "\n\ncreate-vote-receipt returned an error. Most common causes: (1) missing/invalid x-kiosk-secret header, (2) votes not yet inserted for this voter/election (function returns 409), or (3) invalid voterId/electionId."
+            );
+          }
+
+          const txHash = extractTxHash(data);
+          if (!txHash) {
+            console.error("create-vote-receipt success but missing txHash. Raw data:", data);
+            throw new Error(
+              "Mint succeeded but the function response did not include a txHash (expected txHash/transactionHash/hash)."
+            );
+          }
+
+          const explorerTxUrl = (data as any)?.explorerTxUrl || `${AMOY_POLYGONSCAN_TX_BASE}${txHash}`;
+
+          // ✅ Ensure tokenId is always string (email verification expects numeric string)
+          const tokenId = normalizeTokenId((data as any)?.tokenId);
+
+          minted.push({
+            electionId: e.electionId,
+            electionName: e.electionName,
+            txHash,
+            tokenId,
+            reused: (data as any)?.reused,
+            mode: (data as any)?.mode,
+            explorerTxUrl,
+          });
         }
 
-        const txHash = extractTxHash(data);
-        if (!txHash) {
-          console.error("create-vote-receipt success but missing txHash. Raw data:", data);
-          throw new Error(
-            "Mint succeeded but the function response did not include a txHash (expected txHash/transactionHash/hash)."
-          );
-        }
+        setMintedReceipts(minted);
 
-        const explorerTxUrl =
-          (data as any)?.explorerTxUrl || `${AMOY_POLYGONSCAN_TX_BASE}${txHash}`;
+        setCurrentStep("email");
+        setReceiptStatus("sending");
 
-        // ✅ Ensure tokenId is always string (email verification expects numeric string)
-        const tokenId = normalizeTokenId((data as any)?.tokenId);
-
-        return {
-          electionId: e.electionId,
-          electionName: e.electionName,
-          txHash,
-          tokenId,
-          reused: (data as any)?.reused,
-          mode: (data as any)?.mode,
-          explorerTxUrl,
-        } satisfies MintReceiptResult;
-      });
-
-      // Run mints concurrently (helps if there are multiple elections).
-      return await Promise.all(tasks);
-    };
-
-    const mintPromise = mintAllReceipts();
-
-    try {
-      setCurrentStep("encrypting");
-      await sleep(700);
-
-      setCurrentStep("recording");
-      await sleep(700);
-
-      setCurrentStep("minting");
-
-      const minted = await mintPromise;
-
-      if (cancelled) return;
-
-      setMintedReceipts(minted);
-
-      setCurrentStep("email");
-      setReceiptStatus("sending");
         // Email is best-effort; do not block completion if it fails
         try {
           const receiptItems = buildReceiptItems();
@@ -293,12 +279,9 @@ useEffect(() => {
       }
     };
 
-  run();
-  return () => {
-    cancelled = true;
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [isComplete]);
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isComplete]);
 
   // -------------------------------
   // Continue safety gate
