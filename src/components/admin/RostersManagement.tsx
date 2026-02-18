@@ -52,6 +52,14 @@ function buildVoterFullName(v: Pick<VoterLookupRow, "first_name" | "middle_name"
   return normalizeLine(parts.filter(Boolean).join(" "));
 }
 
+function buildVoterRosterName(v: Pick<VoterLookupRow, "first_name" | "last_name" | "suffix">) {
+  // Roster matching should mirror compute_voter_org_affiliations(): first_name + last_name (+ suffix).
+  // Note: first_name in this project may already contain multiple given names.
+  const parts = [v.first_name, v.last_name, v.suffix ?? ""].map((x) => normalizeLine(String(x || "")));
+  return normalizeLine(parts.filter(Boolean).join(" "));
+}
+
+
 function parseLines(raw: string) {
   return raw
     .split(/\r?\n/)
@@ -469,7 +477,7 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
       return;
     }
 
-    const fullName = buildVoterFullName(v);
+    const fullName = buildVoterRosterName(v);
     if (!fullName) {
       toast.error("This voter record has incomplete name fields to add.");
       return;
@@ -485,6 +493,7 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
       const payload = {
         org_code: selectedOrg,
         full_name: fullName,
+        email: v.email,
         source: sourceBits.join(" • "),
       };
 
@@ -658,10 +667,11 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
 
       const sourceLabel = normalizeLine(orgMemberSource) || null;
       const payload = matched.map(({ voter, email }) => {
-        const fullName = buildVoterFullName(voter);
+        const fullName = buildVoterRosterName(voter);
         return {
           org_code: selectedOrg,
           full_name: fullName,
+          email,
           source: sourceLabel ? sourceLabel : `CSV import • ${email} • ID: ${voter.id}`,
         };
       });
@@ -933,7 +943,7 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
               <div className="rounded-xl border bg-background max-h-[220px] overflow-auto">
                 <div className="divide-y">
                   {voterLookupRows.map((v) => {
-                    const fullName = buildVoterFullName(v);
+                    const fullName = buildVoterRosterName(v);
                     const meta = [v.email ? v.email : null, v.id ? `ID: ${v.id}` : null]
                       .filter(Boolean)
                       .join(" • ");
