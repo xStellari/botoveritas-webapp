@@ -38,7 +38,7 @@ type MintReceiptResult = {
 
 const AMOY_POLYGONSCAN_TX_BASE = "https://amoy.polygonscan.com/tx/";
 // Give voters enough time to read receipt details on-screen before auto-reset.
-const RESET_SECONDS = 60;
+const RESET_SECONDS = 90;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const maskWord = (word: string) => {
@@ -430,7 +430,7 @@ const SubmissionScreen = ({
         </div>
 
         <div className="mt-3 text-xs text-muted-foreground">
-          External links are disabled on this kiosk. To verify later, open your email and tap "Verify Vote Receipt".
+          External links are disabled on this kiosk. Keep your receipt email to verify later on a personal device.
         </div>
       </div>
     );
@@ -445,7 +445,7 @@ const SubmissionScreen = ({
   const headerSubtitle = isComplete
     ? showSuccess
       ? "Your session is complete. A vote receipt was sent to your email."
-      : "Please review the receipt proof IDs below, then tap Continue to finish."
+      : "Review the receipt proof IDs below, then tap Continue."
     : `Please wait. We are generating ${uniqueElections.length || 1} blockchain receipt${
         uniqueElections.length === 1 ? "" : "s"
       }.`;
@@ -511,9 +511,9 @@ const SubmissionScreen = ({
                         <div className="rounded-lg border border-border bg-background/60 p-4">
                           <div className="font-semibold text-sm">What this receipt means</div>
                           <ul className="mt-2 space-y-1 text-xs text-muted-foreground list-disc pl-4">
-                            <li>It proves your receipt NFT exists on the blockchain.</li>
-                            <li>No technical knowledge needed — just keep the email we sent.</li>
-                            <li>Once recorded, this proof cannot be altered.</li>
+                            <li>This is your receipt proof on the blockchain.</li>
+                            <li>Keep the email we sent for later verification.</li>
+                            <li>Once recorded, it cannot be altered.</li>
                           </ul>
                         </div>
                       ) : null}
@@ -593,7 +593,7 @@ const SubmissionScreen = ({
 
                 <h2 className="text-2xl font-bold mb-3">Vote Submitted</h2>
                 <p className="text-muted-foreground mb-6">
-                  Your vote has been securely recorded. Verification details were sent to your email for later viewing on your personal device.
+                  Your vote has been recorded. Receipt details were emailed for later verification on your personal device.
                 </p>
 
                 {/* Transactions (read-only) */}
@@ -608,52 +608,25 @@ const SubmissionScreen = ({
                     </div>
                     <div className="mt-2 font-mono text-xs break-all select-text">{transactionHash}</div>
                     <div className="mt-3 text-xs text-muted-foreground">
-                      External links are disabled on this kiosk. Full verification links were sent to your
-                      email.
+                      External links are disabled on this kiosk. Receipt details were sent to your email.
                     </div>
                   </div>
                 ) : null}
 
-                {/* ✅ Voter-friendly verification (non-technical) */}
-                <div className="mt-6 rounded-lg border border-border bg-card p-5 text-left">
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                    <div>
-                      <h3 className="font-semibold">Verify Vote Receipt</h3>
-                      <p className="text-sm text-muted-foreground">
-                        This confirms your receipt NFT exists on the blockchain — no technical knowledge required.
-                      </p>
-                    </div>
-
-                    <Button type="button" variant="outline" disabled>
-                      Verify Vote Receipt
-                    </Button>
-                  </div>
-
-                  <ul className="mt-4 space-y-1 text-xs text-muted-foreground list-disc pl-4">
-                    <li>This proves your receipt NFT was minted and recorded.</li>
-                    <li>The blockchain record cannot be altered after it’s created.</li>
-                    <li>Your vote choices remain private; only the receipt proof can be checked.</li>
-                  </ul>
-
-                  <div className="mt-3 text-xs text-muted-foreground">
-                    You can verify later using your personal device: open the email we sent and tap{" "}
-                    <span className="font-medium">Verify Vote Receipt</span>.
-                  </div>
-                </div>
+                
 
                 {/* Highlights */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
                   <div className="bg-card rounded-lg p-4 border border-border text-left">
                     <h3 className="font-semibold mb-2">Security</h3>
                     <p className="text-sm text-muted-foreground">
-                      Your ballot is protected and sealed with verifiable blockchain proof.
+                      Your ballot is sealed with verifiable proof.
                     </p>
                   </div>
                   <div className="bg-card rounded-lg p-4 border border-border text-left">
                     <h3 className="font-semibold mb-2">Receipt</h3>
                     <p className="text-sm text-muted-foreground">
-                      A vote receipt email was sent to <strong>{voterData.email}</strong>. Candidate names
-                      are partially masked for privacy.
+                      A receipt email was sent to <strong>{voterData.email}</strong>. Candidate names are masked for privacy.
                     </p>
                   </div>
                 </div>
