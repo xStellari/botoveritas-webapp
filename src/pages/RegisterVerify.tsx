@@ -80,12 +80,6 @@ export default function RegisterVerify() {
     };
   }, []);
 
-
-  // Temporary function to simulate RFID scan for testing
-  const generateSimulatedRFID = () => {
-    return Math.floor(1000000000 + Math.random() * 9000000000).toString();
-  };
-
   // 🔒 Prevent accessing this page directly
   if (!data) {
     return (
@@ -385,14 +379,6 @@ export default function RegisterVerify() {
                       <p className="text-sm text-muted-foreground">
                         Tap your RFID card on the reader to begin.
                       </p>
-
-                      <Button
-                        onClick={() => setRfid(generateSimulatedRFID())}
-                        className="mt-3 bg-blue-600 hover:bg-blue-700 text-white"
-                        disabled={loading || hasSubmittedRef.current}
-                      >
-                        Simulate RFID Scan
-                      </Button>
                     </>
                   ) : (
                     <p className="text-green-600 font-semibold text-lg">
