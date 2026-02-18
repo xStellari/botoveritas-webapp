@@ -31,8 +31,24 @@ type EmployeeRow = {
   created_at: string;
 };
 
+type VoterLookupRow = {
+  id: string;
+  email: string;
+  first_name: string;
+  middle_name: string | null;
+  last_name: string;
+  suffix: string | null;
+  created_at?: string | null;
+};
+
 function normalizeLine(s: string) {
   return s.replace(/\s+/g, " ").trim();
+}
+
+function buildVoterFullName(v: Pick<VoterLookupRow, "first_name" | "middle_name" | "last_name" | "suffix">) {
+  // Build a consistent display name from the voters table schema.
+  const parts = [v.first_name, v.middle_name ?? "", v.last_name, v.suffix ?? ""].map((x) => normalizeLine(String(x || "")));
+  return normalizeLine(parts.filter(Boolean).join(" "));
 }
 
 function parseLines(raw: string) {
@@ -196,6 +212,13 @@ export default function RostersManagement() {
   const [orgMemberCsvFile, setOrgMemberCsvFile] = useState<File | null>(null);
   const [orgMemberCsvPreview, setOrgMemberCsvPreview] = useState<string[]>([]);
 
+  // Quick-add: pull exact full_name from registered voters to avoid
+  // "same person, different spelling" eligibility mismatches.
+  const [voterLookupQuery, setVoterLookupQuery] = useState("");
+  const [voterLookupLoading, setVoterLookupLoading] = useState(false);
+  const [voterLookupRows, setVoterLookupRows] = useState<VoterLookupRow[]>([]);
+  const [voterAddBusyId, setVoterAddBusyId] = useState<string | null>(null);
+
   // ----------------------------
   // Employee registry (name-only) UI
   // ----------------------------
@@ -339,6 +362,101 @@ export default function RostersManagement() {
   // ----------------------------
   // Actions: Org roster
   // ----------------------------
+
+  const searchVotersForQuickAdd = async () => {
+    if (!selectedOrg) {
+      toast.error("Select an organization first.");
+      return;
+    }
+
+    const q = normalizeLine(voterLookupQuery);
+    if (!q) {
+      toast.error("Enter an email or name to search.");
+      return;
+    }
+
+    setVoterLookupLoading(true);
+    try {
+      // NOTE: Cast to any to avoid typegen drift if the voters table
+      // isn't present in your generated Supabase types.
+      const qb = supabase
+        .from("voters" as any)
+        .select("id, email, first_name, middle_name, last_name, suffix, created_at")
+        .limit(15) as any;
+
+      // Heuristics:
+      // - If it looks like an email, prioritize email match (email is unique in voters).
+      // - If it looks like a UUID, allow exact ID match.
+      const looksLikeEmail = q.includes("@");
+      const looksLikeUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(q);
+
+      let res;
+      if (looksLikeEmail) {
+        res = await qb.ilike("email", `%${q}%`);
+      } else if (looksLikeUuid) {
+        res = await qb.or(`id.eq.${q},email.ilike.%${q}%,first_name.ilike.%${q}%,last_name.ilike.%${q}%`);
+      } else {
+        // Name-ish query: try email and name fields.
+        res = await qb.or(
+          `email.ilike.%${q}%,first_name.ilike.%${q}%,middle_name.ilike.%${q}%,last_name.ilike.%${q}%`
+        );
+      }
+
+      const { data, error } = res;
+      if (error) {
+        console.error(error);
+        toast.error(error.message);
+        setVoterLookupRows([]);
+        return;
+      }
+
+      setVoterLookupRows(((data as any) || []) as VoterLookupRow[]);
+      if (!data || (data as any[]).length === 0) {
+        toast.message("No matching voters found.");
+      }
+    } finally {
+      setVoterLookupLoading(false);
+    }
+  };
+
+  const quickAddVoterToOrgRoster = async (v: VoterLookupRow) => {
+    if (!selectedOrg) {
+      toast.error("Select an organization first.");
+      return;
+    }
+
+    const fullName = buildVoterFullName(v);
+    if (!fullName) {
+      toast.error("This voter record has incomplete name fields to add.");
+      return;
+    }
+
+    setVoterAddBusyId(v.id);
+    try {
+      const sourceBits = ["From voter"].concat(
+        v.email ? [`${v.email}`] : [],
+        v.id ? [`ID: ${v.id}`] : []
+      );
+
+      const payload = {
+        org_code: selectedOrg,
+        full_name: fullName,
+        source: sourceBits.join(" • "),
+      };
+
+      const { error } = await supabase.from("org_member_names").insert([payload] as any);
+      if (error) {
+        console.error(error);
+        toast.error(error.message);
+        return;
+      }
+
+      toast.success(`Added ${fullName} to ${selectedOrg}.`);
+      await loadOrgMembers(selectedOrg);
+    } finally {
+      setVoterAddBusyId(null);
+    }
+  };
   const addOrgMembers = async () => {
     if (!selectedOrg) {
       toast.error("Select an organization first.");
@@ -564,6 +682,68 @@ export default function RostersManagement() {
             ) : null}
 
             <CsvPreview items={orgMemberCsvPreview} />
+          </div>
+
+          {/* Quick-add from voters table */}
+          <div className="rounded-2xl border bg-muted/10 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs font-medium">Add from registered voters</div>
+              <Badge variant="outline" className="text-[10px]">
+                exact name
+              </Badge>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Search voter (email or name).
+            </div>
+
+            <div className="flex flex-col md:flex-row gap-2">
+              <Input
+                placeholder="Search by email or name"
+                value={voterLookupQuery}
+                onChange={(e) => setVoterLookupQuery(e.target.value)}
+                disabled={orgMemberBusy || orgMemberLoading || voterLookupLoading || !selectedOrg}
+              />
+              <Button
+                variant="outline"
+                onClick={searchVotersForQuickAdd}
+                disabled={orgMemberBusy || orgMemberLoading || voterLookupLoading || !selectedOrg}
+              >
+                {voterLookupLoading ? "Searching…" : "Search"}
+              </Button>
+            </div>
+
+            {voterLookupRows.length > 0 ? (
+              <div className="rounded-xl border bg-background max-h-[220px] overflow-auto">
+                <div className="divide-y">
+                  {voterLookupRows.map((v) => {
+                    const fullName = buildVoterFullName(v);
+                    const meta = [v.email ? v.email : null, v.id ? `ID: ${v.id}` : null]
+                      .filter(Boolean)
+                      .join(" • ");
+
+                    return (
+                      <div key={v.id} className="p-3 flex items-start justify-between gap-3 hover:bg-muted/20">
+                        <div className="min-w-0">
+                          <div className="font-medium truncate">{fullName || "(no name)"}</div>
+                          <div className="text-xs text-muted-foreground truncate">{meta || "—"}</div>
+                        </div>
+                        <Button
+                          size="sm"
+                          onClick={() => quickAddVoterToOrgRoster(v)}
+                          disabled={orgMemberBusy || voterAddBusyId === v.id || !fullName}
+                        >
+                          {voterAddBusyId === v.id ? "Adding…" : "Add"}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="text-[11px] text-muted-foreground">
+                If eligibility fails, add yourself here.
+              </div>
+            )}
           </div>
 
           <div className="text-xs text-muted-foreground">Paste names (optional)</div>
