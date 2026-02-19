@@ -29,6 +29,7 @@ type ConfirmationState = {
   suffix?: string;
   orgAffiliations?: string[];
   email?: string;
+  voterAudience?: "students" | "employees";
 };
 
 const ORG_REQUEST_OPTIONS = ["ICpEP", "HonSoc"] as const;
@@ -58,10 +59,18 @@ const RegistrationConfirmation = () => {
     suffix = "",
     orgAffiliations = [],
     email = "",
+    voterAudience: voterAudienceFromState = undefined,
   } = (location.state || {}) as ConfirmationState;
 
   const [elections, setElections] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const [voterAudience, setVoterAudience] = useState<"students" | "employees">(
+    voterAudienceFromState ?? "students"
+  );
+
+  const AUTO_REDIRECT_SECONDS = 40; // 30–45s target
+  const [secondsLeft, setSecondsLeft] = useState<number>(AUTO_REDIRECT_SECONDS);
 
   // Request state
   const [authUserId, setAuthUserId] = useState<string | null>(null);
@@ -74,12 +83,13 @@ const RegistrationConfirmation = () => {
     .filter(Boolean)
     .join(" ");
 
-  const orgSet = useMemo(
-    () => new Set((orgAffiliations || []).filter(Boolean)),
-    [orgAffiliations]
-  );
+  const orgSet = useMemo(() => {
+    if (voterAudience === "employees") return new Set<string>();
+    return new Set((orgAffiliations || []).filter(Boolean));
+  }, [orgAffiliations, voterAudience]);
 
   const detectedOrgs = useMemo(() => {
+    if (voterAudience === "employees") return [] as string[];
     const uniq = Array.from(new Set((orgAffiliations || []).filter(Boolean)));
     uniq.sort((a, b) => {
       if (a === "SCC") return -1;
@@ -87,12 +97,13 @@ const RegistrationConfirmation = () => {
       return a.localeCompare(b);
     });
     return uniq;
-  }, [orgAffiliations]);
+  }, [orgAffiliations, voterAudience]);
 
   const missingRequestableOrgs = useMemo(() => {
+    if (voterAudience === "employees") return [] as (typeof ORG_REQUEST_OPTIONS)[number][];
     // SCC is open to all; only request ICpEP/HonSoc if missing
     return ORG_REQUEST_OPTIONS.filter((o) => !orgSet.has(o));
-  }, [orgSet]);
+  }, [orgSet, voterAudience]);
 
   // Grab auth user (if session exists)
   useEffect(() => {
@@ -107,6 +118,30 @@ const RegistrationConfirmation = () => {
     loadAuthUser();
   }, []);
 
+
+  // Resolve voter audience from DB (fallback) so this screen stays correct even if state is missing.
+  useEffect(() => {
+    const resolveAudience = async () => {
+      // If we already got it from navigation state, we can still verify silently.
+      if (!email) return;
+      const { data, error } = await supabase
+        .from("voters")
+        .select("voter_audience")
+        .eq("email", email)
+        .maybeSingle();
+
+      if (error) {
+        // Don't block the UI; default is students.
+        console.warn("[RegistrationConfirmation] Failed to resolve voter_audience:", error.message);
+        return;
+      }
+      const a = (data?.voter_audience as "students" | "employees" | undefined) ?? undefined;
+      if (a && (a === "students" || a === "employees")) setVoterAudience(a);
+    };
+    resolveAudience();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [email]);
+
   // Load elections (filter schedule by eligible_orgs vs detected orgs)
   useEffect(() => {
     const loadElections = async () => {
@@ -114,7 +149,11 @@ const RegistrationConfirmation = () => {
 
       const { data, error } = await supabase
         .from("elections")
-        .select("title, start_date, end_date, is_active, eligible_orgs");
+        .select("title, start_date, end_date, is_active, eligible_orgs, voter_audience, is_final, is_archived")
+        // Hide finished/finalized/archived elections from voters (schedule should be meaningful only)
+        .gte("end_date", new Date().toISOString())
+        .eq("is_final", false)
+        .eq("is_archived", false);
 
       if (error) {
         console.error("Error loading elections:", error.message);
@@ -126,6 +165,21 @@ const RegistrationConfirmation = () => {
       const all = data || [];
 
       const visible = all.filter((e) => {
+        // Audience gate first (employees should only see employee elections, students only student elections)
+        if (e.voter_audience && e.voter_audience !== voterAudience) return false;
+
+        // Time gate: show upcoming + ongoing only; hide anything finished (defense-in-depth)
+        const now = new Date();
+        const start = new Date(e.start_date);
+        const end = new Date(e.end_date);
+        const isUpcoming = start > now;
+        const isOngoing = start <= now && end >= now;
+        if (!isUpcoming && !isOngoing) return false;
+        if (voterAudience === "employees") {
+          // Employees do not use org-based eligibility.
+          return true;
+        }
+
         const eligibleOrgs: string[] | null = e.eligible_orgs ?? null;
         if (!eligibleOrgs || eligibleOrgs.length === 0) return true; // open to all (SCC)
         return eligibleOrgs.some((org) => orgSet.has(org));
@@ -136,7 +190,23 @@ const RegistrationConfirmation = () => {
     };
 
     loadElections();
-  }, [orgSet]);
+  }, [orgSet, voterAudience]);
+
+
+  // Auto-redirect back to home to keep the kiosk flow moving.
+  useEffect(() => {
+    if (requestOpen) return; // pause auto-return while the membership request modal is open
+    if (secondsLeft <= 0) {
+      navigate("/", { replace: true });
+      return;
+    }
+
+    const t = window.setTimeout(() => {
+      setSecondsLeft((s) => s - 1);
+    }, 1000);
+
+    return () => window.clearTimeout(t);
+  }, [secondsLeft, requestOpen, navigate]);
 
   const submitMembershipRequest = async () => {
     if (!reqOrg) {
@@ -222,6 +292,20 @@ const RegistrationConfirmation = () => {
           Registration Submitted
         </h1>
 
+        <div className="mt-3 flex justify-center">
+          <span
+            className={[
+              "inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold border",
+              voterAudience === "employees"
+                ? "bg-blue-500/10 border-blue-500/20 text-blue-700"
+                : "bg-emerald-500/10 border-emerald-500/20 text-emerald-700",
+            ].join(" ")}
+          >
+            <span className="h-2 w-2 rounded-full bg-current opacity-70" />
+            Registered as: {voterAudience === "employees" ? "Employee" : "Student"}
+          </span>
+        </div>
+
         <p className="text-muted-foreground mb-5 text-base">
           Thanks,&nbsp;
           <span className="font-semibold text-foreground">{fullName}</span>.
@@ -229,34 +313,52 @@ const RegistrationConfirmation = () => {
           To activate your registration, you must verify your email first.
         </p>
 
-        {/* ✅ Email verification required */}
-        <div className="mb-8 rounded-xl border border-primary/20 bg-muted/10 p-5 text-left">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center">
+                {/* Email verification */}
+        <div className="mb-8 rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/5 via-background to-secondary/5 p-6 text-left">
+          <div className="flex items-start gap-4">
+            <div className="mt-0.5 h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
               <ShieldCheck className="h-5 w-5 text-primary" />
             </div>
 
             <div className="flex-1">
-              <div className="font-semibold text-foreground">
-                Email verification required (expires in 72 hours)
-              </div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                We sent a verification link to{" "}
-                <span className="font-medium text-foreground">
-                  {email ? email : "your registered email"}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-semibold text-foreground">
+                  Verify your email to activate your registration
+                </div>
+                <span className="inline-flex items-center rounded-full border border-primary/20 bg-white/60 px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+                  Expires in 72 hours
                 </span>
-                . Open the email and click the link to complete your registration.
               </div>
-              <div className="mt-2 text-sm text-muted-foreground">
-                After verification, return to the kiosk and proceed to voting.
-              </div>
+
+              <ol className="mt-3 space-y-1.5 text-sm text-muted-foreground list-decimal pl-5">
+                <li>
+                  Open the verification email sent to{" "}
+                  <span className="font-medium text-foreground">
+                    {email ? email : "your registered email"}
+                  </span>
+                  .
+                </li>
+                <li>Click the verification link to complete registration.</li>
+                <li>Return to the kiosk to proceed to voting.</li>
+              </ol>
+
             </div>
           </div>
         </div>
 
-
-        {/* ✅ HERO: Eligible orgs */}
-        <div className="mb-8">
+        {voterAudience === "employees" ? (
+          <div className="mb-8 rounded-2xl border border-border bg-muted/10 p-6 text-left">
+            <div className="text-sm text-muted-foreground">
+              Organization memberships apply to student elections only.
+            </div>
+            <div className="mt-2 text-sm text-muted-foreground">
+              Employee elections will appear on the kiosk when available.
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Eligible orgs */}
+            <div className="mb-8">
           <div className="flex items-center justify-center gap-2 mb-4">
             <ShieldCheck className="h-5 w-5 text-primary" />
             <h2 className="text-xl font-semibold text-foreground">
@@ -384,10 +486,10 @@ const RegistrationConfirmation = () => {
               </p>
             </div>
           )}
-        </div>
+            </div>
 
-        {/* Election schedule */}
-        <div className="mb-8 text-left">
+            {/* Election schedule */}
+            <div className="mb-8 text-left">
           <h2 className="text-lg font-semibold mb-2 text-primary text-center">
             Your Election Schedule
           </h2>
@@ -439,9 +541,18 @@ const RegistrationConfirmation = () => {
               No election schedule found yet.
             </p>
           )}
-        </div>
+            </div>
+          </>
+        )}
 
-        <div className="space-y-3">
+        <div className="space-y-2">
+          <div className="rounded-xl border border-primary/20 bg-primary/10 p-2 text-center">
+            <div className="text-sm text-muted-foreground">Auto-returning to Home in</div>
+            <div className="text-2xl font-extrabold tracking-tight text-primary">
+              {secondsLeft}s
+            </div>
+          </div>
+
           <Button
             className="w-full bg-gradient-to-r from-primary to-secondary text-white hover:opacity-90 text-base py-5 font-semibold"
             onClick={() => navigate("/")}
