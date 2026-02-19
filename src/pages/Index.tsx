@@ -28,7 +28,7 @@ type Election = {
   is_archived: boolean | null;
 };
 
-type ElectionView = "active" | "upcoming" | "inactive" | "finished";
+type ElectionView = "active" | "upcoming" | "finished";
 
 const Index = () => {
   const navigate = useNavigate();
@@ -182,10 +182,9 @@ const Index = () => {
     return Number.isFinite(ms) ? ms : null;
   };
 
-  const { active, upcoming, inactive, finished } = useMemo(() => {
+  const { active, upcoming, finished } = useMemo(() => {
     const active: Election[] = [];
     const upcoming: Election[] = [];
-    const inactive: Election[] = [];
     const finished: Election[] = [];
 
     for (const e of elections) {
@@ -213,20 +212,13 @@ const Index = () => {
         continue;
       }
 
-      // Not closed, not archived:
-      // If election is not enabled by admin, it belongs to the Inactive bucket (regardless of time).
-      if (isExplicitlyInactive(e)) {
-        inactive.push(e);
-        continue;
-      }
-
       // Enabled: now decide active vs upcoming by schedule
       if (nowMs >= startMs && nowMs <= endMs) active.push(e);
       else if (nowMs < startMs) upcoming.push(e);
       // else: between end and now would have been caught by timeEnded above
     }
 
-    return { active, upcoming, inactive, finished };
+    return { active, upcoming, finished };
   }, [elections, now]);
 
   // Keep the selected view valid when the underlying lists change.
@@ -234,15 +226,13 @@ const Index = () => {
     setElectionView((prev) => {
       if (prev === "active" && active.length) return prev;
       if (prev === "upcoming" && upcoming.length) return prev;
-      if (prev === "inactive" && inactive.length) return prev;
       if (prev === "finished" && finished.length) return prev;
 
       if (active.length) return "active";
       if (upcoming.length) return "upcoming";
-      if (inactive.length) return "inactive";
       return "finished";
     });
-  }, [active.length, upcoming.length, inactive.length, finished.length]);
+  }, [active.length, upcoming.length, finished.length]);
 
   // Countdown strings derived from the single `now` tick (no second interval needed).
   const timeLeftMap = useMemo(() => {
@@ -280,12 +270,6 @@ const Index = () => {
   const getClosedLabel = (election: Election) => {
     if (Boolean(election?.is_final)) return "Election finished (finalized)";
     return "Voting finished";
-  };
-
-  const getInactiveLabel = (election: Election) => {
-    const start = new Date(election.start_date);
-    if (now < start) return "Inactive (disabled before start)";
-    return "Inactive (disabled by admin)";
   };
 
   return (
@@ -497,7 +481,7 @@ const Index = () => {
                     <div className="min-w-0">
                       <h1 className="text-lg font-semibold text-emerald-900 leading-tight">Elections</h1>
                       <p className="text-xs text-muted-foreground">
-                        Browse live, upcoming, inactive, and finished elections.
+                        Browse live, upcoming, and finished elections.
                       </p>
                     </div>
                   </div>
@@ -528,19 +512,6 @@ const Index = () => {
                     onClick={() => setElectionView("upcoming")}
                   >
                     Upcoming <span className="ml-2 text-[11px] opacity-90">({upcoming.length})</span>
-                  </Button>
-
-                  <Button
-                    type="button"
-                    variant={electionView === "inactive" ? "default" : "outline"}
-                    className={
-                      electionView === "inactive"
-                        ? "bg-slate-700 hover:bg-slate-700 text-white"
-                        : "border-slate-200 text-slate-800 bg-white/70"
-                    }
-                    onClick={() => setElectionView("inactive")}
-                  >
-                    Inactive <span className="ml-2 text-[11px] opacity-90">({inactive.length})</span>
                   </Button>
 
                   <Button
@@ -601,33 +572,6 @@ const Index = () => {
                               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
                                 <CalendarDays className="h-3 w-3" />
                                 Starts: {formatDateTime(election.start_date)}
-                              </p>
-                            </div>
-                            <div className="shrink-0">
-                              <ElectionStatusBadge election={election} />
-                            </div>
-                          </div>
-                        </Card>
-                      ))}
-                    </div>
-                  )
-                ) : electionView === "inactive" ? (
-                  inactive.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No inactive elections.</p>
-                  ) : (
-                    <div className="space-y-4">
-                      {inactive.map((election) => (
-                        <Card key={election.id} className="p-5 border hover:bg-slate-50">
-                          <div className="flex items-start justify-between gap-3 mb-1">
-                            <div className="min-w-0">
-                              <h3 className="font-semibold leading-tight truncate">{election.title}</h3>
-                              <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                                <CalendarDays className="h-3 w-3" />
-                                {formatDateTime(election.start_date)} →{" "}
-                                {formatDateTime(election.end_date)}
-                              </p>
-                              <p className="text-xs text-slate-700 mt-1 font-medium">
-                                {getInactiveLabel(election)}
                               </p>
                             </div>
                             <div className="shrink-0">

@@ -554,6 +554,25 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
 <div className="pointer-events-none absolute -bottom-28 -right-28 h-96 w-96 rounded-full bg-amber-400/15 blur-3xl animate-blob-2" />
 <div className="pointer-events-none absolute top-24 right-20 h-56 w-56 rounded-full bg-white/30 blur-3xl animate-blob-1" />
 
+      {/* DEV helper: lets you test the back-swipe handler without a touchscreen */}
+      {import.meta.env.DEV && (
+        <button
+          type="button"
+          className="fixed bottom-4 left-4 z-[60] rounded-lg border border-border bg-white/90 px-3 py-2 text-xs font-semibold shadow hover:bg-white"
+          onClick={() => {
+            try {
+              window.history.back();
+              // Some browsers won't emit popstate synchronously; nudge it for deterministic testing.
+              window.dispatchEvent(new PopStateEvent("popstate"));
+            } catch {
+              // noop
+            }
+          }}
+        >
+          DEV: Simulate Back
+        </button>
+      )}
+
       {/* BACK / GESTURE CONFIRM (Issue #2) */}
       {backConfirmOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -591,7 +610,7 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
                   }
                 }}
               >
-                End session &amp; go Home
+                End session
               </button>
             </div>
           </div>
