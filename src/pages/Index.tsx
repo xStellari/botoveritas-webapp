@@ -62,7 +62,7 @@ const Index = () => {
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
-
+  
   const loadRegistrationSetting = async (opts?: { silent?: boolean }) => {
     const silent = opts?.silent ?? false;
 

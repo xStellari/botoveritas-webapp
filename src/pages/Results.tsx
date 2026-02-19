@@ -218,6 +218,120 @@ export default function Results() {
 
   // Cache eligible voter count to avoid re-fetching the voters table on every realtime update.
   const eligibleCountCacheSig = useRef<string | null>(null);
+  // ----------------------------
+  // Chart image generation (client-side) to avoid Supabase Edge CPU timeouts
+  // We render charts via QuickChart in the browser and send JPG images to the Edge Function.
+  // ----------------------------
+    const blobToBase64 = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("Failed to read blob"));
+      reader.onload = () => {
+        const res = String(reader.result || "");
+        // res is data:<mime>;base64,<data>
+        const comma = res.indexOf(",");
+        if (comma === -1) return reject(new Error("Invalid data URL"));
+        resolve(res.slice(comma + 1));
+      };
+      reader.readAsDataURL(blob);
+    });
+
+  // ----------------------------
+  // Chart image generation (client-side) to avoid Supabase Edge CPU timeouts.
+  // We render charts via QuickChart in the browser and send PNG images to the Edge Function.
+  // PNG is more robust to embed across runtimes than JPEG (avoids SOI errors).
+  // ----------------------------
+  const quickChartPngBase64 = async (chartConfig: any, width = 900, height = 450) => {
+    const res = await fetch(`https://quickchart.io/chart?f=png&w=${width}&h=${height}&devicePixelRatio=1&bkg=white`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chart: chartConfig }),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`QuickChart error ${res.status}: ${t?.slice?.(0, 200) ?? ""}`);
+    }
+    const ct = res.headers.get("content-type") || "";
+    if (!ct.includes("image/")) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`QuickChart returned non-image content: ${t?.slice?.(0, 200) ?? ""}`);
+    }
+    const blob = await res.blob();
+    return await blobToBase64(blob);
+  };
+
+  const buildChartImagesPayload = async (electionId: string) => {
+    // Year level turnout donut (needs RPC)
+    const { data: ylData, error: ylErr } = await supabase.rpc("year_level_turnout_for_election", { p_election_id: electionId });
+    if (ylErr) throw ylErr;
+
+    const yearLevelRows = (ylData || []) as Array<{ year_level: string; voter_count: number }>;
+    const turnoutLabels = yearLevelRows.map((r) => r.year_level);
+    const turnoutValues = yearLevelRows.map((r) => r.voter_count);
+
+    const turnoutDonutConfig = {
+      type: "doughnut",
+      data: { labels: turnoutLabels, datasets: [{ data: turnoutValues }] },
+      options: {
+        plugins: { legend: { position: "right" }, title: { display: false } },
+        cutout: "55%",
+      },
+    };
+
+    // Position pie charts (filter out zero-vote candidates; include ABSTAIN when applicable)
+    const positionCharts: Record<string, { mime: string; data_base64: string }> = {};
+
+    for (const [pos, positionCandidates] of Object.entries(candidatesByPosition)) {
+      const sum = positionSummaries[pos];
+      const abstain = sum?.abstain_count ?? 0;
+
+      // Only include candidates that actually received votes
+      const votedCandidates = positionCandidates
+        .filter((c) => (c.vote_count ?? 0) > 0)
+        .slice()
+        .sort((a, b) => (b.vote_count ?? 0) - (a.vote_count ?? 0));
+
+      const labels: string[] = votedCandidates.map((x) => x.name);
+      const values: number[] = votedCandidates.map((x) => x.vote_count ?? 0);
+
+      // Add abstain as its own slice if present
+      if (abstain > 0) {
+        labels.push("ABSTAIN");
+        values.push(abstain);
+      }
+
+      // If there are no non-zero slices, skip chart generation (keeps PDF clean)
+      if (values.reduce((acc, v) => acc + v, 0) <= 0) continue;
+
+      const pieConfig = {
+        type: "pie",
+        data: { labels, datasets: [{ data: values }] },
+        options: {
+          plugins: {
+            legend: {
+              position: "right",
+              labels: {
+                // Slightly smaller legend text for long names
+                font: { size: 11 },
+              },
+            },
+            title: { display: false },
+          },
+        },
+      };
+
+      // Smaller chart to reduce payload + embed CPU
+      const data_base64 = await quickChartPngBase64(pieConfig, 850, 420);
+      positionCharts[pos] = { mime: "image/png", data_base64 };
+    }
+
+    const turnout_base64 = await quickChartPngBase64(turnoutDonutConfig, 850, 420);
+
+    return {
+      turnout_donut: { mime: "image/png", data_base64: turnout_base64 },
+      position_pies: positionCharts,
+    };
+  };
   const eligibleCountCacheVal = useRef<number>(0);
 
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
@@ -244,10 +358,12 @@ export default function Results() {
 
 
     try {
+      const chart_images = await buildChartImagesPayload(selectedElection.id);
       const { data, error } = await supabase.functions.invoke("generate-results-pdf", {
         body: {
           election_id: selectedElection.id,
-          include_charts: false,
+          include_charts: true,
+          chart_images,
           signatories: [
             { label: "Prepared by", name: "Isaac Caubat", role: "Group Member" },
             { label: "Prepared by", name: "Lance Owen Miguel Cervantes", role: "Group Member" },
@@ -939,4 +1055,3 @@ export default function Results() {
     </div>
   );
 }
-

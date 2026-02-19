@@ -1,13 +1,12 @@
 import { supabase } from "@/integrations/supabase/client";
 
 function getKioskSecret(): string | null {
-  // Prefer build-time env (Vite)
+  // IMPORTANT: Vite only injects env vars when accessed via direct property reads.
+  // Avoid dynamic access like (import.meta as any).env[...] because it won't be replaced at build time.
   const envSecret =
-    (import.meta as any)?.env?.VITE_KIOSK_SECRET ??
-    (import.meta as any)?.env?.VITE_PUBLIC_KIOSK_SECRET ??
-    null;
+    (import.meta.env.VITE_KIOSK_SECRET || import.meta.env.VITE_PUBLIC_KIOSK_SECRET || "") as string;
 
-  if (typeof envSecret === "string" && envSecret.trim()) return envSecret.trim();
+  if (envSecret && envSecret.trim()) return envSecret.trim();
 
   // Runtime fallback (useful for kiosk deployments where env isn't embedded)
   try {

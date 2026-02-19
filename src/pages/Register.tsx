@@ -144,6 +144,17 @@ export default function Register() {
     });
   };
 
+  const handleBack = () => {
+    // Prefer navigating back to the landing page, but fail-safe to "/" if history is missing
+    // (e.g., direct link to /register or kiosk/browser history restrictions).
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+
+    navigate("/");
+  };
+
   // Registration CLOSED state (still styled, not a blank page)
   if (!registrationLoading && !registrationEnabled) {
     return (
@@ -454,13 +465,24 @@ export default function Register() {
               </div>
 
               {/* PROCEED BUTTON */}
-              <Button
-                type="submit"
-                disabled={registrationLoading || !registrationEnabled}
-                className="w-full text-lg py-6 font-semibold bg-gradient-to-r from-primary to-secondary hover:opacity-90"
-              >
-                {registrationLoading ? "Checking registration window…" : "Proceed to Identity Verification"}
-              </Button>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleBack}
+                  className="w-full sm:w-auto sm:flex-1 text-lg py-6 font-semibold"
+                >
+                  Back
+                </Button>
+
+                <Button
+                  type="submit"
+                  disabled={registrationLoading || !registrationEnabled}
+                  className="w-full sm:flex-[2] text-lg py-6 font-semibold bg-gradient-to-r from-primary to-secondary hover:opacity-90"
+                >
+                  {registrationLoading ? "Checking registration window…" : "Proceed to Identity Verification"}
+                </Button>
+              </div>
             </form>
           </CardContent>
         </Card>

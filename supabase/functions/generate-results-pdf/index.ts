@@ -1,12 +1,13 @@
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { serve } from "std/http/server";
+import { createClient } from "supabase";
+import { ethers } from "ethers";
 import {
   PDFDocument,
   PDFPage,
   PDFFont,
   StandardFonts,
   rgb,
-} from "npm:pdf-lib@1.17.1";
+} from "pdf-lib";
 
 /* =========================
    Types
@@ -37,6 +38,17 @@ type ElectionRow = {
 
 type YearLevelRow = { year_level: string; voter_count: number };
 
+type ElectionVoteChunkRow = {
+  chunk_index: number;
+  chunk_root: string | null;
+};
+
+type ElectionManifestRow = {
+  manifest_hash: string | null;
+  spec_version?: string | null;
+  created_at?: string | null;
+};
+
 type Signatory = {
   label: string;
   name: string;
@@ -48,6 +60,10 @@ type VotesVoterIdRow = { voter_id: string | null };
 type Body = {
   election_id?: string;
   include_charts?: boolean;
+  chart_images?: {
+    turnout_donut?: { mime?: string; data_base64: string };
+    position_pies?: Record<string, { mime?: string; data_base64: string }>;
+  };
   logo_url?: string;
 
   // Signatories (preferred)
@@ -65,6 +81,30 @@ type Body = {
   tx_hashes?: string[];
   contract_address?: string;
   nft_collection?: string;
+
+  // ZKP / commitment verification (optional)
+  tally_commitment?: string; // e.g., Merkle root / Poseidon root
+  zk_proof_hash?: string; // hash/identifier of the ZK proof artifact
+  zk_verifier_contract?: string;
+  zk_verification_tx?: string; // tx hash where proof was verified
+  public_inputs_hash?: string; // hash of public inputs used by the verifier
+  onchain_anchor_tx?: string; // tx hash anchoring the report/tally digest
+  onchain_anchor_note?: string; // short description of the anchor (event name, method)
+
+  // BV anchors (optional; if supplied, PDF can compare against computed values)
+  election_id_hash_bytes32?: string;
+  election_vote_root_bytes32?: string;
+  manifest_hash_bytes32?: string;
+
+  // ZK tally artifacts (optional)
+  results_hash_bytes32?: string;
+  results_uri?: string;
+
+  // On-chain tally submission (optional)
+  tally_registry_address?: string;
+  tally_submit_tx?: string;
+  tally_submitter?: string;
+  tally_submitted_at?: string;
 };
 
 /* =========================
@@ -127,6 +167,57 @@ function pct(n: number, d: number) {
 }
 
 
+function ensure0x32(hex: string) {
+  const h = String(hex ?? "");
+  if (!h) return "";
+  return h.startsWith("0x") ? h : `0x${h}`;
+}
+
+function toLowerHex32(hex: string) {
+  const h = ensure0x32(hex);
+  return h ? ("0x" + h.slice(2).toLowerCase()) : "";
+}
+
+function keccakPairHashSorted(a: string, b: string) {
+  const aa = toLowerHex32(a);
+  const bb = toLowerHex32(b);
+  if (!aa || !bb) return "";
+  const [min, max] = aa <= bb ? [aa, bb] : [bb, aa];
+  return ethers.keccak256(ethers.concat([min, max]));
+}
+
+function merkleRootSortedPairs(leaves: string[]) {
+  const clean = leaves.filter(Boolean).map(toLowerHex32);
+  if (clean.length === 0) return "0x" + "00".repeat(32);
+  if (clean.length === 1) return clean[0];
+
+  let level = [...clean];
+  while (level.length > 1) {
+    const next: string[] = [];
+    for (let i = 0; i < level.length; i += 2) {
+      const left = level[i];
+      const right = i + 1 < level.length ? level[i + 1] : level[i];
+      next.push(keccakPairHashSorted(left, right));
+    }
+    level = next;
+  }
+  return level[0];
+}
+
+function hashUtf8ToBytes32(s: string) {
+  return ethers.keccak256(ethers.toUtf8Bytes(String(s ?? "")));
+}
+
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+
 // Canonical position sets per org (single-seat everywhere)
 const ORG_CANONICAL_POSITIONS: Record<string, string[]> = {
   ICpEP: [
@@ -184,18 +275,75 @@ function uniqPreserveOrder(items: string[]) {
   return out;
 }
 
-function getCanonicalPositionsForEligibleOrgs(eligibleOrgs: unknown): string[] {
+
+function normalizeOrgCode(s: string) {
+  return String(s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+const ORG_ALIASES: Record<string, keyof typeof ORG_CANONICAL_POSITIONS> = {
+  "icpep": "ICpEP",
+  "icpep.se": "ICpEP",
+  "icpep se": "ICpEP",
+  "scc": "SCC",
+  "student coordinating council": "SCC",
+  "student-coordinating-council": "SCC",
+  "honsoc": "HonSoc",
+  "hon soc": "HonSoc",
+  "honor society": "HonSoc",
+  "honoursoc": "HonSoc",
+};
+
+function inferOrgCodesFromTitle(title: string): Array<keyof typeof ORG_CANONICAL_POSITIONS> {
+  const t = normalizeOrgCode(title);
+  const out: Array<keyof typeof ORG_CANONICAL_POSITIONS> = [];
+
+  const push = (c: keyof typeof ORG_CANONICAL_POSITIONS) => {
+    if (!out.includes(c)) out.push(c);
+  };
+
+  if (t.includes("icpep")) push("ICpEP");
+  if (t.includes("scc") || t.includes("student coordinating council")) push("SCC");
+  if (t.includes("honsoc") || t.includes("hon soc") || t.includes("honor society")) push("HonSoc");
+
+  return out;
+}
+
+function getCanonicalPositionsForElection(electionTitle: string, eligibleOrgs: unknown): string[] {
   const list = Array.isArray(eligibleOrgs) ? eligibleOrgs : [];
-  const codes = uniqPreserveOrder(list.map((x) => String(x ?? "").trim()));
-  const known = codes.filter((c) => Boolean(ORG_CANONICAL_POSITIONS[c]));
-  if (known.length === 0) return [];
-  return uniqPreserveOrder(known.flatMap((c) => ORG_CANONICAL_POSITIONS[c]));
+  const rawCodes = uniqPreserveOrder(list.map((x) => String(x ?? "").trim()).filter(Boolean));
+
+  const mapped = rawCodes
+    .map((c) => ORG_ALIASES[normalizeOrgCode(c)] ?? null)
+    .filter(Boolean) as Array<keyof typeof ORG_CANONICAL_POSITIONS>;
+
+  const inferred = mapped.length ? mapped : inferOrgCodesFromTitle(electionTitle);
+
+  if (inferred.length === 0) return [];
+  return uniqPreserveOrder(inferred.flatMap((c) => ORG_CANONICAL_POSITIONS[c]));
+}
+
+
+
+function normalizePosition(s: string) {
+  // Normalize casing, whitespace, and dash variants so DB values like
+  // 'Vice President – Internal' still match the canonical order.
+  return String(s ?? "")
+    .toLowerCase()
+    .replace(/[–—]/g, "-")
+    .replace(/\s*\-\s*/g, " - ")
+    .replace(/\s*:\s*/g, ": ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function canonicalPositionIndex(position: string, canonicalOrder: string[]) {
-  const p = (position ?? "").trim();
+  const p = normalizePosition(position);
   if (!p) return -1;
-  return canonicalOrder.indexOf(p);
+  // Case/whitespace-insensitive match (DB values may differ in casing)
+  for (let i = 0; i < canonicalOrder.length; i++) {
+    if (normalizePosition(canonicalOrder[i]) === p) return i;
+  }
+  return -1;
 }
 
 function positionRank(posRaw: string, canonicalOrder: string[]) {
@@ -223,6 +371,8 @@ function positionRank(posRaw: string, canonicalOrder: string[]) {
       pos.includes("external"))
   )
     return 3;
+
+  if (pos === "vp" || (pos.includes("vice") && pos.includes("president"))) return 2;
 
   if (pos === "secretary" || pos.includes("secretary")) return 4;
   if (pos === "treasurer" || pos.includes("treasurer")) return 5;
@@ -274,6 +424,25 @@ async function quickChartPng(
 
   return new Uint8Array(await res.arrayBuffer());
 }
+
+function base64ToU8(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+
+async function embedBase64Image(
+  pdf: PDFDocument,
+  mime: string | undefined,
+  data_base64: string,
+) {
+  const bytes = base64ToU8(data_base64);
+  if ((mime || "").includes("png")) return await pdf.embedPng(bytes);
+  // default to jpeg
+  return await pdf.embedJpg(bytes);
+}
+
 
 function u8ToArrayBuffer(u8: Uint8Array): ArrayBuffer {
   // Copy to force a real ArrayBuffer (avoids ArrayBuffer | SharedArrayBuffer typing)
@@ -337,60 +506,82 @@ async function drawHeader(params: {
   const pageH = page.getHeight();
 
   const marginX = 48;
-  const headerTopY = pageH - 40;
-  const headerLineY = pageH - 70;
 
-  // light band
+  // --- FEU / BotoVeritas ceremonial header ---
+  // Keep geometry predictable: callers expect a safe Y to start body content.
+  const bandH = 86;
+  const bandY = pageH - bandH;
+
+  // FEU deep green band
   page.drawRectangle({
     x: 0,
-    y: pageH - 92,
+    y: bandY,
     width: pageW,
-    height: 92,
-    color: rgb(0.98, 0.98, 0.985),
+    height: bandH,
+    color: rgb(0.02, 0.28, 0.16), // #054827-ish
   });
 
-  // Logo
+  // gold trim
+  page.drawRectangle({
+    x: 0,
+    y: bandY - 6,
+    width: pageW,
+    height: 6,
+    color: rgb(0.78, 0.62, 0.20), // gold
+  });
+
+  // logo (left)
+  const logoBox = 34;
+  const logoX = marginX;
+  const logoY = pageH - 58;
+
   if (logoBytes && logoBytes.length > 0) {
     try {
       const img = await embedLogo(pdf, logoBytes);
-      const logoH = 30;
-      const logoW = (img.width / img.height) * logoH;
+      const scale = Math.min(logoBox / img.width, logoBox / img.height);
+      const w = img.width * scale;
+      const h = img.height * scale;
 
       page.drawImage(img, {
-        x: marginX,
-        y: pageH - 68,
-        width: logoW,
-        height: logoH,
+        x: logoX,
+        y: logoY,
+        width: w,
+        height: h,
       });
     } catch {
-      // ignore logo failures
+      // ignore logo failures; header still renders
     }
   }
 
+  // text
+  const titleX = marginX + logoBox + 16;
+
   page.drawText(title, {
-    x: marginX + 110,
-    y: headerTopY,
-    size: 12.5,
+    x: titleX,
+    y: pageH - 44,
+    size: 16,
     font: fontBold,
-    color: rgb(0.12, 0.18, 0.14),
+    color: rgb(1, 1, 1),
   });
 
   page.drawText(subtitle, {
-    x: marginX + 110,
-    y: headerTopY - 16,
-    size: 9.5,
+    x: titleX,
+    y: pageH - 62,
+    size: 11,
     font,
-    color: rgb(0.35, 0.35, 0.35),
+    color: rgb(0.92, 0.94, 0.93),
   });
 
+  // divider line under gold trim (subtle)
   page.drawLine({
-    start: { x: marginX, y: headerLineY },
-    end: { x: pageW - marginX, y: headerLineY },
+    start: { x: marginX, y: bandY - 10 },
+    end: { x: pageW - marginX, y: bandY - 10 },
     thickness: 1,
-    color: rgb(0.86, 0.86, 0.88),
+    color: rgb(0.88, 0.86, 0.80),
   });
 
-  return headerLineY - 18;
+  // Start body content safely below header
+  return bandY - 32;
 }
 
 function drawSectionTitle(
@@ -400,13 +591,23 @@ function drawSectionTitle(
   x: number,
   y: number,
 ) {
+  // Ceremonial section header: gold title + underline
   page.drawText(title, {
     x,
     y,
-    size: 13,
+    size: 18,
     font: fontBold,
-    color: rgb(0.12, 0.18, 0.14),
+    color: rgb(0.78, 0.62, 0.20), // gold
   });
+
+  page.drawLine({
+    start: { x, y: y - 6 },
+    end: { x: x + 260, y: y - 6 },
+    thickness: 2,
+    color: rgb(0.78, 0.62, 0.20),
+  });
+
+  return y - 18;
 }
 
 function drawParagraph(
@@ -420,30 +621,145 @@ function drawParagraph(
   lineHeight = 14,
   color = rgb(0.2, 0.2, 0.2),
 ) {
-  // simple wrap
-  const words = text.split(/\s+/);
+  // Wrap with support for very long tokens (hashes/URLs) by chunking them.
+  const words = text.split(/\s+/).filter(Boolean);
   let line = "";
   let cy = y;
 
-  for (const w of words) {
-    const test = line ? `${line} ${w}` : w;
-    const wWidth = font.widthOfTextAtSize(test, fontSize);
-    if (wWidth > maxWidth) {
-      page.drawText(line, { x, y: cy, size: fontSize, font, color });
-      cy -= lineHeight;
-      line = w;
-    } else {
-      line = test;
-    }
-  }
-  if (line) {
+  const flush = () => {
+    if (!line) return;
     page.drawText(line, { x, y: cy, size: fontSize, font, color });
     cy -= lineHeight;
-  }
+    line = "";
+  };
+
+  const pushWord = (w: string) => {
+    // If a single word is wider than maxWidth, split it into chunks.
+    if (font.widthOfTextAtSize(w, fontSize) <= maxWidth) {
+      const test = line ? `${line} ${w}` : w;
+      if (font.widthOfTextAtSize(test, fontSize) > maxWidth) flush();
+      line = line ? `${line} ${w}` : w;
+      return;
+    }
+
+    // Split long word into chunks that fit maxWidth
+    let chunk = "";
+    for (const ch of w) {
+      const testChunk = chunk + ch;
+      if (font.widthOfTextAtSize(testChunk, fontSize) > maxWidth) {
+        const testLine = line ? `${line} ${chunk}` : chunk;
+        if (line && font.widthOfTextAtSize(testLine, fontSize) > maxWidth) flush();
+        if (chunk) {
+          line = line ? `${line} ${chunk}` : chunk;
+          flush();
+        }
+        chunk = ch;
+      } else {
+        chunk = testChunk;
+      }
+    }
+    if (chunk) {
+      const testLine = line ? `${line} ${line.endsWith(chunk) ? "" : ""}${chunk}` : chunk;
+      if (line && font.widthOfTextAtSize(testLine, fontSize) > maxWidth) flush();
+      line = line ? `${line} ${chunk}` : chunk;
+    }
+  };
+
+  for (const w of words) pushWord(w);
+  flush();
   return cy;
 }
-
 function drawInfoBox(params: {
+  page: PDFPage;
+  fontBold: PDFFont;
+  font: PDFFont;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  title: string;
+  value: string;
+  footnote?: string;
+}) {
+  const { page, fontBold, font, x, y, w, h, title, value, footnote } = params;
+
+  // Ceremonial metric card: soft tint + gold accent bar
+  page.drawRectangle({
+    x,
+    y: y - h,
+    width: w,
+    height: h,
+    color: rgb(0.95, 0.97, 0.96), // light green tint
+    borderColor: rgb(0.90, 0.90, 0.90),
+    borderWidth: 1,
+  });
+
+  // left gold accent
+  page.drawRectangle({
+    x,
+    y: y - h,
+    width: 5,
+    height: h,
+    color: rgb(0.78, 0.62, 0.20),
+  });
+
+  const padX = 14;
+  const maxW = w - padX * 2;
+
+  page.drawText(title.toUpperCase(), {
+    x: x + padX,
+    y: y - 18,
+    size: 9,
+    font,
+    color: rgb(0.25, 0.25, 0.25),
+  });
+
+  // Auto-fit the value so it never clips outside the card.
+  let valueSize = 20;
+  while (valueSize > 12 && fontBold.widthOfTextAtSize(value, valueSize) > maxW) {
+    valueSize -= 1;
+  }
+
+  if (fontBold.widthOfTextAtSize(value, valueSize) <= maxW) {
+    page.drawText(value, {
+      x: x + padX,
+      y: y - 42,
+      size: valueSize,
+      font: fontBold,
+      color: rgb(0.02, 0.28, 0.16),
+    });
+  } else {
+    // Very long strings (URLs / long network names) -> wrap to 2 lines
+    drawParagraph(
+      page,
+      fontBold,
+      value,
+      x + padX,
+      y - 34,
+      maxW,
+      11,
+      13,
+      rgb(0.02, 0.28, 0.16),
+    );
+  }
+
+  if (footnote) {
+    drawParagraph(
+      page,
+      font,
+      footnote,
+      x + padX,
+      y - h + 16,
+      maxW,
+      8.5,
+      11.5,
+      rgb(0.35, 0.35, 0.35),
+    );
+  }
+}
+
+
+function drawInfoBoxCompact(params: {
   page: PDFPage;
   fontBold: PDFFont;
   font: PDFFont;
@@ -462,35 +778,25 @@ function drawInfoBox(params: {
     y: y - h,
     width: w,
     height: h,
-    borderColor: rgb(0.86, 0.86, 0.88),
+    color: rgb(0.95, 0.97, 0.96),
+    borderColor: rgb(0.90, 0.90, 0.90),
     borderWidth: 1,
-    color: rgb(1, 1, 1),
   });
 
-  page.drawText(title, {
-    x: x + 12,
+  page.drawRectangle({ x, y: y - h, width: 5, height: h, color: rgb(0.78, 0.62, 0.20) });
+
+  page.drawText(title.toUpperCase(), {
+    x: x + 14,
     y: y - 18,
-    size: 9.5,
+    size: 8.6,
     font,
-    color: rgb(0.45, 0.45, 0.45),
+    color: rgb(0.25, 0.25, 0.25),
   });
 
-  page.drawText(value, {
-    x: x + 12,
-    y: y - 42,
-    size: 18,
-    font: fontBold,
-    color: rgb(0.12, 0.18, 0.14),
-  });
+  drawParagraph(page, fontBold, value || "—", x + 14, y - 36, w - 28, 13.5, 15.5, rgb(0.02, 0.28, 0.16));
 
   if (footnote) {
-    page.drawText(footnote, {
-      x: x + 12,
-      y: y - h + 12,
-      size: 8.8,
-      font,
-      color: rgb(0.45, 0.45, 0.45),
-    });
+    drawParagraph(page, font, footnote, x + 14, y - h + 18, w - 28, 8.2, 10.5, rgb(0.35, 0.35, 0.35));
   }
 }
 
@@ -506,7 +812,9 @@ serve(async (req: Request) => {
     const body: Body = await req.json().catch(() => ({} as Body));
 
     const election_id = body?.election_id;
-    const includeCharts = body?.include_charts ?? false;
+    // Default to showing charts unless the caller explicitly disables them.
+    const includeCharts = body?.include_charts ?? true;
+    const chart_images = body?.chart_images;
 
     // Deployment decision: require election_id (no "all elections" export)
     if (!election_id) {
@@ -561,15 +869,37 @@ serve(async (req: Request) => {
     }
 
     // Blockchain summary options (optional)
-    const network = body?.network || "Polygon (Proof-of-Vote via NFT)";
+    const network = body?.network || "Polygon Amoy";
     // Default switched to Polygon Amoy for defense testing
     const explorer_base =
       body?.explorer_base || "https://amoy.polygonscan.com/tx/";
     const tx_hashes = Array.isArray(body?.tx_hashes)
       ? body.tx_hashes.filter(Boolean).slice(0, 20)
       : [];
-    const contract_address = body?.contract_address || "";
-    const nft_collection = body?.nft_collection || "BotoVeritas Proof-of-Vote";
+    // Parsed for forward-compat; may be rendered later if you decide to include it
+    const _contract_address = body?.contract_address || "";
+    const _nft_collection = body?.nft_collection || "BotoVeritas Proof-of-Vote";
+const tally_commitment = body?.tally_commitment || "";
+const zk_proof_hash = body?.zk_proof_hash || "";
+const zk_verifier_contract = body?.zk_verifier_contract || "";
+const zk_verification_tx = body?.zk_verification_tx || "";
+const public_inputs_hash = body?.public_inputs_hash || "";
+const onchain_anchor_tx = body?.onchain_anchor_tx || "";
+
+const onchain_anchor_note = body?.onchain_anchor_note || "";
+
+// BV ZK tally anchors (optional)
+const election_id_hash_bytes32 = body?.election_id_hash_bytes32 || "";
+const election_vote_root_bytes32 = body?.election_vote_root_bytes32 || "";
+const manifest_hash_bytes32 = body?.manifest_hash_bytes32 || "";
+const results_hash_bytes32 = body?.results_hash_bytes32 || "";
+const results_uri = body?.results_uri || "";
+
+// On-chain tally submission (optional)
+const tally_registry_address = body?.tally_registry_address || "";
+const tally_submit_tx = body?.tally_submit_tx || "";
+const tally_submitter = body?.tally_submitter || "";
+const tally_submitted_at = body?.tally_submitted_at || "";
 
     // Supabase (service role)
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -694,6 +1024,7 @@ serve(async (req: Request) => {
       const pdf = await PDFDocument.create();
       const font = await pdf.embedFont(StandardFonts.Helvetica);
       const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+    const fontMono = await pdf.embedFont(StandardFonts.Courier);
 
       const pageW = 595.28;
       const pageH = 841.89;
@@ -705,22 +1036,44 @@ serve(async (req: Request) => {
       {
         const page = pdf.addPage([pageW, pageH]);
 
+        // Background
         page.drawRectangle({
           x: 0,
-          y: pageH - 240,
+          y: 0,
           width: pageW,
-          height: 240,
-          color: rgb(0.98, 0.98, 0.985),
+          height: pageH,
+          color: rgb(1, 1, 1),
         });
 
+        // Top ceremonial band (FEU green)
+        page.drawRectangle({
+          x: 0,
+          y: pageH - 260,
+          width: pageW,
+          height: 260,
+          color: rgb(0.02, 0.28, 0.16),
+        });
+
+        // Gold trim
+        page.drawRectangle({
+          x: 0,
+          y: pageH - 270,
+          width: pageW,
+          height: 10,
+          color: rgb(0.78, 0.62, 0.20),
+        });
+
+        // Centered logo inside the band
         if (logoBytes) {
           try {
             const img = await embedLogo(pdf, logoBytes);
-            const h = 46;
-            const w = (img.width / img.height) * h;
+            const targetH = 84;
+            const scale = targetH / img.height;
+            const w = img.width * scale;
+            const h = img.height * scale;
             page.drawImage(img, {
-              x: margin,
-              y: pageH - 120,
+              x: (pageW - w) / 2,
+              y: pageH - 210,
               width: w,
               height: h,
             });
@@ -729,91 +1082,112 @@ serve(async (req: Request) => {
           }
         }
 
-        page.drawText("BotoVeritas", {
-          x: margin,
-          y: pageH - 160,
-          size: 20,
-          font: fontBold,
-          color: rgb(0.12, 0.18, 0.14),
-        });
-
-        page.drawText("Election Results Report (PDF Export)", {
-          x: margin,
-          y: pageH - 188,
-          size: 12,
-          font,
-          color: rgb(0.35, 0.35, 0.35),
-        });
-
-        page.drawText(electionTitle, {
-          x: margin,
-          y: pageH - 270,
-          size: 22,
-          font: fontBold,
-          color: rgb(0.12, 0.18, 0.14),
-        });
-
-        const scheduleLine = election
-          ? `Election Window: ${fmtShortDate(election.start_date)}  to  ${
-            fmtShortDate(election.end_date)
-          }`
-          : "Election Window: —";
-
-        page.drawText(scheduleLine, {
+        // Main title
+        page.drawText("OFFICIAL ELECTION RESULTS REPORT", {
           x: margin,
           y: pageH - 300,
-          size: 10.5,
-          font,
-          color: rgb(0.35, 0.35, 0.35),
+          size: 22,
+          font: fontBold,
+          color: rgb(0.02, 0.28, 0.16),
         });
 
-        page.drawText(`Generated: ${fmtDate(new Date())}`, {
+        // Election title
+        page.drawText(electionTitle, {
           x: margin,
-          y: pageH - 322,
+          y: pageH - 330,
+          size: 16,
+          font: fontBold,
+          color: rgb(0.78, 0.62, 0.20),
+        });
+        const scheduleLine = election
+          ? `Election Window: ${fmtShortDate(election.start_date)} to ${fmtShortDate(election.end_date)}`
+          : "Election Window: —";
+
+        const generatedLine = `Generated: ${fmtDate(new Date())}`;
+
+
+        // Meta
+        page.drawText(scheduleLine, {
+          x: margin,
+          y: pageH - 356,
           size: 10.5,
           font,
-          color: rgb(0.35, 0.35, 0.35),
+          color: rgb(0.2, 0.2, 0.2),
         });
 
-        drawSectionTitle(page, fontBold, "Contents", margin, pageH - 380);
+        page.drawText(generatedLine, {
+          x: margin,
+          y: pageH - 372,
+          size: 10.5,
+          font,
+          color: rgb(0.2, 0.2, 0.2),
+        });
+
+        // Contents card
+        const cardY = pageH - 420;
+        const cardH = 220;
+
+        page.drawRectangle({
+          x: margin,
+          y: cardY - cardH,
+          width: pageW - margin * 2,
+          height: cardH,
+          color: rgb(0.98, 0.98, 0.985),
+          borderColor: rgb(0.90, 0.90, 0.90),
+          borderWidth: 1,
+        });
+
+        // Card header strip
+        page.drawRectangle({
+          x: margin,
+          y: cardY - 42,
+          width: pageW - margin * 2,
+          height: 42,
+          color: rgb(0.02, 0.28, 0.16),
+        });
+
+        page.drawText("CONTENTS", {
+          x: margin + 16,
+          y: cardY - 28,
+          size: 12,
+          font: fontBold,
+          color: rgb(1, 1, 1),
+        });
 
         const items = [
           "1. Executive Summary (Turnout & Methodology)",
           "2. Turnout Distribution by Year Level",
           "3. Results per Position (Pie Distribution + Ranked Table + Summary)",
           "4. Blockchain Verification Summary",
-          "5. Certification / Signatures",
+          "5. Zero-Knowledge Proof (ZKP) Verification",
+          "6. Certification / Signatures",
         ];
 
-        let y = pageH - 410;
+        let iy = cardY - 70;
         for (const it of items) {
-          page.drawText(`• ${it}`, {
-            x: margin,
-            y,
-            size: 11,
+          page.drawText("• " + it, {
+            x: margin + 18,
+            y: iy,
+            size: 10.5,
             font,
-            color: rgb(0.2, 0.2, 0.2),
+            color: rgb(0.15, 0.15, 0.15),
           });
-          y -= 18;
+          iy -= 18;
         }
 
-        const foot =
-          "Note: This report is generated from immutable vote records. Percentages are rounded to one decimal place.";
-        drawParagraph(
-          page,
-          font,
-          foot,
-          margin,
-          90,
-          pageW - margin * 2,
-          9.2,
-          13,
-          rgb(0.45, 0.45, 0.45),
+        page.drawText(
+          "Note: This report is generated from immutable vote records. Percentages are rounded to one decimal place.",
+          {
+            x: margin,
+            y: 70,
+            size: 9,
+            font,
+            color: rgb(0.35, 0.35, 0.35),
+            maxWidth: pageW - margin * 2,
+          },
         );
       }
-
-      // -------------------------
-      // EXECUTIVE SUMMARY
+// EXECUTIVE SUMMARY
       // -------------------------
       {
         const page = pdf.addPage([pageW, pageH]);
@@ -984,116 +1358,47 @@ serve(async (req: Request) => {
             },
           };
 
-          if (includeCharts) {
-
-
+                    if (includeCharts) {
             try {
+              // Prefer client-provided chart image (avoids Edge CPU timeout + network)
+              if (chart_images?.turnout_donut?.data_base64) {
+                const img = await embedBase64Image(pdf, chart_images.turnout_donut.mime, chart_images.turnout_donut.data_base64);
 
+                const imgW = pageW - margin * 2;
+                const imgH = (img.height / img.width) * imgW;
 
-              const pngBytes = await quickChartPng(
+                page.drawImage(img, {
+                  x: margin,
+                  y: y - imgH,
+                  width: imgW,
+                  height: imgH,
+                });
 
+                let ty = y - imgH - 18;
 
-                donutConfig as Record<string, unknown>,
+                page.drawLine({
+                  start: { x: margin, y: ty },
+                  end: { x: pageW - margin, y: ty },
+                  thickness: 1,
+                  color: rgb(0.9, 0.9, 0.92),
+                });
+                ty -= 18;
 
-
-              );
-
-
-              const img = await pdf.embedPng(pngBytes);
-
-
-          
-            const imgW = pageW - margin * 2;
-            const imgH = (img.height / img.width) * imgW;
-
-            page.drawImage(img, {
-              x: margin,
-              y: y - imgH,
-              width: imgW,
-              height: imgH,
-            });
-
-            let ty = y - imgH - 18;
-
-            page.drawLine({
-              start: { x: margin, y: ty },
-              end: { x: pageW - margin, y: ty },
-              thickness: 1,
-              color: rgb(0.9, 0.9, 0.92),
-            });
-            ty -= 18;
-
-            page.drawText("Year Level", {
-              x: margin,
-              y: ty,
-              size: 11,
-              font: fontBold,
-            });
-            page.drawText("Distinct Voters", {
-              x: pageW - margin - 140,
-              y: ty,
-              size: 11,
-              font: fontBold,
-            });
-            ty -= 14;
-
-            const totalYL = values.reduce((a, b) => a + b, 0);
-
-            for (const row of yearLevelRows.slice(0, 25)) {
-              const share = totalYL ? `(${pct(row.voter_count, totalYL)})` : "";
-              page.drawText(`${row.year_level}`, {
-                x: margin,
-                y: ty,
-                size: 10,
-                font,
-              });
-              page.drawText(`${row.voter_count} ${share}`, {
-                x: pageW - margin - 140,
-                y: ty,
-                size: 10,
-                font,
-              });
-              ty -= 14;
-              if (ty < 80) break;
-            }
-
-            const top = yearLevelRows.slice().sort((a, b) =>
-              b.voter_count - a.voter_count
-            )[0];
-            if (top) {
-              const note =
-                `Interpretation: The highest participation was recorded from ${top.year_level} with ${top.voter_count} distinct voters ${
-                  totalYL ? pct(top.voter_count, totalYL) : ""
-                }.`;
-              drawParagraph(
-                page,
-                font,
-                note,
-                margin,
-                clamp(ty - 10, 80, 200),
-                pageW - margin * 2,
-                10.2,
-                14,
-              );
-            }
-
-
+                // Continue with table rendering using ty
+                y = ty;
+              } else {
+                // No chart image provided; skip chart rendering.
+              }
             } catch (err: unknown) {
-
-
-                      const msg = err instanceof Error ? err.message : String(err);
-            page.drawText(`Chart error: ${msg}`, {
-              x: margin,
-              y,
-              size: 11,
-              font,
-              color: rgb(0.4, 0.2, 0.2),
-            });
-
-
+              const msg = err instanceof Error ? err.message : String(err);
+              page.drawText(`Chart error: ${msg}`, {
+                x: margin,
+                y,
+                size: 11,
+                font,
+                color: rgb(0.4, 0.2, 0.2),
+              });
             }
-
-
           } else {
 
 
@@ -1113,7 +1418,7 @@ serve(async (req: Request) => {
       // -------------------------
       // RESULTS PER POSITION
       // -------------------------
-      const canonicalOrder = getCanonicalPositionsForEligibleOrgs(eligibleOrgs);
+      const canonicalOrder = getCanonicalPositionsForElection(electionTitle, eligibleOrgs);
 
       const positionEntries = Array.from(byPosition.entries()).sort(
         ([a], [b]) => {
@@ -1207,42 +1512,35 @@ serve(async (req: Request) => {
         };
 
         let imgHUsed = 0;
-        if (includeCharts) {
-
+                if (includeCharts) {
           try {
+            // Prefer client-provided chart image (avoids Edge CPU timeout + network)
+            if (chart_images?.position_pies && chart_images.position_pies[position]?.data_base64) {
+              const img = await embedBase64Image(pdf, chart_images.position_pies[position].mime, chart_images.position_pies[position].data_base64);
 
-            const pngBytes = await quickChartPng(
+              const imgW = pageW - margin * 2;
+              const imgH = (img.height / img.width) * imgW;
+              imgHUsed = imgH;
 
-              pieConfig as Record<string, unknown>,
-
-            );
-
-                  const img = await pdf.embedPng(pngBytes);
-
-          const imgW = pageW - margin * 2;
-          const imgH = (img.height / img.width) * imgW;
-          imgHUsed = imgH;
-
-          page.drawImage(img, {
-            x: margin,
-            y: y - imgH,
-            width: imgW,
-            height: imgH,
-          });
-
+              page.drawImage(img, {
+                x: margin,
+                y: y - imgH,
+                width: imgW,
+                height: imgH,
+              });
+            } else {
+              // No chart image provided; skip chart rendering.
+            }
           } catch (err: unknown) {
-
-                  const msg = err instanceof Error ? err.message : String(err);
-          page.drawText(`Chart error: ${msg}`, {
-            x: margin,
-            y,
-            size: 11,
-            font,
-            color: rgb(0.4, 0.2, 0.2),
-          });
-
+            const msg = err instanceof Error ? err.message : String(err);
+            page.drawText(`Chart error: ${msg}`, {
+              x: margin,
+              y,
+              size: 11,
+              font,
+              color: rgb(0.4, 0.2, 0.2),
+            });
           }
-
         } else {
 
           // Charts disabled (reduces CPU/time in Edge Function)
@@ -1257,7 +1555,7 @@ serve(async (req: Request) => {
           x: margin,
           y: y - 78,
           width: pageW - margin * 2,
-          height: 78,
+          height: 96,
           color: rgb(0.985, 0.985, 0.99),
           borderColor: rgb(0.9, 0.9, 0.92),
           borderWidth: 1,
@@ -1271,27 +1569,20 @@ serve(async (req: Request) => {
           color: rgb(0.12, 0.18, 0.14),
         });
 
-        const summaryText =
-          `Total ballots for this position: ${totalBallotsPos}. ` +
-          `Abstentions: ${abstainCount} (${abstainShare}). ` +
-          (leaders.length
-            ? leaders.length > 1
-              ? `Leading candidates (tie): ${leaderNames.join(" • ")} with ${leaderVotes} votes each (${leaderShare}).`
-              : `Leading candidate: ${leaderNames[0]} with ${leaderVotes} votes (${leaderShare}).`
-            : "No leading candidate identified (no votes recorded for any candidate).");
+        const line1 = `Total ballots: ${totalBallotsPos}`;
+        const line2 = `Abstentions: ${abstainCount} (${abstainShare})`;
+        const line3 = leaders.length
+          ? leaders.length > 1
+            ? `Leading candidates (tie): ${leaderNames.join(" • ")} — ${leaderVotes} votes each (${leaderShare})`
+            : `Leading candidate: ${leaderNames[0]} — ${leaderVotes} votes (${leaderShare})`
+          : "Leading candidate: — (no votes recorded)";
 
-        drawParagraph(
-          page,
-          font,
-          summaryText,
-          margin + 12,
-          y - 36,
-          pageW - margin * 2 - 24,
-          10.2,
-          14,
-        );
+        // Structured formatting: one item per line (wrap-aware)
+        drawParagraph(page, font, `• ${line1}`, margin + 12, y - 36, pageW - margin * 2 - 24, 10.2, 14);
+        drawParagraph(page, font, `• ${line2}`, margin + 12, y - 50, pageW - margin * 2 - 24, 10.2, 14);
+        drawParagraph(page, font, `• ${line3}`, margin + 12, y - 64, pageW - margin * 2 - 24, 10.2, 14);
 
-        y -= 92;
+        y -= 110;
 
         drawSectionTitle(page, fontBold, "Ranked Results", margin, y);
         y -= 18;
@@ -1373,62 +1664,227 @@ serve(async (req: Request) => {
         drawParagraph(
           page,
           font,
-          "This section provides an audit-oriented summary of how vote submissions may be verified on a public blockchain explorer. The report intentionally does not include voter identity or any linkage between voter and selected candidates.",
+          "This section provides formal on-chain references used to audit election anchoring and verification integrity. It intentionally excludes voter identity and any linkage between a voter and selected candidates.",
           margin,
           y,
           pageW - margin * 2,
         );
         y -= 72;
 
+        // Quick visual summary boxes (audit-friendly)
+        const boxTop = y + 26;
+        const gap = 12;
+        const boxW = (pageW - margin * 2 - gap * 2) / 3;
+
+        drawInfoBoxCompact({
+          page,
+          fontBold,
+          font,
+          x: margin,
+          y: boxTop,
+          w: boxW,
+          h: 64,
+          title: "Network",
+          value: network || "—",
+          footnote: "Blockchain environment",
+        });
+
+        drawInfoBoxCompact({
+          page,
+          fontBold,
+          font,
+          x: margin + boxW + gap,
+          y: boxTop,
+          w: boxW,
+          h: 64,
+          title: "Explorer Base",
+          value: explorer_base ? "Available" : "—",
+          footnote: explorer_base || "No Verifier Reference On-Chain Anchor Recorded",
+        });
+
+        drawInfoBoxCompact({
+          page,
+          fontBold,
+          font,
+          x: margin + (boxW + gap) * 2,
+          y: boxTop,
+          w: boxW,
+          h: 64,
+          title: "Anchor Tx",
+          value: onchain_anchor_tx ? "On-Chain Anchor Recorded" : "—",
+          footnote: onchain_anchor_tx ? "Explorer link" : "Not Applicable / Not On-Chain Anchor Recorded",
+        });
+
+        y -= 74;
+
         const kv = (label: string, value: string) => {
+          const v = value || "—";
+          const isHex = /^0x[0-9a-fA-F]+$/.test(v) && v.length >= 42;
+          const isUrl = /^https?:\/\//.test(v);
+          const valueFont = (isHex || isUrl) ? fontMono : font;
+
           page.drawText(label, {
             x: margin,
             y,
-            size: 10.5,
+            size: 9.6,
             font: fontBold,
             color: rgb(0.2, 0.2, 0.2),
           });
-          page.drawText(value || "—", {
-            x: margin + 130,
-            y,
-            size: 10.5,
-            font,
-            color: rgb(0.2, 0.2, 0.2),
-          });
-          y -= 18;
+
+          const valueX = margin + 190;
+          const maxW = pageW - margin - valueX;
+          const nextY = drawParagraph(page, valueFont, v, valueX, y, maxW, 9.2, 12.2, rgb(0.2, 0.2, 0.2));
+          y = nextY - 6;
+        };
+
+
+        // ---- BV anchors (computed from Supabase where possible) ----
+        // election_id_hash_bytes32 should be keccak256(utf8(election_id))
+        const computedElectionIdHash = hashUtf8ToBytes32(singleElectionId);
+
+        // election_vote_root_bytes32 (root-of-roots of chunk roots)
+        let computedElectionVoteRoot = "";
+        try {
+          const { data: chunkRows, error: chErr }: { data: ElectionVoteChunkRow[] | null; error: unknown } = await supabase
+            .from("election_vote_chunks")
+            .select("chunk_index, chunk_root")
+            .eq("election_id", singleElectionId)
+            .order("chunk_index", { ascending: true });
+
+          if (!chErr && Array.isArray(chunkRows) && chunkRows.length) {
+            const chunkRoots = chunkRows
+              .map((r) => String(r?.chunk_root ?? ""))
+              .filter(Boolean);
+            computedElectionVoteRoot = merkleRootSortedPairs(chunkRoots);
+          }
+        } catch {
+          // ignore (optional section)
+        }
+
+        // manifest_hash_bytes32 from latest election_manifests row
+        let computedManifestHash = "";
+        try {
+          const { data: mRow, error: mErr }: { data: ElectionManifestRow | null; error: unknown } = await supabase
+            .from("election_manifests")
+            .select("manifest_hash, spec_version, created_at")
+            .eq("election_id", singleElectionId)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (!mErr && mRow?.manifest_hash) computedManifestHash = String(mRow.manifest_hash);
+        } catch {
+          // ignore
+        }
+
+        // Prefer user-provided anchors (if supplied) but show computed values too (skeptical/audit mode)
+        const electionIdHashShown = election_id_hash_bytes32 || computedElectionIdHash;
+        const electionVoteRootShown = election_vote_root_bytes32 || computedElectionVoteRoot;
+        const manifestHashShown = manifest_hash_bytes32 || computedManifestHash;
+
+        const mismatchNote = (label: string, provided: string, computed: string) => {
+          if (!provided || !computed) return;
+          if (provided.toLowerCase() !== computed.toLowerCase()) {
+            kv(`${label} (Mismatch):`, "On-Chain Anchor Recorded value does not match computed value");
+          }
         };
 
         kv("Network:", network);
-        kv("NFT Collection:", nft_collection);
-        if (contract_address) kv("Contract Address:", contract_address);
         kv("Explorer Base URL:", explorer_base);
+        if (tally_registry_address) kv("Tally Registry:", tally_registry_address);
+        if (zk_verifier_contract) kv("Verifier Contract:", zk_verifier_contract);
 
-        y -= 10;
-        drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
+        kv("Election ID Hash (bytes32):", electionIdHashShown);
+        mismatchNote("Election ID Hash", election_id_hash_bytes32 || "", computedElectionIdHash);
+
+        if (electionVoteRootShown) {
+          kv("Election Vote Root (bytes32):", electionVoteRootShown);
+          mismatchNote("Election Vote Root", election_vote_root_bytes32 || "", computedElectionVoteRoot);
+        } else {
+          kv("Election Vote Root (bytes32):", "— (run anchor-election-root first)");
+        }
+
+        if (manifestHashShown) {
+          kv("Manifest Hash (bytes32):", manifestHashShown);
+          mismatchNote("Manifest Hash", manifest_hash_bytes32 || "", computedManifestHash);
+        } else {
+          kv("Manifest Hash (bytes32):", "— (run generate-election-manifest first)");
+        }
+
+        if (results_hash_bytes32) kv("Results Hash (bytes32):", results_hash_bytes32);
+        if (results_uri) kv("Results URI:", results_uri);
+
+        if (tally_submit_tx) kv("submitTally Tx:", tally_submit_tx);
+        if (tally_submitter) kv("Submitted By:", tally_submitter);
+        if (tally_submitted_at) kv("Submitted At:", fmtShortDate(tally_submitted_at));
+
+        if (tally_commitment) kv("Tally Commitment:", tally_commitment);
+        if (zk_proof_hash) kv("ZK Proof Hash/ID:", zk_proof_hash);
+        if (public_inputs_hash) kv("Public Inputs Hash:", public_inputs_hash);
+        if (zk_verification_tx) kv("Proof Verification Tx:", zk_verification_tx);
+        if (onchain_anchor_tx) kv("Report Anchor Tx:", onchain_anchor_tx);
+        if (onchain_anchor_note) kv("Anchor Note:", onchain_anchor_note);
+
+
+// Deterministic digest of the data used to build this PDF (helps external audit/anchoring).
+// Note: includes totals and per-position tallies, but no voter identifiers.
+const digestPayload = JSON.stringify({
+  election_id: singleElectionId,
+  election_title: electionTitle,
+  election_window: { start: election?.start_date ?? null, end: election?.end_date ?? null },
+  generated_at: new Date().toISOString(),
+  totals: {
+    eligible_voters: eligibleVoters,
+    voters_who_voted: votersWhoVoted,
+    vote_rows_recorded: totalVoteRows,
+  },
+  tallies: tallyRows.map((r) => ({
+    position: r.position,
+    candidate_id: r.candidate_id,
+    candidate_name: r.candidate_name,
+    slate: r.slate,
+    vote_count: r.vote_count,
+    abstain_count: r.abstain_count ?? 0,
+    total_ballots_for_position: r.total_ballots_for_position ?? null,
+  })),
+});
+
+const reportDigest = await sha256Hex(digestPayload);
+kv("Report Digest (SHA-256):", reportDigest);
+
+y -= 10;
+drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
         y -= 18;
 
+        
         const bullets = [
-          "Each vote submission is represented by a blockchain transaction hash (Tx Hash).",
-          "A Tx Hash can be searched on the explorer to verify timestamp, immutability, and inclusion in the chain.",
-          "This report may include sample hashes for demonstration or audit. If hashes are not supplied, the verifier may refer to system logs or the on-chain record set.",
+          "Election Vote Root is computed from immutable vote leaves via chunked Merkle roots (root-of-roots).",
+          "Election ID Hash binds the on-chain record to the election UUID (keccak256 of the UUID string).",
+          "Manifest Hash binds the ordered candidate manifest used to generate the ZK circuit.",
+          "Results Hash binds the published results.json content to the ZK public inputs (Poseidon-fold).",
+          "If submitTally was performed, the ElectionTallyRegistry record (and its tx) proves the verifier accepted the proof for these anchors.",
         ];
 
         for (const b of bullets) {
-          page.drawText(`• ${b}`, {
-            x: margin,
-            y,
-            size: 10.5,
+          y = drawParagraph(
+            page,
             font,
-            color: rgb(0.2, 0.2, 0.2),
-          });
-          y -= 14;
+            `• ${b}`,
+            margin,
+            y,
+            pageW - margin * 2,
+            9.5,
+            12,
+            rgb(0.2, 0.2, 0.2),
+          );
+          y -= 2;
         }
 
         y -= 12;
         drawSectionTitle(
           page,
           fontBold,
-          "Included Transaction Hashes (Optional)",
+          "Included Transaction Hashes",
           margin,
           y,
         );
@@ -1478,6 +1934,240 @@ serve(async (req: Request) => {
       }
 
       // -------------------------
+
+      // -------------------------
+      // ZERO-KNOWLEDGE PROOF (ZKP) VERIFICATION
+      // -------------------------
+      {
+        const page = pdf.addPage([pageW, pageH]);
+        const yStart = await drawHeader({
+          pdf,
+          page,
+          fontBold,
+          font,
+          title: "Zero-Knowledge Proof (ZKP) Verification",
+          subtitle: electionTitle,
+          logoBytes,
+        });
+
+        let y = yStart - 6;
+
+        drawParagraph(
+          page,
+          font,
+          "This section summarizes the zero-knowledge proof (ZKP) artifacts that attest the published tally is cryptographically consistent with recorded vote commitments, without disclosing voter identity or ballot selections.",
+          margin,
+          y,
+          pageW - margin * 2,
+        );
+        y -= 68;
+
+        // ---- Recompute BV anchors (for audit display; no voter data) ----
+        const computedElectionIdHash = hashUtf8ToBytes32(singleElectionId);
+
+        let computedElectionVoteRoot = "";
+        try {
+          const { data: chunkRows, error: chErr }: {
+            data: ElectionVoteChunkRow[] | null;
+            error: unknown;
+          } = await supabase
+            .from("election_vote_chunks")
+            .select("chunk_index, chunk_root")
+            .eq("election_id", singleElectionId)
+            .order("chunk_index", { ascending: true });
+
+          if (!chErr && Array.isArray(chunkRows) && chunkRows.length) {
+            const chunkRoots = chunkRows
+              .map((r) => String(r?.chunk_root ?? ""))
+              .filter(Boolean);
+            computedElectionVoteRoot = merkleRootSortedPairs(chunkRoots);
+          }
+        } catch {
+          // ignore
+        }
+
+        let computedManifestHash = "";
+        try {
+          const { data: mRow, error: mErr }: {
+            data: ElectionManifestRow | null;
+            error: unknown;
+          } = await supabase
+            .from("election_manifests")
+            .select("manifest_hash, spec_version, created_at")
+            .eq("election_id", singleElectionId)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (!mErr && mRow?.manifest_hash) computedManifestHash = String(mRow.manifest_hash);
+        } catch {
+          // ignore
+        }
+
+        const electionIdHashShown = election_id_hash_bytes32 || computedElectionIdHash;
+        const electionVoteRootShown = election_vote_root_bytes32 || computedElectionVoteRoot;
+        const manifestHashShown = manifest_hash_bytes32 || computedManifestHash;
+
+        const zkpReady = Boolean(
+          manifestHashShown &&
+            electionIdHashShown &&
+            (electionVoteRootShown || computedElectionVoteRoot) &&
+            (results_hash_bytes32 || tally_commitment || zk_proof_hash || zk_verification_tx || tally_submit_tx),
+        );
+
+        // Top summary boxes
+        const boxTop = y + 18;
+        const gap = 12;
+        const boxW = (pageW - margin * 2 - gap * 2) / 3;
+
+        drawInfoBoxCompact({
+          page,
+          fontBold,
+          font,
+          x: margin,
+          y: boxTop,
+          w: boxW,
+          h: 64,
+          title: "ZKP Artifacts",
+          value: zkpReady ? "Available" : "Partial",
+          footnote: "Based on provided fields",
+        });
+
+        drawInfoBoxCompact({
+          page,
+          fontBold,
+          font,
+          x: margin + boxW + gap,
+          y: boxTop,
+          w: boxW,
+          h: 64,
+          title: "Verifier",
+          value: zk_verifier_contract ? "Explorer Endpoint Available" : "—",
+          footnote: zk_verifier_contract ? "Contract / verifier ref" : "No Verifier Reference On-Chain Anchor Recorded",
+        });
+
+        drawInfoBoxCompact({
+          page,
+          fontBold,
+          font,
+          x: margin + (boxW + gap) * 2,
+          y: boxTop,
+          w: boxW,
+          h: 64,
+          title: "On-chain Proof Tx",
+          value: zk_verification_tx ? "On-Chain Anchor Recorded" : "—",
+          footnote: zk_verification_tx ? "Explorer verification" : "Not Applicable / Not On-Chain Anchor Recorded",
+        });
+
+        y -= 74;
+
+        drawSectionTitle(page, fontBold, "Public Inputs / Anchors", margin, y);
+        y -= 18;
+
+        const kv2 = (label: string, value: string) => {
+          const v = value || "—";
+          const isHex = /^0x[0-9a-fA-F]+$/.test(v) && v.length >= 42;
+          const isUrl = /^https?:\/\//.test(v);
+          const valueFont = (isHex || isUrl) ? fontMono : font;
+
+          page.drawText(label, {
+            x: margin,
+            y,
+            size: 9.6,
+            font: fontBold,
+            color: rgb(0.2, 0.2, 0.2),
+          });
+
+          const valueX = margin + 210;
+          const maxW = pageW - margin - valueX;
+          const nextY = drawParagraph(page, valueFont, v, valueX, y, maxW, 9.2, 12.2, rgb(0.2, 0.2, 0.2));
+          y = nextY - 6;
+        };
+
+        kv2("Election ID Hash (bytes32):", electionIdHashShown);
+        kv2(
+          "Election Vote Root (bytes32):",
+          electionVoteRootShown || "— (run anchor-election-root first)",
+        );
+        kv2(
+          "Manifest Hash (bytes32):",
+          manifestHashShown || "— (run generate-election-manifest first)",
+        );
+        if (tally_commitment) kv2("Tally Commitment:", tally_commitment);
+        if (results_hash_bytes32) kv2("Results Hash (bytes32):", results_hash_bytes32);
+        if (results_uri) kv2("Results URI:", results_uri);
+        if (public_inputs_hash) kv2("Public Inputs Hash:", public_inputs_hash);
+
+        y -= 8;
+
+        const hasArtifacts = Boolean(
+          zk_proof_hash ||
+            zk_verifier_contract ||
+            zk_verification_tx ||
+            tally_registry_address ||
+            tally_submit_tx ||
+            tally_submitter ||
+            tally_submitted_at,
+        );
+
+        if (hasArtifacts) {
+          drawSectionTitle(page, fontBold, "Verification Artifacts", margin, y);
+          y -= 18;
+
+          if (zk_proof_hash) kv2("ZK Proof Hash/ID:", zk_proof_hash);
+          if (zk_verifier_contract) kv2("Verifier Contract:", zk_verifier_contract);
+          if (zk_verification_tx) kv2("Proof Verification Tx:", zk_verification_tx);
+          if (tally_registry_address) kv2("Tally Registry:", tally_registry_address);
+          if (tally_submit_tx) kv2("submitTally Tx:", tally_submit_tx);
+          if (tally_submitter) kv2("Submitted By:", tally_submitter);
+          if (tally_submitted_at) kv2("Submitted At:", fmtShortDate(tally_submitted_at));
+        } else {
+          drawSectionTitle(page, fontBold, "Verification Artifacts", margin, y);
+          y -= 18;
+          y = drawParagraph(
+            page,
+            font,
+            "No proof artifacts were provided to the PDF generator for this election (e.g., proof hash, verifier reference, or verification transaction).",
+            margin,
+            y,
+            pageW - margin * 2,
+            9.5,
+            12,
+            rgb(0.35, 0.35, 0.35),
+          );
+          y -= 6;
+        }
+
+        y -= 6;
+        drawSectionTitle(page, fontBold, "How to Verify", margin, y);
+        y -= 18;
+
+        const steps = [
+          "Confirm the Election ID Hash matches keccak256(election UUID).",
+          "Confirm the Election Vote Root matches the root-of-roots derived from vote chunk roots.",
+          "Confirm the Manifest Hash matches the manifest used to build the ZK circuit inputs.",
+          "If provided, open the Proof Verification Tx in the explorer and confirm the verifier accepted the proof.",
+          "If submitTally was performed, confirm the registry record references the same anchors / results hash.",
+        ];
+
+        for (const s of steps) {
+          y = drawParagraph(
+            page,
+            font,
+            `• ${s}`,
+            margin,
+            y,
+            pageW - margin * 2,
+            9.5,
+            12,
+            rgb(0.2, 0.2, 0.2),
+          );
+          y -= 2;
+          if (y < 90) break;
+        }
+      }
+
+
       // SIGNATURE / CERTIFICATION
       // -------------------------
       {
@@ -1579,7 +2269,7 @@ serve(async (req: Request) => {
           const colGap = 30;
           const colW = (w - colGap) / 2;
 
-          let y = topY - 24;
+          const y = topY - 24;
           for (let i = 0; i < members.length; i++) {
             const m = members[i];
             const col = i % 2;
@@ -1727,7 +2417,7 @@ serve(async (req: Request) => {
             );
           }
 
-          y -= 92;
+          y -= 110;
           i += 2;
         }
       }
