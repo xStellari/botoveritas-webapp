@@ -264,7 +264,7 @@ if (lockErr) {
       return;
     }
 
-    await logSessionEvent({ voterId: voterRow.id, action: "session_start" });
+    void logSessionEvent({ voterId: voterRow.id, action: "session_start" });
 
     const enriched: VoterData = {
       ...voterRow,
@@ -455,7 +455,7 @@ if (lockErr) {
   const handleReset = async () => {
     if (voterData?.id) {
             await endSession(voterData.id);
-await logSessionEvent({ voterId: voterData.id, action: "session_end" });
+void logSessionEvent({ voterId: voterData.id, action: "session_end" });
     }
 
     dispatchFlow({ type: "RESET_FLOW" });
@@ -510,7 +510,7 @@ await logSessionEvent({ voterId: voterData.id, action: "session_end" });
 
                 if (voterData) {
                                     await setSessionExpiresInMs(voterData.id, newTime);
-await logSessionEvent({
+void logSessionEvent({
                     voterId: voterData.id,
                     action: "session_extend",
                   });
