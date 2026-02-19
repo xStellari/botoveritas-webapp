@@ -274,7 +274,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 
     const { data, error } = await supabase
       .from("voters")
-      .select("id, face_descriptor, email_verified_at")
+      .select("id, email, voter_audience, face_descriptor, email_verified_at")
       .eq("rfid_tag", normalized)
       .maybeSingle();
 
@@ -287,12 +287,94 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
     }
 
     setVoterId(data.id);
-
     if (!data.email_verified_at) {
       setStatusMessage(
         "Email verification required. Please open the verification link sent to your school email, then try again."
       );
       await logAttempt("EMAIL_NOT_VERIFIED", normalized, undefined, data.id);
+      setStep("error");
+      return;
+    }
+
+    // ---------------------------------------------------------------
+    // ✅ Thesis adviser requirement:
+    // Block ineligible voters IMMEDIATELY after RFID auth (before facial ID).
+    // We do this by checking whether the voter has at least one eligible ACTIVE election.
+    // If none, we stop the flow here and show a clear error screen.
+    // ---------------------------------------------------------------
+    try {
+      const { data: elections, error: electionsErr } = await supabase
+        .from("elections")
+        .select("id,start_date,end_date,is_active,is_final,is_archived");
+
+      if (electionsErr) {
+        console.error("Failed to load elections for eligibility precheck:", electionsErr);
+        setStatusMessage("Unable to verify election eligibility. Please ask election staff.");
+        await logAttempt("ELIGIBILITY_PRECHECK_FAILED", normalized, undefined, data.id);
+        setStep("error");
+        return;
+      }
+
+      const now = new Date();
+      const operationalActive = (elections ?? []).filter((e: any) => {
+        if (!e?.is_active) return false;
+        if (e?.is_final || e?.is_archived) return false;
+        const start = new Date(e.start_date);
+        const end = new Date(e.end_date);
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+        return start <= now && end > now;
+      });
+
+      if (operationalActive.length === 0) {
+        await logAttempt("NO_ACTIVE_ELECTIONS", normalized, undefined, data.id);
+        navigate("/error", {
+          state: {
+            title: "No Active Elections",
+            reason: "NO_ACTIVE_ELECTIONS",
+            voter_audience: (data as any).voter_audience,
+            message:
+              "There are currently no active elections available. Please contact election staff.",
+            recoverTo: "/voting",
+            countdownSeconds: 10,
+          },
+        });
+        setStep("error");
+        return;
+      }
+
+      const eligResults = await Promise.all(
+        operationalActive.map(async (e: any) => {
+          const { data: isEligible, error: eligErr } = await supabase.rpc(
+            "is_voter_eligible_for_election" as any,
+            { p_voter_id: data.id, p_election_id: e.id } as any
+          );
+          if (eligErr) return false;
+          return Boolean(isEligible);
+        })
+      );
+
+      const hasAnyEligible = eligResults.some(Boolean);
+
+      if (!hasAnyEligible) {
+        await logAttempt("NO_ELIGIBLE_ELECTIONS", normalized, undefined, data.id);
+        navigate("/error", {
+          state: {
+            title: "No Eligible Elections",
+            reason: "NO_ELIGIBLE_ELECTIONS",
+            voter_audience: (data as any).voter_audience,
+            message:
+              "There are currently no eligible active elections available at this time. If you believe this is a mistake, please contact an administrator.",
+            recoverTo: "/voting",
+            countdownSeconds: 10,
+          },
+        });
+        setStep("error");
+        return;
+      }
+    } catch (err) {
+      console.error("Eligibility precheck error:", err);
+      setStatusMessage("Unable to verify election eligibility. Please ask election staff.");
+      await logAttempt("ELIGIBILITY_PRECHECK_EXCEPTION", normalized, undefined, data.id);
       setStep("error");
       return;
     }
@@ -348,9 +430,13 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
 
     await logAttempt("FACE_MISMATCH", rfidTag, distance, voterId);
 
-    navigate("/registration-error", {
+    navigate("/error", {
       state: {
-        message: "Face mismatch detected. Suspicious login attempt logged.",
+        title: "Authentication Failed",
+        reason: "FACE_MISMATCH",
+        message: "Face mismatch detected. Authentication failed.",
+        recoverTo: "/voting",
+        countdownSeconds: 10,
       },
     });
   };

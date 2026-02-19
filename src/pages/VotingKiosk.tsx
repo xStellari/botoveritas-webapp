@@ -40,6 +40,7 @@ export type VoterRow = {
   year_level: string | null;
   org_affiliations: string[] | null;
   rfid_tag: string | null;
+  voter_audience?: string | null;
   face_descriptor: string[] | null;
   email_verified_at: string | null;
   created_at?: string;
@@ -109,6 +110,20 @@ function flowReducer(state: FlowState, action: FlowAction): FlowState {
 const VotingKiosk = () => {
   const navigate = useNavigate();
 
+  // -----------------------------------------------------
+  // Issue #2 hardening: prevent accidental browser back/gesture from breaking kiosk flow.
+  // If a back navigation is attempted mid-session, show a confirm dialog.
+  // Confirming will end the active session lock in DB and return to Home.
+  // -----------------------------------------------------
+  const [backConfirmOpen, setBackConfirmOpen] = useState(false);
+  const [pendingBack, setPendingBack] = useState(false);
+  const [endingFromBack, setEndingFromBack] = useState(false);
+
+  // If RFID auth is repeated while a session is still active (e.g., user swiped back),
+  // allow "Resume" or "End session" instead of locking the kiosk.
+  const [sessionConflictOpen, setSessionConflictOpen] = useState(false);
+  const [conflictVoterRow, setConflictVoterRow] = useState<any | null>(null);
+
   const [flow, dispatchFlow] = useReducer(flowReducer, initialFlowState);
   const { currentStep, selectedElection, currentSelections, allSelections, transactionHash } = flow;
 
@@ -153,6 +168,40 @@ const VotingKiosk = () => {
     setTimeLeft,
     resetTimer,
   } = useVotingTimer({ currentStep });
+
+  // -----------------------------------------------------
+  // History trap (Layer A): block browser back gesture during an active kiosk flow.
+  // We only trap when the voter has passed auth OR a DB lock exists for the current voter.
+  // -----------------------------------------------------
+  useEffect(() => {
+    const shouldTrap = currentStep !== "auth";
+    if (!shouldTrap) return;
+
+    // Push a dummy state so the first back gesture triggers popstate instead of leaving the route.
+    try {
+      window.history.pushState({ kiosk: true }, "", window.location.href);
+    } catch {
+      // noop
+    }
+
+    const onPopState = (e: PopStateEvent) => {
+      // Immediately re-push state to neutralize the back navigation.
+      try {
+        window.history.pushState({ kiosk: true }, "", window.location.href);
+      } catch {
+        // noop
+      }
+
+      // Show confirm UI (non-blocking). If they confirm, we'll end session and go home.
+      if (!backConfirmOpen) {
+        setPendingBack(true);
+        setBackConfirmOpen(true);
+      }
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [currentStep, backConfirmOpen]);
 
 // -----------------------------------------------------
   // ✅ NEW: Centralized lifecycle guard
@@ -244,13 +293,9 @@ if (sessionCheckErr) {
     }
 
     if (hasActive) {
-      navigate("/registration-error", {
-        state: {
-          title: "Active Voting Session Detected",
-          message:
-            "There is already an active voting session for this voter. Please wait before trying again.",
-        },
-      });
+      // ✅ Issue #2 (Layer B): offer Resume / End instead of hard-locking the kiosk.
+      setConflictVoterRow(voterRow);
+      setSessionConflictOpen(true);
       return;
     }
 
@@ -282,11 +327,35 @@ if (lockErr) {
 
     const { activeElections: active, completedElections: completed, hasVotedAllActive } = catalog;
 
+
+    // ✅ Adviser guard: if this voter has ZERO eligible active elections, do NOT proceed to election selection.
+    // End the just-created session lock to avoid kiosk lockstate, then show a clear message.
+    if (!active || active.length === 0) {
+      await endSession(voterRow.id);
+      resetElectionCatalog();
+      navigate("/error", {
+        state: {
+          title: "No Eligible Elections",
+          reason: "NO_ELIGIBLE_ELECTIONS",
+          voter_audience: (voterRow as any).voter_audience,
+          message:
+            "There are currently no eligible active elections available at this time. If you believe this is incorrect, please contact election staff.",
+          recoverTo: "/voting",
+          countdownSeconds: 10,
+        },
+      });
+      return;
+    }
+
     if (hasVotedAllActive) {
-      navigate("/registration-error", {
+      navigate("/error", {
         state: {
           title: "You Already Voted",
+          reason: "ALREADY_VOTED",
+          voter_audience: (voterRow as any).voter_audience,
           message: "You have already voted in all active elections available to you.",
+          recoverTo: "/voting",
+          countdownSeconds: 10,
         },
       });
       return;
@@ -484,6 +553,151 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
 <div className="pointer-events-none absolute -top-28 -left-28 h-96 w-96 rounded-full bg-emerald-500/15 blur-3xl animate-blob-1" />
 <div className="pointer-events-none absolute -bottom-28 -right-28 h-96 w-96 rounded-full bg-amber-400/15 blur-3xl animate-blob-2" />
 <div className="pointer-events-none absolute top-24 right-20 h-56 w-56 rounded-full bg-white/30 blur-3xl animate-blob-1" />
+
+      {/* BACK / GESTURE CONFIRM (Issue #2) */}
+      {backConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl bg-white/95 p-6 shadow-2xl animate-fade-in-up">
+            <h2 className="text-xl font-bold text-foreground">Leave voting?</h2>
+            <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
+              Going back will <strong>end your voting session</strong> on this kiosk.
+              If you did this by accident, choose <strong>Stay</strong> to continue where you left off.
+            </p>
+
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg border border-border bg-white hover:bg-muted/20 text-sm font-semibold"
+                onClick={() => {
+                  setBackConfirmOpen(false);
+                  setPendingBack(false);
+                }}
+              >
+                Stay
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg bg-destructive text-white hover:opacity-90 text-sm font-semibold"
+                disabled={endingFromBack}
+                onClick={async () => {
+                  if (endingFromBack) return;
+                  setEndingFromBack(true);
+                  try {
+                    await handleReset();
+                  } finally {
+                    setEndingFromBack(false);
+                    setBackConfirmOpen(false);
+                    setPendingBack(false);
+                  }
+                }}
+              >
+                End session &amp; go Home
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ACTIVE SESSION DETECTED (Issue #2) */}
+      {sessionConflictOpen && conflictVoterRow && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl bg-white/95 p-6 shadow-2xl animate-fade-in-up">
+            <h2 className="text-xl font-bold text-foreground">Active session detected</h2>
+            <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
+              This voter already has an active voting session. This can happen if the browser accidentally went back.
+              You can <strong>resume</strong> the session or <strong>end</strong> it and start over.
+            </p>
+
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg border border-border bg-white hover:bg-muted/20 text-sm font-semibold"
+                onClick={() => {
+                  // End and return to auth state without changing route.
+                  setSessionConflictOpen(false);
+                  setConflictVoterRow(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/15 text-sm font-semibold"
+                onClick={async () => {
+                  const voterRow = conflictVoterRow;
+                  setSessionConflictOpen(false);
+                  setConflictVoterRow(null);
+
+                  const enriched: VoterData = {
+                    ...voterRow,
+                    rfidVerified: true,
+                    faceVerified: true,
+                  };
+
+                  const catalog = await refreshElectionsAndStatus(voterRow.id);
+                  if (!catalog) return;
+
+                  const { activeElections: active, hasVotedAllActive } = catalog;
+
+                  if (!active || active.length === 0) {
+                    await endSession(voterRow.id);
+                    resetElectionCatalog();
+                    navigate("/error", {
+                      state: {
+                        title: "No Eligible Elections",
+                        reason: "NO_ELIGIBLE_ELECTIONS",
+                        voter_audience: (voterRow as any).voter_audience,
+                        message:
+                          "There are currently no eligible active elections available at this time. If you believe this is incorrect, please contact election staff.",
+                        recoverTo: "/voting",
+                        countdownSeconds: 10,
+                      },
+                    });
+                    return;
+                  }
+
+                  if (hasVotedAllActive) {
+                    navigate("/error", {
+                      state: {
+                        title: "You Already Voted",
+                        reason: "ALREADY_VOTED",
+                        voter_audience: (voterRow as any).voter_audience,
+                        message: "You have already voted in all active elections available to you.",
+                        recoverTo: "/voting",
+                        countdownSeconds: 10,
+                      },
+                    });
+                    return;
+                  }
+
+                  setVoterData(enriched);
+                  setStep("election-select");
+                }}
+              >
+                Resume session
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg bg-destructive text-white hover:opacity-90 text-sm font-semibold"
+                onClick={async () => {
+                  const voterRow = conflictVoterRow;
+                  setSessionConflictOpen(false);
+                  setConflictVoterRow(null);
+
+                  await endSession(voterRow.id);
+                  dispatchFlow({ type: "RESET_FLOW" });
+                  setVoterData(null);
+                  resetElectionCatalog();
+                  resetTimer();
+                  toast.success("Previous session ended. Please tap your RFID again.");
+                }}
+              >
+                End session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TIMEOUT MODAL */}
       {showTimeoutModal && (

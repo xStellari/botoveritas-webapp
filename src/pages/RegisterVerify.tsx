@@ -45,6 +45,61 @@ export default function RegisterVerify() {
   const [registrationEnabled, setRegistrationEnabled] = useState<boolean>(false);
   const [registrationLoading, setRegistrationLoading] = useState<boolean>(true);
 
+  // Determine voter audience from authoritative registry (employees override).
+  // This keeps election eligibility deterministic post-RFID.
+  // Determine voter audience from authoritative registry (employees override).
+// Uses a SECURITY DEFINER RPC first so it works even before auth session exists.
+const resolveVoterAudience = async (email: string): Promise<"students" | "employees"> => {
+  const normalized = (email || "").trim().toLowerCase();
+  if (!normalized) return "students";
+
+  // 1) Preferred: RPC that returns a boolean without exposing employee list.
+  try {
+    const { data, error } = await (supabase as any).rpc("is_employee_email", { p_email: normalized });
+    if (!error && typeof data === "boolean") {
+      return data ? "employees" : "students";
+    }
+    if (error) {
+      console.warn("resolveVoterAudience: is_employee_email RPC failed:", error);
+    }
+  } catch (e) {
+    console.warn("resolveVoterAudience: is_employee_email RPC exception:", e);
+  }
+
+  // 2) Fallback: direct table lookup (may be blocked depending on RLS/policies).
+  try {
+    const { data, error } = await supabase
+      .from("employee_registry" as any)
+      .select("id")
+      .ilike("email_norm", normalized)
+      .limit(1);
+
+    if (error) {
+      console.warn("resolveVoterAudience: employee_registry lookup failed:", error);
+      return "students";
+    }
+    if (data && data.length > 0) return "employees";
+
+    const { data: data2, error: error2 } = await supabase
+      .from("employee_registry" as any)
+      .select("id")
+      .ilike("email", normalized)
+      .limit(1);
+
+    if (error2) {
+      console.warn("resolveVoterAudience: employee_registry fallback lookup failed:", error2);
+      return "students";
+    }
+
+    return data2 && data2.length > 0 ? "employees" : "students";
+  } catch (e) {
+    console.warn("resolveVoterAudience: exception:", e);
+    return "students";
+  }
+};
+
+
+
   // ✅ One-shot submit guard (prevents double click / double insert)
   const hasSubmittedRef = useRef(false);
 
@@ -125,8 +180,14 @@ export default function RegisterVerify() {
     // 🔒 Enforce registration phase at the point of DB write
     if (registrationLoading) return;
     if (!registrationEnabled) {
-      navigate("/registration-error", {
-        state: { message: "Registration is currently closed. Please return during the official registration window." },
+      navigate("/error", {
+        state: {
+          title: "Registration Closed",
+          message: "Registration is currently closed. Please return during the official registration window.",
+          reason: "REGISTRATION_CLOSED",
+          recoverTo: "/",
+          countdownSeconds: 10,
+        },
       });
       return;
     }
@@ -143,11 +204,20 @@ export default function RegisterVerify() {
         .maybeSingle();
 
       if (existingRFID) {
-        navigate("/registration-error", {
-          state: { message: "This RFID is already registered to another student." },
+        navigate("/error", {
+          state: {
+            title: "RFID Already Registered",
+            message: "This RFID is already registered to another voter.",
+            reason: "RFID_ALREADY_REGISTERED",
+            recoverTo: "/register",
+            countdownSeconds: 10,
+          },
         });
         return;
       }
+
+      // 1b) Resolve voter audience BEFORE creating auth/voter row
+      const voterAudience = await resolveVoterAudience(data.fullEmail);
 
       // 2) Create auth user
       const { data: signupData, error } = await supabase.auth.signUp({
@@ -156,16 +226,28 @@ export default function RegisterVerify() {
       });
 
       if (error) {
-        navigate("/registration-error", {
-          state: { message: "Registration failed. Please try again. " + error.message },
+        navigate("/error", {
+          state: {
+            title: "Registration Failed",
+            message: "Registration failed. Please try again. " + error.message,
+            reason: "REGISTRATION_FAILED",
+            recoverTo: "/register",
+            countdownSeconds: 10,
+          },
         });
         return;
       }
 
       const user = signupData.user;
       if (!user?.id) {
-        navigate("/registration-error", {
-          state: { message: "Registration failed: missing user id." },
+        navigate("/error", {
+          state: {
+            title: "Registration Failed",
+            message: "Registration failed: missing user id.",
+            reason: "REGISTRATION_FAILED",
+            recoverTo: "/register",
+            countdownSeconds: 10,
+          },
         });
         return;
       }
@@ -187,14 +269,21 @@ export default function RegisterVerify() {
           year_level: data.yearLevel,
           // org_affiliations is system-assigned (authoritative roster)
           org_affiliations: null,
+          voter_audience: voterAudience,
           rfid_tag: rfid,
           face_descriptor: Array.from(faceDescriptor),
         },
       ]);
 
       if (voterErr) {
-        navigate("/registration-error", {
-          state: { message: "Failed to save voter record. " + voterErr.message },
+        navigate("/error", {
+          state: {
+            title: "Registration Failed",
+            message: "Failed to save voter record. " + voterErr.message,
+            reason: "VOTER_SAVE_FAILED",
+            recoverTo: "/register",
+            countdownSeconds: 10,
+          },
         });
         return;
       }
@@ -202,16 +291,20 @@ export default function RegisterVerify() {
       // 3b) Refresh and persist system-assigned org affiliations (RLS-safe)
       // This RPC updates voters.org_affiliations server-side and returns the computed array.
       // If email confirmation is enabled and no session exists, we fall back to SCC-only display.
-      let finalOrgs: string[] = ["SCC"]; // SCC is open to all (safe fallback)
+      // Students: compute orgs. Employees: org affiliations are not applicable.
+      let finalOrgs: string[] = voterAudience === "employees" ? [] : ["SCC"]; // SCC is open to all students (safe fallback)
       try {
-        const { data: refreshed, error: refreshErr } = await supabase.rpc(
-          "refresh_voter_org_affiliations" as any,
-          { p_voter_id: user.id } as any
-        );
-        if (refreshErr) {
-          console.warn("refresh_voter_org_affiliations failed:", refreshErr);
-        } else if (Array.isArray(refreshed)) {
-          finalOrgs = refreshed as string[];
+        if (voterAudience !== "employees") {
+          const { data: refreshed, error: refreshErr } = await supabase.rpc(
+            "refresh_voter_org_affiliations" as any,
+            { p_voter_id: user.id } as any
+          );
+
+          if (refreshErr) {
+            console.warn("refresh_voter_org_affiliations failed:", refreshErr);
+          } else if (Array.isArray(refreshed)) {
+            finalOrgs = refreshed as string[];
+          }
         }
       } catch (e) {
         console.warn("refresh_voter_org_affiliations exception:", e);
@@ -256,8 +349,14 @@ export default function RegisterVerify() {
       // ✅ IMPORTANT: do NOT setLoading(false) after navigate; component unmounts anyway
     } catch (err) {
       console.error(err);
-      navigate("/registration-error", {
-        state: { message: "Unexpected error during registration." },
+      navigate("/error", {
+        state: {
+          title: "Registration Error",
+          message: "Unexpected error during registration.",
+          reason: "UNEXPECTED_ERROR",
+          recoverTo: "/register",
+          countdownSeconds: 10,
+        },
       });
     }
   };
@@ -437,10 +536,14 @@ export default function RegisterVerify() {
 
                         const isDuplicate = await checkDuplicateFace(descriptor);
                         if (isDuplicate) {
-                          navigate("/registration-error", {
+                          navigate("/error", {
                             state: {
+                              title: "Duplicate Face ID",
+                              reason: "FACE_DUPLICATE",
                               message:
-                                "This Face ID already exists.\nYou are already registered.",
+                                "This Face ID already exists. You are already registered.",
+                              recoverTo: "/register",
+                              countdownSeconds: 10,
                             },
                           });
                           return;
@@ -449,8 +552,14 @@ export default function RegisterVerify() {
                         setFaceDescriptor(descriptor);
                       }}
                       onError={() =>
-                        navigate("/registration-error", {
-                          state: { message: "Face detection failed." },
+                        navigate("/error", {
+                          state: {
+                            title: "Face Detection Failed",
+                            reason: "FACE_DETECTION_FAILED",
+                            message: "Face detection failed. Please try again.",
+                            recoverTo: "/register/verify",
+                            countdownSeconds: 10,
+                          },
                         })
                       }
                     />
@@ -497,8 +606,14 @@ export default function RegisterVerify() {
             .maybeSingle();
 
           if (existingRFID) {
-            navigate("/registration-error", {
-              state: { message: "This RFID is already registered to another student." },
+            navigate("/error", {
+              state: {
+                title: "RFID Already Registered",
+                reason: "RFID_ALREADY_REGISTERED",
+                message: "This RFID is already registered to another voter.",
+                recoverTo: "/register",
+                countdownSeconds: 10,
+              },
             });
             return;
           }

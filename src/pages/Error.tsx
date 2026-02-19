@@ -10,26 +10,84 @@ import {
 import { Button } from "@/components/ui/button";
 import { AlertTriangle } from "lucide-react";
 
-export default function RegistrationError() {
+export default function ErrorPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  type ErrorState = {
+    title?: string;
+    message?: string;
+    voterAudience?: "students" | "employees";
+    voter_audience?: "students" | "employees";
+    reason?: "NO_ELIGIBLE_ELECTIONS" | "NO_ACTIVE_ELECTIONS" | string;
+    recoverTo?: string;
+    countdownSeconds?: number;
+  };
 
-  const message =
-    (location.state as { message?: string })?.message ||
-    "An unexpected error occurred during registration.";
+  const state = (location.state as ErrorState) || {};
+  const audience = state.voterAudience || state.voter_audience;
+
+  const rawMessage =
+    state.message || "An unexpected error occurred.";
+
+  const isNoEligibleElectionsMessage =
+    state.reason === "NO_ELIGIBLE_ELECTIONS" ||
+    /no\s+active\s+elections/i.test(rawMessage) ||
+    /no\s+eligible\s+elections/i.test(rawMessage);
+
+  const isNoActiveElectionsMessage =
+    state.reason === "NO_ACTIVE_ELECTIONS" || /no\s+active\s+elections/i.test(rawMessage);
+
+  const message = (() => {
+    // Make the “no elections” case explicit and non-personal.
+    if (isNoActiveElectionsMessage && !isNoEligibleElectionsMessage) {
+      return (
+        "There are currently no active elections at this time.\n\n" +
+        "If you believe this is incorrect, please contact an administrator."
+      );
+    }
+
+    if (isNoEligibleElectionsMessage) {
+      if (audience === "employees") {
+        return (
+          "There are currently no active elections for employees.\n" +
+          "This kiosk is primarily used for student elections.\n\n" +
+          "If you believe this is incorrect, please contact an administrator."
+        );
+      }
+
+      if (audience === "students") {
+        return (
+          "There are currently no active student elections.\n\n" +
+          "If you believe this is incorrect, please contact an administrator."
+        );
+      }
+
+      return (
+        "There are currently no active elections available at this time.\n\n" +
+        "If you believe this is incorrect, please contact an administrator."
+      );
+    }
+
+    return rawMessage;
+  })();
 
   // Auto-redirect countdown
-  const [seconds, setSeconds] = useState(10);
+  const recoverTo = state.recoverTo || "/";
+  const initialSeconds =
+    typeof state.countdownSeconds === "number" && state.countdownSeconds > 0
+      ? Math.floor(state.countdownSeconds)
+      : 10;
+  const [seconds, setSeconds] = useState(initialSeconds);
 
   useEffect(() => {
     if (seconds <= 0) {
-      navigate("/");
+      navigate(recoverTo);
       return;
     }
 
     const timer = setTimeout(() => setSeconds((s) => s - 1), 1000);
     return () => clearTimeout(timer);
-  }, [seconds, navigate]);
+  }, [seconds, navigate, recoverTo]);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden">
@@ -104,7 +162,7 @@ export default function RegistrationError() {
           </div>
 
           <CardTitle className="text-3xl font-extrabold text-red-600">
-            Error
+            {state.title ?? "Error"}
           </CardTitle>
 
           <CardDescription className="text-base text-muted-foreground">
@@ -124,16 +182,16 @@ export default function RegistrationError() {
             disabled
             className="w-full text-lg py-6 font-semibold opacity-100 cursor-default bg-gradient-to-r from-primary to-secondary"
           >
-            Returning to Main in {seconds}…
+            Returning in {seconds}…
           </Button>
 
           {/* Optional manual return button */}
           <Button
             variant="outline"
             className="w-full text-base py-5 font-semibold border-red-300 text-red-600 hover:bg-red-50 transition"
-            onClick={() => navigate("/")}
+            onClick={() => navigate(recoverTo)}
           >
-            Return to Main Now
+            Return Now
           </Button>
         </CardContent>
       </Card>
