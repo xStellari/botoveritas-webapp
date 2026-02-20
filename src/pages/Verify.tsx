@@ -10,10 +10,6 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 
-function openInNewTab(url: string) {
-  window.open(url, "_blank", "noopener,noreferrer");
-}
-
 function looksLikeUuid(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v.trim());
 }
@@ -36,7 +32,8 @@ export default function Verify() {
     if (!looksLikeUuid(voteIdTrim)) {
       toast.warning("That doesn't look like a UUID Vote ID — opening anyway.");
     }
-    openInNewTab(`/verify/vote/${encodeURIComponent(voteIdTrim)}`);
+    // Kiosk-safe: keep navigation in the same tab to avoid lock-state in kiosk mode.
+    navigate(`/verify/vote/${encodeURIComponent(voteIdTrim)}`);
   };
 
   const onOpenNftVerify = () => {
@@ -44,7 +41,8 @@ export default function Verify() {
       toast.error("Please enter a Token ID.");
       return;
     }
-    openInNewTab(`/verify/nft/${encodeURIComponent(tokenIdTrim)}`);
+    // Kiosk-safe: keep navigation in the same tab to avoid lock-state in kiosk mode.
+    navigate(`/verify/nft/${encodeURIComponent(tokenIdTrim)}`);
   };
 
   return (
@@ -115,7 +113,7 @@ export default function Verify() {
                     Open NFT Receipt Verification
                   </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">Opens in a new tab.</p>
+                <p className="text-xs text-muted-foreground">Opens in this tab.</p>
               </div>
             </Card>
 
@@ -190,7 +188,7 @@ export default function Verify() {
                         Open Vote Verification
                       </Button>
                     </div>
-                    <p className="text-xs text-muted-foreground">Opens in a new tab.</p>
+                    <p className="text-xs text-muted-foreground">Opens in this tab.</p>
                   </div>
                 </Card>
 
