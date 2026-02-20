@@ -34,6 +34,14 @@ const formatName = (str: string) => {
 export default function Register() {
   const navigate = useNavigate();
 
+  // 3-step registration:
+  // 1) Data Privacy Consent
+  // 2) Personal Information
+  // 3) Identity (handled on /register/verify)
+  const [step, setStep] = useState<1 | 2>(1);
+  const [privacyConsent, setPrivacyConsent] = useState(false);
+  const [privacyConsentedAt, setPrivacyConsentedAt] = useState<string | null>(null);
+
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [registrationLoading, setRegistrationLoading] = useState(true);
 
@@ -126,6 +134,14 @@ export default function Register() {
       return;
     }
 
+    if (!privacyConsent) {
+      toast.error("Consent required", {
+        description: "Please review the Data Privacy Policy Statement and confirm your consent before proceeding.",
+      });
+      setStep(1);
+      return;
+    }
+
     if (!firstName || !lastName || !signupEmail || !yearLevel) {
       toast.error("Please fill out all required fields.");
       return;
@@ -140,11 +156,19 @@ export default function Register() {
         suffix,
         yearLevel,
         fullEmail,
+        privacyConsent: true,
+        privacyConsentedAt,
       },
     });
   };
 
   const handleBack = () => {
+    // Within the registration flow: step back to consent screen.
+    if (step === 2) {
+      setStep(1);
+      return;
+    }
+
     // Prefer navigating back to the landing page, but fail-safe to "/" if history is missing
     // (e.g., direct link to /register or kiosk/browser history restrictions).
     if (typeof window !== "undefined" && window.history.length > 1) {
@@ -300,48 +324,54 @@ export default function Register() {
             </h1>
 
             <CardDescription className="text-muted-foreground text-lg">
-              Step 1 of 2 — Personal Information
+              {step === 1 ? "Step 1 of 3 — Data Privacy Consent" : "Step 2 of 3 — Personal Information"}
             </CardDescription>
 
-            {/* Animated Progress Bar */}
-            <div className="relative w-64 h-2 bg-gray-200 rounded-full mx-auto mt-4 overflow-hidden">
+            {/* Progress Bar (3-step) */}
+            <div className="relative w-72 h-2 bg-gray-200 rounded-full mx-auto mt-4 overflow-hidden">
               <div
-                className="
-                  absolute left-0 top-0 h-full
-                  bg-gradient-to-r from-primary to-secondary
-                  rounded-full
-                "
+                className="absolute left-0 top-0 h-full bg-gradient-to-r from-primary to-secondary rounded-full"
                 style={{
-                  animation: "progressFill 1.4s ease-out forwards",
+                  width: step === 1 ? "33%" : "66%",
+                  transition: "width 420ms ease",
                 }}
-              ></div>
+              />
             </div>
 
             {/* Stepper Circles */}
-            <div className="flex justify-center mt-6 gap-12">
+            <div className="flex justify-center mt-6 gap-10">
               {/* STEP 1 */}
-              <div className="flex flex-col items-center">
+              <div className={`flex flex-col items-center ${step === 1 ? "" : "opacity-70"}`}>
                 <div
-                  className="
-                    h-10 w-10 rounded-full flex items-center justify-center
-                    bg-gradient-to-r from-primary to-secondary text-white
-                    font-semibold shadow-md
-                  "
+                  className={`h-10 w-10 rounded-full flex items-center justify-center font-semibold shadow-md ${
+                    step === 1
+                      ? "bg-gradient-to-r from-primary to-secondary text-white"
+                      : "border-2 border-primary/30 text-primary"
+                  }`}
                 >
                   1
                 </div>
-                <span className="mt-2 text-xs font-medium text-primary tracking-wide">Personal Info</span>
+                <span className="mt-2 text-xs font-medium tracking-wide text-primary">Data Privacy</span>
               </div>
 
               {/* STEP 2 */}
-              <div className="flex flex-col items-center opacity-60">
+              <div className={`flex flex-col items-center ${step === 2 ? "" : "opacity-60"}`}>
                 <div
-                  className="
-                    h-10 w-10 rounded-full flex items-center justify-center
-                    border-2 border-gray-300 text-gray-400 font-semibold
-                  "
+                  className={`h-10 w-10 rounded-full flex items-center justify-center font-semibold shadow-md ${
+                    step === 2
+                      ? "bg-gradient-to-r from-primary to-secondary text-white"
+                      : "border-2 border-gray-300 text-gray-400"
+                  }`}
                 >
                   2
+                </div>
+                <span className="mt-2 text-xs tracking-wide text-muted-foreground">Personal Info</span>
+              </div>
+
+              {/* STEP 3 */}
+              <div className="flex flex-col items-center opacity-60">
+                <div className="h-10 w-10 rounded-full flex items-center justify-center border-2 border-gray-300 text-gray-400 font-semibold">
+                  3
                 </div>
                 <span className="mt-2 text-xs text-muted-foreground tracking-wide">Identity</span>
               </div>
@@ -352,7 +382,78 @@ export default function Register() {
           {/* FORM CONTENT               */}
           {/* ========================== */}
           <CardContent className="space-y-6 px-8 pb-10">
-            <form onSubmit={handleProceed} className="space-y-6">
+            {step === 1 ? (
+              <div className="space-y-6">
+                <div className="rounded-xl border border-primary/15 bg-white overflow-hidden">
+                  <div className="px-4 py-3 border-b bg-primary/5">
+                    <p className="text-sm font-semibold text-foreground">Data Privacy Policy Statement</p>
+                    <p className="text-xs text-muted-foreground">
+                      Please review the statement below. You must provide consent before registration can continue.
+                    </p>
+                  </div>
+
+                  <div className="p-4">
+                    <div className="rounded-lg border bg-white overflow-hidden">
+                      <img
+                        src="/privacy-policy.png"
+                        alt="FEU Data Privacy Policy Statement"
+                        className="w-full h-auto"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-primary/15 bg-primary/5 p-4">
+                  <label className="flex items-start gap-3 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={privacyConsent}
+                      onChange={(e) => setPrivacyConsent(e.target.checked)}
+                    />
+                    <span className="text-sm text-muted-foreground leading-relaxed">
+                      I have read the Data Privacy Policy Statement and I consent to the collection and processing of my
+                      information for voter registration and election-related purposes.
+                    </span>
+                  </label>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => navigate("/")}
+                    className="w-full sm:w-auto sm:flex-1 text-lg py-6 font-semibold"
+                  >
+                    I Do Not Consent
+                  </Button>
+
+                  <Button
+                    type="button"
+                    disabled={registrationLoading || !registrationEnabled || !privacyConsent}
+                    onClick={() => {
+                      if (!privacyConsent) {
+                        toast.error("Consent required", {
+                          description: "Please tick the consent checkbox to continue.",
+                        });
+                        return;
+                      }
+
+                      setPrivacyConsentedAt(new Date().toISOString());
+                      setStep(2);
+                    }}
+                    className="w-full sm:flex-[2] text-lg py-6 font-semibold bg-gradient-to-r from-primary to-secondary hover:opacity-90"
+                  >
+                    {registrationLoading
+                      ? "Checking registration window…"
+                      : registrationEnabled
+                        ? "I Consent — Continue"
+                        : "Registration Closed"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleProceed} className="space-y-6">
               {/* NAME ROW */}
               <div className="grid gap-6 md:grid-cols-[2fr_0.5fr_2fr_1.2fr]">
                 {/* First Name */}
@@ -484,6 +585,7 @@ export default function Register() {
                 </Button>
               </div>
             </form>
+            )}
           </CardContent>
         </Card>
       </div>
