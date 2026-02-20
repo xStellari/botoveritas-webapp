@@ -281,7 +281,7 @@ function htmlPage(p: {
   const explorerBase = "https://amoy.polygonscan.com";
   const explorerTx = txHash ? `${explorerBase}/tx/${txHash}` : "";
   const explorerBtn = explorerTx
-    ? `<a class="btn btn-ghost" href="${escapeHtml(explorerTx)}" target="_blank" rel="noreferrer">
+    ? `<a class="btn btn-ghost" href="${escapeHtml(explorerTx)}">
         ${iconExternal("ic")}<span>View Transaction on PolygonScan</span>
       </a>`
     : "";
@@ -530,6 +530,35 @@ function htmlPage(p: {
     }
     .btn-primary:hover{filter: brightness(1.02)}
     .btn-ghost{background: rgba(255,255,255,.86)}
+
+    /* Kiosk-safe return bar */
+    .returnbar{
+      margin-top: 18px;
+      border: 1px solid rgba(11,107,58,.22);
+      background: rgba(11,107,58,.06);
+      border-radius: 18px;
+      padding: 16px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .returnleft{display:flex; flex-direction:column; gap:6px}
+    .returnttl{font-weight: 800; color: rgba(11,107,58,.95); letter-spacing: -.01em}
+    .returndesc{font-size: 13px; color: rgba(11,18,32,.70)}
+    .timerbig{font-size: 28px; font-weight: 900; color: rgba(11,107,58,.98); line-height: 1}
+    .timerwrap{display:flex; align-items:baseline; gap:8px}
+    .timerunit{font-size: 12px; color: rgba(11,18,32,.62); font-weight: 700}
+    .progress{width: 220px; height: 10px; border-radius: 999px; background: rgba(11,18,32,.10); overflow:hidden}
+    .progress > div{height:100%; width:100%; background: linear-gradient(90deg, rgba(11,107,58,.95), rgba(201,162,39,.95));}
+    a.btn-home{
+      background: linear-gradient(90deg, rgba(11,107,58,.98), rgba(201,162,39,.98));
+      border-color: rgba(11,107,58,.22);
+      color: white;
+      box-shadow: 0 14px 30px rgba(2,6,23,.12);
+    }
+    a.btn-home:hover{opacity:.92}
     .steps{
       display:grid;
       grid-template-columns: 1fr;
@@ -697,10 +726,48 @@ function htmlPage(p: {
 
           ${techDetails}
           ${notes}
+
+          <div class="returnbar" role="note" aria-label="Return to Home">
+            <div class="returnleft">
+              <div class="returnttl">Return to Home</div>
+              <div class="returndesc">For kiosk safety, this page will automatically return.</div>
+            </div>
+
+            <div class="timerwrap" aria-label="Auto return timer">
+              <div class="timerbig"><span id="bvTimer">40</span>s</div>
+              <div class="timerunit">until auto-return</div>
+            </div>
+
+            <div class="progress" aria-hidden="true"><div id="bvBar"></div></div>
+
+            <a class="btn btn-home" href="/">${iconCheck("ic")}<span>Go to Home</span></a>
+          </div>
         </div>
       </div>
     </div>
   </div>
+
+  <script>
+    (function(){
+      var total = 40;
+      var s = total;
+      var timerEl = document.getElementById('bvTimer');
+      var barEl = document.getElementById('bvBar');
+      function render(){
+        if (timerEl) timerEl.textContent = String(s);
+        if (barEl) barEl.style.width = Math.max(0, Math.min(100, (s/total)*100)) + '%';
+      }
+      render();
+      var t = setInterval(function(){
+        s -= 1;
+        render();
+        if (s <= 0){
+          clearInterval(t);
+          window.location.href = '/';
+        }
+      }, 1000);
+    })();
+  </script>
 </body>
 </html>`;
 }
