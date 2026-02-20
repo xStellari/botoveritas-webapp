@@ -10,6 +10,12 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 
+// Kiosk-safe: use a full-page navigation (same tab) so Vercel rewrites can serve
+// the API-backed verification pages (e.g., /verify/nft/:tokenId) in production.
+function openInSameTab(url: string) {
+  window.location.assign(url);
+}
+
 function looksLikeUuid(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v.trim());
 }
@@ -32,8 +38,7 @@ export default function Verify() {
     if (!looksLikeUuid(voteIdTrim)) {
       toast.warning("That doesn't look like a UUID Vote ID — opening anyway.");
     }
-    // Kiosk-safe: keep navigation in the same tab to avoid lock-state in kiosk mode.
-    navigate(`/verify/vote/${encodeURIComponent(voteIdTrim)}`);
+    openInSameTab(`/verify/vote/${encodeURIComponent(voteIdTrim)}`);
   };
 
   const onOpenNftVerify = () => {
@@ -41,8 +46,7 @@ export default function Verify() {
       toast.error("Please enter a Token ID.");
       return;
     }
-    // Kiosk-safe: keep navigation in the same tab to avoid lock-state in kiosk mode.
-    navigate(`/verify/nft/${encodeURIComponent(tokenIdTrim)}`);
+    openInSameTab(`/verify/nft/${encodeURIComponent(tokenIdTrim)}`);
   };
 
   return (
