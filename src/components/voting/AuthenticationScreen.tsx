@@ -475,7 +475,17 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
           <RFIDScanner onScan={handleRFID} />
 
           {/* Header */}
-          <div className="flex flex-col items-center">
+          <div className="relative flex flex-col items-center">
+            <div className="absolute right-0 top-0">
+              <Button
+                type="button"
+                variant="outline"
+                className="rounded-xl"
+                onClick={() => navigate("/", { replace: true })}
+              >
+                Go to Home
+              </Button>
+            </div>
             <img
               src={feuLogo}
               alt="FEU Alabang"
