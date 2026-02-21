@@ -49,8 +49,8 @@ export default function ErrorPage() {
     if (isNoEligibleElectionsMessage) {
       if (audience === "employees") {
         return (
-          "There are currently no active elections for employees.\n" +
           "This kiosk is primarily used for student elections.\n\n" +
+          "There are currently no active elections for employees.\n\n" +
           "If you believe this is incorrect, please contact an administrator."
         );
       }
