@@ -523,7 +523,7 @@ export default function Register() {
                   <option>2nd Year</option>
                   <option>3rd Year</option>
                   <option>4th Year</option>
-                  <option>5th Year</option>
+                  <option>Others</option>
                 </select>
               </div>
 
