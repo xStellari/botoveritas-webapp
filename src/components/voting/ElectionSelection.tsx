@@ -1,8 +1,18 @@
-import { useEffect, useMemo, useState} from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   CalendarDays,
   Users,
@@ -13,10 +23,10 @@ import {
   RefreshCw,
   Info,
 } from "lucide-react";
-import { toast } from "sonner";
+
+import { useVotingSessionLock } from "@/hooks/useVotingSessionLock";
 
 import feuLogo from "@/assets/feu-logo.png";
-import { Navigate } from "react-router-dom";
 
 interface ElectionSelectionProps {
   voterData: any;
@@ -35,12 +45,70 @@ const ElectionSelection = ({
   expiredElections,
   onRefresh,
 }: ElectionSelectionProps) => {
-  const handleSelectElection = (election: any) => {
+  const { endSession, getActiveSessionRow, getCurrentKioskId } =
+    useVotingSessionLock();
+
+  const [notice, setNotice] = useState<string | null>(null);
+  const [noticeTone, setNoticeTone] = useState<"info" | "error">("info");
+
+  const voterId: string | undefined = voterData?.id;
+
+  const requireActiveSession = async (): Promise<
+    | { ok: true; timeLeftSec: number }
+    | { ok: false; reason: "expired" | "missing" | "other_kiosk" }
+  > => {
+    if (!voterId) return { ok: false, reason: "missing" };
+
+    const kioskId = await getCurrentKioskId();
+    const { session } = await getActiveSessionRow(voterId);
+
+    if (!session?.expires_at) return { ok: false, reason: "missing" };
+
+    const expiresAtMs = new Date(session.expires_at as any).getTime();
+    const nowMs = Date.now();
+    const timeLeftSec = Math.max(0, Math.floor((expiresAtMs - nowMs) / 1000));
+
+    if (timeLeftSec <= 0) return { ok: false, reason: "expired" };
+
+    // If the DB row is bound to a different kiosk, treat as other-kiosk.
+    if (session.kiosk_id && kioskId !== "unknown" && session.kiosk_id !== kioskId) {
+      return { ok: false, reason: "other_kiosk" };
+    }
+
+    return { ok: true, timeLeftSec };
+  };
+
+  const handleSelectElection = async (election: any) => {
+    setNotice(null);
     if (completedElections.includes(election.id)) {
-      toast.error("You have already voted in this election");
+      setNoticeTone("error");
+      setNotice("You have already voted in this election.");
       return;
     }
-    onElectionSelect(election.id, election);
+
+    // Prevent "zombie" navigation: do not allow entering a ballot if session expired.
+    const guard = await requireActiveSession();
+    if (!guard.ok) {
+      // If the session is expired, the parent (VotingKiosk) will show the extension modal.
+      if (guard.reason === "expired") return;
+
+      navigate("/error", {
+        state: {
+          title: "Session Error",
+          reason: guard.reason === "other_kiosk" ? "ACTIVE_SESSION_OTHER_KIOSK" : "SESSION_MISSING",
+          voter_audience: (voterData as any)?.voter_audience,
+          message:
+            guard.reason === "other_kiosk"
+              ? "This voter already has an active voting session on another kiosk. Please return to that kiosk."
+              : "Your voting session is not available. Please authenticate again.",
+          recoverTo: "/voting",
+          countdownSeconds: 0,
+        },
+      });
+      return;
+    }
+
+onElectionSelect(election.id, election);
   };
 
   /**
@@ -91,20 +159,22 @@ const ElectionSelection = ({
   }, [localActive, voterOrgs]);
 
   const [refreshing, setRefreshing] = useState(false);
+  const [backConfirmOpen, setBackConfirmOpen] = useState(false);
 
   const doRefresh = async () => {
     if (!onRefresh) {
-      toast.message("Refresh is not wired yet", {
-        description: "VotingKiosk must pass an onRefresh callback.",
-      });
+      setNoticeTone("info");
+      setNotice("Refresh is not available right now.");
       return;
     }
     try {
       setRefreshing(true);
       await onRefresh();
-      toast.success("Elections refreshed");
+      setNoticeTone("info");
+      setNotice("Elections refreshed.");
     } catch (e: any) {
-      toast.error(e?.message ?? "Failed to refresh elections");
+      setNoticeTone("error");
+      setNotice(e?.message ?? "Failed to refresh elections.");
     } finally {
       setRefreshing(false);
     }
@@ -159,8 +229,8 @@ const ElectionSelection = ({
           <div className="flex items-center gap-3">
             <img src={feuLogo} className="h-12" alt="FEU Logo" />
           </div>
-          <Button variant="outline" onClick={() => navigate("/")}>
-              Back
+          <Button variant="outline" onClick={() => setBackConfirmOpen(true)}>
+            Back
           </Button>
         </div>
       </header>
@@ -219,6 +289,20 @@ const ElectionSelection = ({
                 Refresh
               </Button>
             </div>
+
+            {notice ? (
+              <div
+                className={`mx-auto max-w-xl mt-4 rounded-xl border px-4 py-3 text-left text-sm flex gap-2 items-start ${
+                  noticeTone === "error"
+                    ? "border-red-200 bg-red-50 text-red-700"
+                    : "border-gray-200 bg-white text-gray-700"
+                }`}
+                role={noticeTone === "error" ? "alert" : "status"}
+              >
+                <Info className="h-4 w-4 mt-0.5" />
+                <div className="whitespace-pre-line">{notice}</div>
+              </div>
+            ) : null}
           </section>
 
           {/* ACTIVE ELECTIONS */}
@@ -228,36 +312,12 @@ const ElectionSelection = ({
                 <Flame className="h-5 w-5 text-emerald-700" />
                 Active Elections
               </h2>
-
-              {/* ✅ Hint + "Why?" tooltip (non-interactive) */}
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>Some elections may not appear if you’re not eligible.</span>
-                <span
-                  className="inline-flex items-center gap-1 text-emerald-800 font-medium cursor-help"
-                  title={whyTooltip}
-                  aria-label="Why elections might be missing"
-                >
-                  <Info className="h-3.5 w-3.5" />
-                  Why?
-                </span>
-              </div>
             </div>
 
             {eligibleActiveElections.length === 0 ? (
               <Card className="p-6 border">
                 <p className="text-sm text-muted-foreground">
                   No active elections at the moment.
-                </p>
-
-                {/* keep the hint visible even in empty state */}
-                <p className="text-xs text-muted-foreground mt-2">
-                  Some elections may not appear if you’re not eligible.{" "}
-                  <span
-                    className="font-medium text-emerald-800 cursor-help"
-                    title={whyTooltip}
-                  >
-                    Why?
-                  </span>
                 </p>
 
                 <div className="mt-4 flex justify-center">
@@ -442,6 +502,45 @@ const ElectionSelection = ({
       <footer className="py-6 border-t bg-white/70 backdrop-blur text-center text-xs text-muted-foreground">
         © {new Date().getFullYear()} BotoVeritas — FEU Alabang Student Elections
       </footer>
+
+      {/* End session confirmation (same behavior as DEV: Simulate Back) */}
+      <AlertDialog open={backConfirmOpen} onOpenChange={setBackConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>End this session?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Going back will end your voting session on this kiosk. If you did this by accident, choose Stay to continue where you left off.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Stay</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={async () => {
+                // End DB session (best-effort) + clear local in-memory state.
+                try {
+                  if (voterId) await endSession(voterId);
+                } catch {
+                  // no-op
+                }
+
+                try {
+                  window.dispatchEvent(
+                    new CustomEvent("botoveritas:end-session", {
+                      detail: { source: "ElectionSelection" },
+                    })
+                  );
+                } catch {
+                  // no-op
+                }
+
+                navigate("/", { replace: true });
+              }}
+            >
+              End session
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

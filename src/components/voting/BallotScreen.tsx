@@ -433,17 +433,6 @@ const BallotScreenWithAbstain = ({
                 </span>
               </div>
 
-              <Separator orientation="vertical" className="h-8" />
-
-              {/* ⏳ DYNAMIC TIMER (from VotingKiosk) */}
-              <div
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-                  timeLeft < 60000 ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary"
-                }`}
-              >
-                <Clock className="h-5 w-5" />
-                <span className="font-mono text-lg font-bold">{formatTime(timeLeft)}</span>
-              </div>
             </div>
           </div>
         </Card>

@@ -28,7 +28,6 @@ import { toast } from "sonner";
 import { logSessionEvent } from "@/utils/logSessionEvent";
 import { useElectionCatalog } from "@/hooks/useElectionCatalog";
 import { useVotingSessionLock } from "@/hooks/useVotingSessionLock";
-import { useVotingTimer } from "@/hooks/useVotingTimer";
 
 export type VoterRow = {
   id: string;
@@ -152,22 +151,21 @@ const VotingKiosk = () => {
   
 
   const {
-    cleanupExpiredSession,
+    getActiveSessionRow,
     hasActiveSession,
     createInitialLock,
-    setSessionExpiresInMs,
+    extendSessionSeconds,
     endSession,
   } = useVotingSessionLock();
 
   
-  const {
-    timeLeft,
-    showTimeoutModal,
-    setShowTimeoutModal,
-    startTimerIfNeeded,
-    setTimeLeft,
-    resetTimer,
-  } = useVotingTimer({ currentStep });
+    // DB-backed session timer (single source of truth: voter_sessions.expires_at)
+  const [sessionExpiresAtMs, setSessionExpiresAtMs] = useState<number | null>(null);
+  const [extensionCount, setExtensionCount] = useState<number>(0);
+  const maxExtensions = 5;
+
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const [showTimeoutModal, setShowTimeoutModal] = useState(false);
 
   // -----------------------------------------------------
   // History trap (Layer A): block browser back gesture during an active kiosk flow.
@@ -253,18 +251,9 @@ const VotingKiosk = () => {
   // We confirm eligibility via RPC so election visibility is correct.
   // -----------------------------------------------------
   // -----------------------------------------------------
-  // TIMER START HELPER (does NOT depend on React state timing)
+  // SESSION TIMER POLICY
+  // Timer starts right after auth (3 minutes) and ONLY extends via the timeout modal.
   // -----------------------------------------------------
-  const ensureTimerStarted = async (voterId: string, activeCount: number) => {
-    const totalMinutes = Math.max(activeCount, 1) * 3; // 3 mins per active election, at least 3 mins
-    const totalMs = totalMinutes * 60 * 1000;
-
-    // starts only if not started yet
-    startTimerIfNeeded(totalMs);
-
-    // keep DB session expiry aligned with timer
-    await setSessionExpiresInMs(voterId, totalMs);
-  };
 
   // -----------------------------------------------------
   // AUTH SUCCESS (NO TIMER HERE)
@@ -284,16 +273,44 @@ const VotingKiosk = () => {
     }
 
     // 2) Prevent simultaneous sessions (SERVER TIME via RPC)
-    // OPTIONAL: best-effort delete any expired row for this voter (helps immediately even before cron cleanup)
-        await cleanupExpiredSession(voterRow.id);
-    const { hasActive, error: sessionCheckErr } = await hasActiveSession(voterRow.id);
-if (sessionCheckErr) {
+    const { hasActive, kioskId, error: sessionCheckErr } = await hasActiveSession(voterRow.id);
+
+    if (sessionCheckErr) {
       toast.error("Failed to check active session.");
       return;
     }
 
     if (hasActive) {
-      // ✅ Issue #2 (Layer B): offer Resume / End instead of hard-locking the kiosk.
+      // ✅ Issue #2 (Layer B): offer Resume / End only when the active session belongs to THIS kiosk.
+      // If the active session is bound to a different kiosk, hard-block and show time remaining until expiry.
+      const { session, error: activeRowErr } = await getActiveSessionRow(voterRow.id);
+      if (activeRowErr) {
+        toast.error("Failed to read active session details.");
+        return;
+      }
+
+      const mismatch = Boolean(session?.kiosk_id) && Boolean(kioskId) && session?.kiosk_id !== kioskId;
+
+      if (mismatch) {
+        const expiresAtMs = session?.expires_at ? new Date(session.expires_at).getTime() : 0;
+        const timeLeftMs = Math.max(0, expiresAtMs - Date.now());
+        const timeLeftSec = Math.max(1, Math.ceil(timeLeftMs / 1000));
+        const mm = String(Math.floor(timeLeftSec / 60)).padStart(1, "0");
+        const ss = String(timeLeftSec % 60).padStart(2, "0");
+
+        navigate("/error", {
+          state: {
+            title: "Active Session Detected",
+            reason: "ACTIVE_SESSION_OTHER_KIOSK",
+            voter_audience: (voterRow as any).voter_audience,
+            message:
+            `This voter already has an active voting session on another kiosk.\n\nPlease return to that kiosk to continue.\n`,
+          },
+        });
+        return;
+      }
+
+      // Same kiosk: show resume/end modal.
       setConflictVoterRow(voterRow);
       setSessionConflictOpen(true);
       return;
@@ -310,6 +327,18 @@ if (lockErr) {
     }
 
     void logSessionEvent({ voterId: voterRow.id, action: "session_start" });
+
+    // Initialize local timer state from DB (authoritative)
+    const { session: initSession } = await getActiveSessionRow(voterRow.id);
+    if (initSession?.expires_at) {
+      setSessionExpiresAtMs(new Date(initSession.expires_at).getTime());
+      setExtensionCount(Number(initSession.extension_count ?? 0));
+    } else {
+      setSessionExpiresAtMs(Date.now() + initialLockMs);
+      setExtensionCount(0);
+    }
+    setShowTimeoutModal(false);
+
 
     const enriched: VoterData = {
       ...voterRow,
@@ -379,7 +408,12 @@ if (lockErr) {
   ) => {
     const voterId = voterData?.id ?? voterIdOverride;
     if (!voterId) {
-      toast.error("Missing voter session.");
+      return;
+    }
+
+    // Freeze when session timer is up.
+    if (showTimeoutModal || (timeLeft !== null && timeLeft <= 0)) {
+      setShowTimeoutModal(true);
       return;
     }
 
@@ -407,12 +441,6 @@ if (lockErr) {
       return;
     }
 
-    // If user is selecting manually, activeElections state is already set.
-    // If auto-selecting, we pass active.length override to avoid stale state.
-    const activeCount = activeCountOverride ?? activeElections.length ?? 1;
-
-    await ensureTimerStarted(voterId, activeCount);
-
     setSelectedElection({ id: electionId, ...electionData });
     setCurrentSelections([]);
     setStep("ballot");
@@ -432,10 +460,34 @@ if (lockErr) {
   };
 
   // -----------------------------------------------------
-  // COUNTDOWN EFFECT
+  // COUNTDOWN EFFECT (DB-backed)
   // -----------------------------------------------------
-  
+  useEffect(() => {
+    if (!sessionExpiresAtMs) {
+      setTimeLeft(null);
+      return;
+    }
 
+    if (currentStep === "submitting" || currentStep === "complete") return;
+
+    const tick = () => {
+      const remaining = sessionExpiresAtMs - Date.now();
+      const clamped = Math.max(0, remaining);
+      setTimeLeft(clamped);
+
+      if (clamped > 0 && clamped <= 15_000) {
+        // Show extension modal slightly BEFORE expiry so the voter can extend in advance.
+        setShowTimeoutModal(true);
+      } else if (clamped <= 0) {
+        // Expired: freeze flow + require explicit extension (or re-auth if capped).
+        setShowTimeoutModal(true);
+      }
+    };
+
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [sessionExpiresAtMs, currentStep]);
 
   // -----------------------------------------------------
   // FINAL SUBMISSION COMPLETE
@@ -530,7 +582,11 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
     dispatchFlow({ type: "RESET_FLOW" });
     setVoterData(null);
     resetElectionCatalog();
-    resetTimer();
+    setSessionExpiresAtMs(null);
+                  setTimeLeft(null);
+                  setExtensionCount(0);
+                  setShowTimeoutModal(false);
+
 
     navigate("/");
   };
@@ -623,8 +679,8 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
           <div className="w-full max-w-md rounded-2xl bg-white/95 p-6 shadow-2xl animate-fade-in-up">
             <h2 className="text-xl font-bold text-foreground">Active session detected</h2>
             <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
-              This voter already has an active voting session. This can happen if the browser accidentally went back.
-              You can <strong>resume</strong> the session or <strong>end</strong> it and start over.
+              This voter already has an active voting session on this kiosk. You can <strong>resume</strong> the session
+              or <strong>end</strong> it and start over.
             </p>
 
             <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
@@ -632,13 +688,13 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
                 type="button"
                 className="px-4 py-2 rounded-lg border border-border bg-white hover:bg-muted/20 text-sm font-semibold"
                 onClick={() => {
-                  // End and return to auth state without changing route.
                   setSessionConflictOpen(false);
                   setConflictVoterRow(null);
                 }}
               >
                 Cancel
               </button>
+
               <button
                 type="button"
                 className="px-4 py-2 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/15 text-sm font-semibold"
@@ -689,12 +745,32 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
                     return;
                   }
 
+                  const { session } = await getActiveSessionRow(voterRow.id);
+                  if (!session?.expires_at) {
+                    // Session no longer active; force re-auth.
+                    resetElectionCatalog();
+                    navigate("/error", {
+                      state: {
+                        title: "Session Expired",
+                        reason: "SESSION_EXPIRED",
+                        voter_audience: (voterRow as any).voter_audience,
+                        message: `Your voting session has expired.\n\nPlease authenticate again to continue.`,
+                        recoverTo: "/voting",
+                        countdownSeconds: 0,
+                      },
+                    });
+                    return;
+                  }
+                  setSessionExpiresAtMs(new Date(session.expires_at).getTime());
+                  setExtensionCount(Number(session.extension_count ?? 0));
+
                   setVoterData(enriched);
                   setStep("election-select");
                 }}
               >
                 Resume session
               </button>
+
               <button
                 type="button"
                 className="px-4 py-2 rounded-lg bg-destructive text-white hover:opacity-90 text-sm font-semibold"
@@ -707,7 +783,11 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
                   dispatchFlow({ type: "RESET_FLOW" });
                   setVoterData(null);
                   resetElectionCatalog();
-                  resetTimer();
+                  setSessionExpiresAtMs(null);
+                  setTimeLeft(null);
+                  setExtensionCount(0);
+                  setShowTimeoutModal(false);
+
                   toast.success("Previous session ended. Please tap your RFID again.");
                 }}
               >
@@ -725,8 +805,8 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
             <h2 className="text-2xl font-bold text-red-600 mb-4">Warning</h2>
 
             <p className="text-gray-700 mb-6 leading-relaxed">
-              Your voting time is up, but don’t worry — we’ve added{" "}
-              <strong>1 minute and 30 seconds</strong> so you can finish.
+              Your voting time is almost up. If you need more time, you can extend by{" "}
+              <strong>1 minute and 30 seconds</strong> to continue voting.
               <br /> <br />
               <h3 className="text-red-600">
                 <strong>Please try to vote a little faster. </strong>
@@ -735,24 +815,79 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
 
             <button
               onClick={async () => {
-                const ext = 89 * 1000;
-                const newTime = (timeLeft ?? 0) + ext;
+                if (!voterData) return;
 
-                setTimeLeft(newTime);
-                setShowTimeoutModal(false);
-
-                if (voterData) {
-                                    await setSessionExpiresInMs(voterData.id, newTime);
-void logSessionEvent({
-                    voterId: voterData.id,
-                    action: "session_extend",
+                // If we already reached the cap, force re-auth.
+                if (extensionCount >= maxExtensions) {
+                  await endSession(voterData.id);
+                  resetElectionCatalog();
+                  navigate("/error", {
+                    state: {
+                      title: "Session Expired",
+                      reason: "SESSION_EXPIRED_MAX_EXT",
+                      voter_audience: (voterData as any)?.voter_audience,
+                      message:
+                        `Your voting session has expired and the maximum number of extensions has been reached.\n\nPlease authenticate again to continue.`,
+                      recoverTo: "/voting",
+                      countdownSeconds: 0,
+                    },
                   });
+                  return;
                 }
+
+                const { error } = await extendSessionSeconds(voterData.id, 90);
+                if (error) {
+                  // DB enforces kiosk binding + cap. Fall back to re-auth.
+                  await endSession(voterData.id);
+                  resetElectionCatalog();
+                  navigate("/error", {
+                    state: {
+                      title: "Session Expired",
+                      reason: "SESSION_EXPIRED",
+                      voter_audience: (voterData as any)?.voter_audience,
+                      message:
+                        `Your voting session has expired.\n\nPlease authenticate again to continue.`,
+                      recoverTo: "/voting",
+                      countdownSeconds: 0,
+                    },
+                  });
+                  return;
+                }
+
+                const { session } = await getActiveSessionRow(voterData.id);
+                if (session?.expires_at) {
+                  setSessionExpiresAtMs(new Date(session.expires_at).getTime());
+                  setExtensionCount(Number(session.extension_count ?? extensionCount + 1));
+                } else {
+                  // Safety: if RPC didn't return, extend locally by 90s.
+                  setSessionExpiresAtMs((prev) => (prev ? prev + 90_000 : Date.now() + 90_000));
+                  setExtensionCount((c) => c + 1);
+                }
+
+                setShowTimeoutModal(false);
+                void logSessionEvent({ voterId: voterData.id, action: "session_extend" });
               }}
               className="px-6 py-3 bg-primary text-white rounded-lg font-semibold hover:bg-primary/80"
             >
               I Understand
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* GLOBAL COUNTDOWN (Session Timer) */}
+      {currentStep !== "auth" && timeLeft !== null && (
+        <div className="fixed top-0 left-0 right-0 z-40">
+          <div className="mx-auto max-w-3xl px-4 pt-3">
+            <div className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm px-4 py-3 flex items-center justify-between">
+              <div className="text-sm font-medium">
+                Voting session time remaining
+              </div>
+              <div className="text-sm tabular-nums font-semibold">
+                {Math.max(0, Math.floor((timeLeft ?? 0) / 60000))}:
+                {String(Math.max(0, Math.floor(((timeLeft ?? 0) % 60000) / 1000))).padStart(2, "0")}
+              </div>
+            </div>
           </div>
         </div>
       )}
