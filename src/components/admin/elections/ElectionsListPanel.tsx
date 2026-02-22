@@ -14,6 +14,7 @@ type ElectionRow = {
   start_date: string;
   end_date: string;
   is_active: boolean | null;
+  is_paused?: boolean | null;
   eligible_orgs: string[] | null;
   voter_audience?: string | null;
   is_final?: boolean | null;
@@ -52,7 +53,7 @@ type Props = {
   formatDateTimeShort: (iso: string) => string;
 
   openEditElection: (e: ElectionRow) => void;
-  toggleElectionActive: (e: ElectionRow) => void;
+  toggleElectionActive: (e: ElectionRow, visible?: boolean) => void;
 
   openFinalizeElection: (e: ElectionRow) => void;
   openArchiveElection: (e: ElectionRow) => void;
@@ -191,13 +192,13 @@ export function ElectionsListPanel({
                     </Button>
 
                     <div className="flex items-center justify-between gap-2 rounded-md border px-3 py-2">
-                      <span className="text-xs font-medium">Active</span>
+                      <span className="text-xs font-medium">Visible to voters</span>
                       <Switch
-                        checked={Boolean(e.is_active)}
+                        checked={!Boolean(e.is_paused)}
                         disabled={
                           saving || Boolean(e.is_final) || Boolean(e.is_archived)
                         }
-                        onCheckedChange={() => toggleElectionActive(e)}
+                        onCheckedChange={(checked) => toggleElectionActive(e, checked)}
                       />
                     </div>
 

@@ -6,6 +6,7 @@ export type ElectionFormState = {
   startLocal: string;
   endLocal: string;
   is_active: boolean;
+  is_paused: boolean;
   voter_audience: VoterAudience;
   allow_all_orgs: boolean;
   eligible_orgs_selected: string[];

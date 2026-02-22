@@ -9,6 +9,7 @@ export type ElectionRow = {
   start_date: string;
   end_date: string;
   is_active: boolean | null;
+  is_paused?: boolean | null;
   eligible_orgs: string[] | null;
   voter_audience?: string | null;
 

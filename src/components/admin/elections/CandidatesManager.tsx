@@ -83,6 +83,17 @@ export function CandidatesManager({
   formatDateTimeShort,
   getCandidateDisplayName,
 }: Props) {
+  const isSelectedLive = (() => {
+    if (!selectedElection) return false;
+    const now = Date.now();
+    const start = new Date(selectedElection.start_date).getTime();
+    const end = new Date(selectedElection.end_date).getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    return now >= start && now <= end;
+  })();
+
+  const isReadOnly = isSelectedFinal || isSelectedArchived || isSelectedLive;
+
   return (
     <Card className="rounded-2xl">
       <CardHeader className="flex flex-row items-center justify-between">
@@ -105,7 +116,7 @@ export function CandidatesManager({
           <Button
             size="sm"
             onClick={() => openCreateCandidate()}
-            disabled={!selectedElectionId || isSelectedFinal}
+            disabled={!selectedElectionId || isReadOnly}
           >
             <Plus className="h-4 w-4 mr-2" />
             Add Candidate
@@ -152,6 +163,19 @@ export function CandidatesManager({
                   </div>
                 </div>
               ) : null}
+
+              {isSelectedLive ? (
+                <div className="mt-3 rounded-lg border border-red-600/30 bg-red-600/5 p-3 text-sm">
+                  <div className="flex items-center gap-2 font-medium text-red-900">
+                    <Lock className="h-4 w-4" />
+                    Live election (candidate list locked)
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Candidate add/edit/remove/reorder is disabled while the
+                    election is live to protect integrity.
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             {candidatesLoading ? (
@@ -174,14 +198,16 @@ export function CandidatesManager({
                             {(candidatesByPosition[pos] ?? []).length} candidate(s)
                           </div>
                           <div className="text-xs text-muted-foreground mt-1">
-                            Drag candidates to reorder (auto-saves).
+                            {isReadOnly
+                              ? "Candidate list is read-only."
+                              : "Drag candidates to reorder (auto-saves)."}
                           </div>
                         </div>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => openCreateCandidate(pos)}
-                          disabled={isSelectedFinal}
+                          disabled={isReadOnly}
                         >
                           <Plus className="h-4 w-4 mr-2" />
                           Add to {pos}
@@ -190,22 +216,36 @@ export function CandidatesManager({
 
                       <Separator className="my-4" />
 
-                      <div className="space-y-3">
+                      <div
+                        className={
+                          isReadOnly
+                            ? "space-y-3 opacity-60 pointer-events-none"
+                            : "space-y-3"
+                        }
+                      >
                         {(candidatesByPosition[pos] ?? []).map((c) => (
                           <div
                             key={c.id}
                             className="rounded-xl border p-3 flex items-start justify-between gap-3"
-                            draggable={!isSelectedFinal}
+                            draggable={!isReadOnly}
                             onDragStart={() =>
-                              !isSelectedFinal && onDragStartCandidate(pos, c.id)
+                              !isReadOnly && onDragStartCandidate(pos, c.id)
                             }
                             onDragOver={(e) => {
-                              e.preventDefault();
+                              if (!isReadOnly) e.preventDefault();
                             }}
-                            onDrop={() => onDropCandidate(pos, c.id)}
+                            onDrop={() => {
+                              if (!isReadOnly) onDropCandidate(pos, c.id);
+                            }}
                           >
                             <div className="flex items-start gap-3 min-w-0">
-                              <div className="mt-1 text-muted-foreground cursor-grab">
+                              <div
+                                className={
+                                  isReadOnly
+                                    ? "mt-1 text-muted-foreground cursor-not-allowed"
+                                    : "mt-1 text-muted-foreground cursor-grab"
+                                }
+                              >
                                 <GripVertical className="h-5 w-5" />
                               </div>
 
@@ -255,7 +295,7 @@ export function CandidatesManager({
                                 variant="outline"
                                 size="sm"
                                 onClick={() => openEditCandidate(c)}
-                                disabled={saving || isSelectedFinal}
+                                disabled={saving || isReadOnly}
                               >
                                 <Pencil className="h-4 w-4 mr-2" />
                                 Edit
@@ -264,7 +304,7 @@ export function CandidatesManager({
                                 variant="destructive"
                                 size="sm"
                                 onClick={() => deleteCandidate(c.id)}
-                                disabled={saving || isSelectedFinal}
+                                disabled={saving || isReadOnly}
                               >
                                 <Trash2 className="h-4 w-4 mr-2" />
                                 Delete

@@ -176,9 +176,7 @@ function canEditElectionAudience(e: ElectionRow | null) {
 
   // User requirement: audience should NOT be editable when active/ongoing.
   // Treat "editable" as upcoming/scheduled only.
-  if (Boolean(e.is_active)) return false;
-
-  const now = Date.now();
+const now = Date.now();
   const start = new Date(e.start_date).getTime();
   return now < start;
 }
@@ -273,6 +271,17 @@ export default function ElectionManagement() {
   const isSelectedFinal = Boolean(selectedElection?.is_final);
   const isSelectedArchived = Boolean(selectedElection?.is_archived);
 
+  const isSelectedLive = useMemo(() => {
+    if (!selectedElection) return false;
+    if (Boolean(selectedElection.is_final)) return false;
+    if (Boolean(selectedElection.is_archived)) return false;
+
+    const now = Date.now();
+    const start = new Date(selectedElection.start_date).getTime();
+    const end = new Date(selectedElection.end_date).getTime();
+    return now >= start && now <= end;
+  }, [selectedElection]);
+
   // Candidates
   const [candidates, setCandidates] = useState<CandidateRow[]>([]);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
@@ -304,7 +313,8 @@ export default function ElectionManagement() {
     description: "",
     startLocal: "",
     endLocal: "",
-    is_active: false,
+    is_paused: false,
+    is_active: true,
     voter_audience: "students" as "students" | "employees" | "mixed",
     allow_all_orgs: true,
     eligible_orgs_selected: [] as string[],
@@ -440,7 +450,8 @@ export default function ElectionManagement() {
       description: "",
       startLocal: "",
       endLocal: "",
-      is_active: false,
+      is_paused: false,
+    is_active: true,
       voter_audience: "students",
       allow_all_orgs: true,
       eligible_orgs_selected: [],
@@ -464,6 +475,7 @@ export default function ElectionManagement() {
       description: e.description ?? "",
       startLocal: isoLocalForInput(e.start_date),
       endLocal: isoLocalForInput(e.end_date),
+      is_paused: Boolean((e as any).is_paused) || (e.is_active !== true),
       is_active: !!e.is_active,
       voter_audience: (e.voter_audience as any) || "students",
       allow_all_orgs: allowAll,
@@ -740,40 +752,55 @@ export default function ElectionManagement() {
     }
   };
 
-  const toggleElectionActive = async (e: ElectionRow) => {
+  const toggleElectionActive = async (e: ElectionRow, visible?: boolean) => {
     if (Boolean(e.is_final)) {
       toast.error("This election is finalized and cannot be modified.");
       return;
     }
     if (Boolean(e.is_archived)) {
-      toast.error("This election is archived and cannot be activated.");
+      toast.error("This election is archived and cannot be modified.");
       return;
     }
     if (saving) return;
 
-    const next = !Boolean(e.is_active);
+    const currentVisible = !Boolean((e as any).is_paused);
+    const nextVisible =
+      typeof visible === "boolean" ? visible : !currentVisible;
+    const nextPaused = !nextVisible;
 
     // optimistic UI: update only this row
     setElections((prev) =>
-      prev.map((x) => (x.id === e.id ? { ...x, is_active: next } : x))
+      prev.map((x) =>
+        x.id === e.id
+          ? { ...x, is_paused: nextPaused, is_active: nextVisible }
+          : x
+      )
     );
 
     setSaving(true);
     try {
       const { error } = await supabase
         .from("elections")
-        .update({ is_active: next })
+        .update({ is_paused: nextPaused, is_active: nextVisible })
         .eq("id", e.id);
 
       if (error) throw error;
 
-      toast.success(next ? "Election activated." : "Election deactivated.");
+      toast.success(
+        nextVisible
+          ? "Election is now visible to voters."
+          : "Election hidden from voters."
+      );
     } catch (err: any) {
       // rollback on error
       setElections((prev) =>
-        prev.map((x) => (x.id === e.id ? { ...x, is_active: e.is_active } : x))
+        prev.map((x) =>
+          x.id === e.id
+            ? { ...x, is_paused: (e as any).is_paused, is_active: e.is_active }
+            : x
+        )
       );
-      toast.error(`Failed to update election status: ${err.message ?? err}`);
+      toast.error(`Failed to update election visibility: ${err.message ?? err}`);
     } finally {
       setSaving(false);
     }
@@ -827,6 +854,8 @@ export default function ElectionManagement() {
     if (!selectedElectionId) return toast.error("Select an election first.");
     if (isSelectedFinal)
       return toast.error("This election is finalized. Candidates are locked.");
+    if (isSelectedLive)
+      return toast.error("This election is live. Candidate list is locked.");
     setEditingCandidate(null);
     setCForm({
       first_name: "",
@@ -843,6 +872,8 @@ export default function ElectionManagement() {
   const openEditCandidate = (c: CandidateRow) => {
     if (isSelectedFinal)
       return toast.error("This election is finalized. Candidates are locked.");
+    if (isSelectedLive)
+      return toast.error("This election is live. Candidate list is locked.");
     setEditingCandidate(c);
     const legacy = splitLegacyName(c.name ?? "");
     setCForm({
@@ -891,6 +922,8 @@ export default function ElectionManagement() {
     if (!selectedElectionId) return toast.error("Select an election first.");
     if (isSelectedFinal)
       return toast.error("This election is finalized. Candidates are locked.");
+    if (isSelectedLive)
+      return toast.error("This election is live. Candidate list is locked.");
     if (!cForm.last_name.trim()) return toast.error("Last name is required.");
     const displayName = `${cForm.first_name.trim()} ${cForm.last_name.trim()}`.trim();
     if (!displayName) return toast.error("Candidate name is required.");
@@ -990,6 +1023,10 @@ export default function ElectionManagement() {
       toast.error("This election is finalized. Candidates are locked.");
       return;
     }
+    if (isSelectedLive) {
+      toast.error("This election is live. Candidate list is locked.");
+      return;
+    }
     if (!confirm("Delete this candidate?")) return;
 
     setSaving(true);
@@ -1060,15 +1097,9 @@ export default function ElectionManagement() {
   };
 
   const activeBadge = (e: ElectionRow) => {
-    return Boolean(e.is_active) ? (
-      <Badge className="border-emerald-600 text-emerald-700 bg-emerald-600/10">
-        Active
-      </Badge>
-    ) : (
-      <Badge className="border-zinc-400 text-zinc-600 bg-zinc-500/10">
-        Inactive
-      </Badge>
-    );
+    return Boolean((e as any).is_paused) ? (
+      <Badge className="border-zinc-500 text-zinc-700 bg-zinc-500/10">Hidden</Badge>
+    ) : null;
   };
 
   const finalBadge = (e: ElectionRow) => {
@@ -1098,6 +1129,10 @@ export default function ElectionManagement() {
     if (!selectedElectionId) return;
     if (isSelectedFinal) {
       toast.error("This election is finalized. Candidate order is locked.");
+      return;
+    }
+    if (isSelectedLive) {
+      toast.error("This election is live. Candidate order is locked.");
       return;
     }
     setSaving(true);
