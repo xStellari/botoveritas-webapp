@@ -289,10 +289,28 @@ function htmlPage(p: {
   const notes =
     errs.length
       ? `<div class="alert alert-bad">
-          <div class="alert-ic">${iconX("ic")}</div>
+          <div class="alert-ic">${iconInfo("ic")}</div>
           <div>
-            <div class="alert-title">Notes</div>
-            <div class="alert-desc">${errs.map((e) => escapeHtml(e)).join("<br/>")}</div>
+            <div class="alert-title">Verification notice</div>
+            <div class="alert-desc">
+              Some checks are temporarily unavailable. Your receipt can still be valid.
+              You may retry later, or keep your Token ID as your proof of participation.
+            </div>
+            <details class="acc" style="margin-top:12px">
+              <summary class="acc-sum">
+                <div>
+                  <div class="acc-title">Technical notes (advanced)</div>
+                  <div class="acc-sub">For developers / auditors</div>
+                </div>
+                <span class="acc-tag">Expand</span>
+              </summary>
+              <div class="acc-bd">
+                <div class="acc-box">
+                  <div class="acc-lab">Errors</div>
+                  <div class="acc-code"><code>${errs.map((e) => escapeHtml(e)).join("<br/>")}</code></div>
+                </div>
+              </div>
+            </details>
           </div>
         </div>`
       : "";
@@ -558,7 +576,7 @@ function htmlPage(p: {
       color: white;
       box-shadow: 0 14px 30px rgba(2,6,23,.12);
     }
-    a.btn-home:hover{opacity:.92}
+    a.btn.btn-home:hover{opacity:.96; background: linear-gradient(90deg, rgba(11,107,58,.98), rgba(201,162,39,.98)); color: #ffffff}
     .steps{
       display:grid;
       grid-template-columns: 1fr;
@@ -604,6 +622,14 @@ function htmlPage(p: {
     .tag-bad{border-color: rgba(217,72,72,.28); background: rgba(217,72,72,.10); color: rgba(150,25,25,.96)}
     .ic-spin{animation: spin 1s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
+    @keyframes fadeUp{from{opacity:0; transform: translateY(10px)} to{opacity:1; transform: translateY(0)}}
+    .card{animation: fadeUp .45s ease both}
+    .pill{animation: fadeUp .45s ease both}
+    .pill:nth-child(1){animation-delay:.04s}
+    .pill:nth-child(2){animation-delay:.08s}
+    .pill:nth-child(3){animation-delay:.12s}
+    .returnbar{animation: fadeUp .45s ease both; animation-delay:.16s}
+
     details.acc{
       margin-top: 12px;
       border-radius: 26px;
@@ -699,7 +725,7 @@ function htmlPage(p: {
           <div class="steps">
             ${pill(stepReceipt, "Receipt token verified", "Confirmed on Polygon Amoy (cannot be altered)")}
             ${pill(stepDetails, "Receipt details confirmed", "Issued by BotoVeritas (metadata loaded)")}
-            ${pill(stepAudit, "Recorded in final audit", hasVoteId ? "We can confirm that your vote is on the official list used to count the results" : "Not available for this receipt")}
+            ${pill(stepAudit, "Recorded in final audit", hasVoteId ? "This receipt is included in the official dataset used to compute the final results" : "Not available for this receipt")}
           </div>
 
           <details class="acc" style="margin-top:14px">
@@ -714,11 +740,11 @@ function htmlPage(p: {
               <div class="acc-grid">
                 <div class="acc-box">
                   <div class="acc-lab">In plain language</div>
-                  <div class="acc-code"><code>If your receipt has an audit code, we can confirm your vote is included in the official data used to compute the final results.</code></div>
+                  <div class="acc-code"><code>If your receipt includes an audit code, we can confirm it is included in the official dataset used to compute the final results.</code></div>
                 </div>
                 <div class="acc-box">
                   <div class="acc-lab">Privacy</div>
-                  <div class="acc-code"><code>This confirms inclusion only. It does not reveal who you voted for.</code></div>
+                  <div class="acc-code"><code>This confirms inclusion only. It does not reveal who you voted for or any ballot choices.</code></div>
                 </div>
               </div>
             </div>

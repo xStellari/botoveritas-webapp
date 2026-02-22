@@ -47,6 +47,27 @@ export default function VerifyEmail() {
       if (ok) {
         setStatus("success");
         toast.success("Email verified successfully.");
+
+        // Send registration confirmation email after successful verification (best effort).
+        // Guard against accidental resends on refresh (per-browser session).
+        try {
+          const key = `bv_reg_email_sent_${token}`;
+          const alreadySent = sessionStorage.getItem(key) === "1";
+
+          if (!alreadySent) {
+            sessionStorage.setItem(key, "1");
+            const { error: regMailErr } = await supabase.functions.invoke(
+              "send-registration-email",
+              { body: { token } }
+            );
+            if (regMailErr) {
+              console.warn("send-registration-email failed:", regMailErr);
+            }
+          }
+        } catch (e) {
+          console.warn("send-registration-email exception:", e);
+        }
+
         return;
       }
 

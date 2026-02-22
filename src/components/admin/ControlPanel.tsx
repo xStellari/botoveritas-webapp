@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription as DialogDesc } from "@/components/ui/dialog";
-import { AlertTriangle, CheckCircle2, CircleMinus, Download, RefreshCcw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleMinus, RefreshCcw } from "lucide-react";
 
 type ElectionRow = {
   id: string;
@@ -114,37 +114,8 @@ function maskText(v: string | null | undefined, visible = 6) {
   return `${s.slice(0, visible)}…`;
 }
 
-function downloadCSV(filename: string, rows: Array<Record<string, any>>) {
-  if (!rows.length) {
-    toast.message("Nothing to export.");
-    return;
-  }
 
-  const headerSet = new Set<string>();
-  for (const r of rows) Object.keys(r).forEach((k) => headerSet.add(k));
-  const headers = [...headerSet];
-
-  const escape = (val: any) => {
-    if (val === null || val === undefined) return "";
-    const str = String(val);
-    if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
-    return str;
-  };
-
-  const csv = [headers.join(","), ...rows.map((r) => headers.map((h) => escape(r[h])).join(","))].join("\n");
-
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-export default function AdminAnalytics() {
+export default function ControlPanel() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);  
 const [snapshot, setSnapshot] = useState<OpsSnapshot>({
@@ -567,29 +538,12 @@ const scoped = electionRows;
     setInspectSessionsOpen(true);
     if (inspectSessionsRows.length === 0) await loadInspectOpenSessions();
   };
-
-const exportProofCSV = () => {
-    const rows = snapshot.proof.map((r) => ({
-      election_id: r.election_id,
-      election_title: r.title,
-      voted: r.voted,
-      with_tx_hash: r.withTx,
-      with_nft_token_id: r.withToken,
-      missing_tx: Math.max(0, r.voted - r.withTx),
-      missing_token: Math.max(0, r.voted - r.withToken),
-    }));
-    downloadCSV(`proof_coverage_all.csv`, rows);
-  };
-
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl font-semibold">Operations</h2>
-          <p className="text-sm text-muted-foreground">
-            Procedural truth: guarantees, exceptions, and system health.
-          </p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -616,14 +570,7 @@ const exportProofCSV = () => {
           <CardHeader className="flex flex-row items-start justify-between gap-4">
             <div>
               <CardTitle>Guarantee: Proof-of-vote pointers issued</CardTitle>
-              <CardDescription>
-                For each election, compares voters who have voted vs those with tx_hash and nft_token_id recorded.
-              </CardDescription>
             </div>
-            <Button variant="outline" onClick={exportProofCSV} disabled={loading || snapshot.proof.length === 0}>
-              <Download className="mr-2 h-4 w-4" />
-              Export CSV
-            </Button>
           </CardHeader>
 
           <CardContent>
@@ -664,7 +611,6 @@ const exportProofCSV = () => {
         <Card>
           <CardHeader>
             <CardTitle>System Health</CardTitle>
-            <CardDescription>Signals for the last 60 minutes.</CardDescription>
           </CardHeader>
 
           <CardContent className="space-y-4">
@@ -781,9 +727,6 @@ const exportProofCSV = () => {
       <Card>
         <CardHeader>
           <CardTitle>Readiness: Verification artifacts present</CardTitle>
-          <CardDescription>
-            Minimal indicator only (full details live in the ZK tab). Scope: All elections.
-          </CardDescription>
         </CardHeader>
 
         <CardContent>
@@ -818,16 +761,9 @@ const exportProofCSV = () => {
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>Authentication failures (last 60 minutes)</DialogTitle>
-            <DialogDesc>
-              These are the most actionable auth exceptions. If this spikes, check roster data, RFID registration, or
-              biometric capture conditions.
-            </DialogDesc>
           </DialogHeader>
 
           <div className="flex items-center justify-between gap-2">
-            <div className="text-sm text-muted-foreground">
-              Showing up to 50 most recent failure events.
-            </div>
             <Button variant="outline" size="sm" onClick={loadInspectAuthFailures} disabled={inspectAuthLoading}>
               <RefreshCcw className="mr-2 h-4 w-4" />
               Refresh
@@ -866,14 +802,9 @@ const exportProofCSV = () => {
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>Open voting sessions</DialogTitle>
-            <DialogDesc>
-              Active sessions (not yet expired). Includes test sessions (e.g., you authenticated but intentionally did
-              not finish voting), user-abandoned sessions, or sessions affected by browser/kiosk interruptions.
-            </DialogDesc>
           </DialogHeader>
 
           <div className="flex items-center justify-between gap-2">
-            <div className="text-sm text-muted-foreground">Showing up to 50 active sessions.</div>
             <Button variant="outline" size="sm" onClick={loadInspectOpenSessions} disabled={inspectSessionsLoading}>
               <RefreshCcw className="mr-2 h-4 w-4" />
               Refresh
@@ -923,10 +854,6 @@ const exportProofCSV = () => {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Force end session</DialogTitle>
-            <DialogDesc>
-              This will immediately expire the selected voter session by setting <code className="rounded bg-muted px-1">expires_at</code> to now.
-              This is logged to the audit trail with your stated reason.
-            </DialogDesc>
           </DialogHeader>
 
           <div className="space-y-3">

@@ -155,36 +155,86 @@ function buildReceiptEmailHtml(params: {
 
   const votedAt = formatManila(votedAtIso);
 
-  const rowsHtml =
-    receiptItems.length > 0
-      ? receiptItems
-          .map((it) => {
-            const position = escapeHtml(safeStr(it.position, "—"));
-            const choice = escapeHtml(safeStr(it.choiceName, "—"));
+  const selectionsHtml = (() => {
+    if (!Array.isArray(receiptItems) || receiptItems.length === 0) {
+      return `
+        <div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;color:#64748b;font-size:13px;background:#ffffff;">
+          No selections found.
+        </div>
+      `;
+    }
 
+    // Group by organization label inferred from the position string (e.g., "ICpEP • President").
+    // Falls back to "Selections" if a delimiter is not present.
+    const groups: Record<string, { order: number; items: { role: string; choice: string }[] }> = {};
+    const groupOrder: string[] = [];
+
+    receiptItems.forEach((it) => {
+      const rawPos = safeStr(it.position, "").trim();
+      const rawChoice = safeStr(it.choiceName, "—");
+
+      const parts = rawPos.split("•");
+      const org = (parts[0] || "").trim() || "Selections";
+      const role = (parts.slice(1).join("•") || rawPos || "—").trim();
+
+      if (!groups[org]) {
+        groups[org] = { order: groupOrder.length, items: [] };
+        groupOrder.push(org);
+      }
+
+      groups[org].items.push({ role, choice: rawChoice });
+    });
+
+    return groupOrder
+      .map((org) => {
+        const items = groups[org].items;
+        const rows = items
+          .map((row) => {
+            const role = escapeHtml(row.role || "—");
+            const choice = escapeHtml(row.choice || "—");
             return `
               <tr>
-                <td style="padding:12px 14px;border-bottom:1px solid #e2e8f0;vertical-align:top;">
-                  <div style="font-size:13px;font-weight:700;color:#0f172a;line-height:1.35;">
-                    ${position}
-                  </div>
+                <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;vertical-align:top;width:55%;">
+                  <div style="font-size:13px;font-weight:700;color:#0f172a;line-height:1.35;">${role}</div>
                 </td>
-                <td style="padding:12px 14px;border-bottom:1px solid #e2e8f0;vertical-align:top;">
-                  <div style="font-size:13px;color:#0f172a;line-height:1.55;font-weight:700;">
-                    ${choice}
-                  </div>
+                <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;vertical-align:top;">
+                  <div style="font-size:13px;color:#0f172a;line-height:1.55;font-weight:700;">${choice}</div>
                 </td>
               </tr>
             `;
           })
-          .join("")
-      : `
-        <tr>
-          <td colspan="2" style="padding:14px;color:#64748b;font-size:13px;">
-            No selections found.
-          </td>
-        </tr>
-      `;
+          .join("");
+
+        const orgTitle = escapeHtml(org);
+
+        return `
+          <div style="margin-top:12px;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#ffffff;">
+            <div style="padding:12px 14px;background:#0b6b3a0f;border-bottom:1px solid #e2e8f0;">
+              <div style="font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#0b6b3a;">
+                ${orgTitle}
+              </div>
+            </div>
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+              <thead>
+                <tr>
+                  <th align="left" style="padding:10px 14px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#475569;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+                    Position
+                  </th>
+                  <th align="left" style="padding:10px 14px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#475569;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+                    Selected
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows}
+              </tbody>
+            </table>
+          </div>
+        `;
+      })
+      .join("");
+  })();
+
 
   // Normalize multi-receipts
   const normalizedReceipts: ReceiptTx[] = Array.isArray(receipts)
@@ -589,25 +639,8 @@ function buildReceiptEmailHtml(params: {
               <div style="font-size:12px;color:#64748b;line-height:1.6;margin:0 0 10px 0;">
                 Selections shown below are partially masked for privacy. These selections are <strong>not</strong> part of the on-chain receipt; the verification link only proves that your vote receipt NFT exists.
               </div>
-
-              <!-- Selections -->
-              <div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
-                <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-                  <thead>
-                    <tr>
-                      <th align="left" style="padding:12px 14px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#475569;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-                        Position
-                      </th>
-                      <th align="left" style="padding:12px 14px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#475569;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-                        Selected
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${rowsHtml}
-                  </tbody>
-                </table>
-              </div>
+              <!-- Selections (grouped for readability) -->
+              ${selectionsHtml}
 
               ${verificationSection}
 

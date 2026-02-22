@@ -5,10 +5,30 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 type Body = {
   voter_id?: string;
   email?: string;
+  token?: string;
 
   // OPTIONAL: if you pass these from RegisterVerify, the function won't need DB reads
   fullName?: string;
   orgAffiliations?: string[];
+};
+
+type VoterRow = {
+  id: string;
+  email: string | null;
+  first_name: string | null;
+  middle_name: string | null;
+  last_name: string | null;
+  suffix: string | null;
+  org_affiliations: string[] | null;
+  email_verified_at: string | null;
+};
+
+type ElectionRow = {
+  title: string;
+  start_date: string;
+  end_date: string;
+  is_active: boolean | null;
+  eligible_orgs: string[] | null;
 };
 
 // ✅ CORS headers (dev-friendly). You can tighten this later.
@@ -53,6 +73,13 @@ function escapeHtml(str: string) {
         return m;
     }
   });
+}
+
+async function sha256Hex(input: string) {
+  const enc = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", enc);
+  const arr = Array.from(new Uint8Array(digest));
+  return arr.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function formatManila(iso: string) {
@@ -121,27 +148,6 @@ function badgeStyle(status: string) {
         text: status,
       };
   }
-}
-
-function renderBadge(status: string) {
-  const b = badgeStyle(status);
-  return `
-    <span style="
-      display:inline-block;
-      font-size:11px;
-      font-weight:700;
-      color:${b.color};
-      background:${b.bg};
-      border:1px solid ${b.border};
-      padding:4px 10px;
-      border-radius:999px;
-      letter-spacing:.2px;
-      vertical-align:middle;
-      white-space:nowrap;
-    ">
-      ${escapeHtml(b.text)}
-    </span>
-  `;
 }
 
 function buildEmailHtml(params: {
@@ -371,8 +377,8 @@ serve(async (req) => {
       return json(400, { ok: false, message: "Invalid JSON body." });
     }
 
-    if (!body?.voter_id && !body?.email) {
-      return json(400, { ok: false, message: "Provide either voter_id or email." });
+    if (!body?.token && !body?.voter_id && !body?.email) {
+      return json(400, { ok: false, message: "Provide token, voter_id, or email." });
     }
 
     // Secrets
@@ -387,9 +393,31 @@ serve(async (req) => {
 
     const logoUrl =
       Deno.env.get("LOGO_URL") ||
-      "${appUrl}/FEU_Alabang_logo.png";
+      `${appUrl}/FEU_Alabang_logo.png`;
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+
+    // If invoked with a verification token, resolve it to a voter_id server-side.
+    // This enables sending the registration confirmation only AFTER email verification.
+    const tokenRaw = safeStr(body.token);
+    if (tokenRaw) {
+      const tokenHash = await sha256Hex(tokenRaw);
+
+      const { data: tokRow, error: tokErr } = await supabase
+        .from("email_verification_tokens")
+        .select("voter_id")
+        .eq("token_hash", tokenHash)
+        .maybeSingle();
+
+      if (tokErr) throw new Error(tokErr.message);
+      if (!tokRow?.voter_id) {
+        return json(404, { ok: false, message: "Verification token not found." });
+      }
+
+      // Prefer this resolved voter id for subsequent lookups.
+      body.voter_id = tokRow.voter_id;
+    }
 
     let voterEmail = safeStr(body.email);
     let fullName = safeStr(body.fullName);
@@ -397,20 +425,20 @@ serve(async (req) => {
 
     const voterQuery = supabase
       .from("voters")
-      .select("id, email, first_name, middle_name, last_name, suffix, org_affiliations");
+      .select("id, email, first_name, middle_name, last_name, suffix, org_affiliations, email_verified_at");
 
-    let voter: any = null;
+    let voter: VoterRow | null = null;
 
-    const tryFetchVoter = async () => {
+    const tryFetchVoter = async (): Promise<VoterRow | null> => {
       if (body.voter_id) {
         const res = await voterQuery.eq("id", body.voter_id).maybeSingle();
         if (res.error) throw new Error(res.error.message);
-        if (res.data) return res.data;
+        if (res.data) return res.data as VoterRow;
       }
       if (body.email) {
         const res = await voterQuery.eq("email", body.email).maybeSingle();
         if (res.error) throw new Error(res.error.message);
-        if (res.data) return res.data;
+        if (res.data) return res.data as VoterRow;
       }
       return null;
     };
@@ -431,7 +459,8 @@ serve(async (req) => {
     }
 
     if (voter) {
-      voterEmail = voterEmail || voter.email;
+      // voter.email can be null in DB; keep voterEmail as a string.
+      voterEmail = voterEmail || (voter.email ?? "");
 
       if (!fullName) {
         fullName = [
@@ -447,6 +476,16 @@ serve(async (req) => {
       if (orgAffiliations.length === 0 && Array.isArray(voter.org_affiliations)) {
         orgAffiliations = voter.org_affiliations;
       }
+
+      // If this was triggered via verification token, ensure the voter is actually verified.
+      if (tokenRaw && !voter.email_verified_at) {
+        return json(400, {
+          ok: false,
+          message:
+            "Email is not verified yet. Registration email will be sent after verification.",
+        });
+      }
+
     }
 
     if (!voterEmail) return json(400, { ok: false, message: "Missing target email address." });
@@ -458,8 +497,8 @@ serve(async (req) => {
 
     if (electionsErr) throw new Error(electionsErr.message);
 
-    const eligibleElections = (elections || [])
-      .filter((e: any) => {
+    const eligibleElections = ((elections || []) as ElectionRow[])
+      .filter((e: ElectionRow) => {
         const eligibleOrgs = Array.isArray(e.eligible_orgs) ? e.eligible_orgs : [];
 
         // Open to all
@@ -470,7 +509,7 @@ serve(async (req) => {
 
         // Overlap check (case-insensitive)
         const voterOrgs = orgAffiliations.map((o) => String(o).toLowerCase());
-        const electionOrgs = eligibleOrgs.map((o: any) => String(o).toLowerCase());
+        const electionOrgs = eligibleOrgs.map((o) => String(o).toLowerCase());
 
         return electionOrgs.some((org: string) => voterOrgs.includes(org));
       })

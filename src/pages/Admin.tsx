@@ -1,5 +1,5 @@
 import feuLogo from "@/assets/feu-logo.png";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus, RotateCcw, UserPlus, Activity } from "lucide-react";
 
-import AdminAnalytics from "@/components/admin/AdminAnalytics";
+import ControlPanel from "@/components/admin/ControlPanel";
 import VoterManagement from "@/components/admin/VoterManagement";
 import ElectionManagement from "@/components/admin/ElectionManagement";
 import ZKVerification from "@/components/admin/ZKVerification";
@@ -29,7 +29,7 @@ const APP_SETTING_KEYS = {
 const APP_SETTING_AUDIT_ENTITY_IDS = {
   // Must satisfy UUID validator in admin-audit-log Edge Function.
   // This is a stable, version-4-shaped UUID to represent the singleton app setting.
-  registrationEnabled: "00000000-0000-4000-8000-000000000000",
+  registrationEnabled: "00000000-0000-0000-0000-000000000001",
 } as const;
 
 type AuditLogPayload = {
@@ -42,17 +42,20 @@ type AuditLogPayload = {
 async function writeAdminAuditLog(payload: AuditLogPayload) {
   // Write audit logs via an Edge Function using the service role.
   // This prevents client-side tampering and avoids needing direct INSERT grants.
-  const { error } = await supabase.functions.invoke("admin-audit-log", {
+  const { data, error } = await supabase.functions.invoke("admin-audit-log", {
     body: payload,
   });
 
   if (error) {
-    // Best-effort: the core admin action should still succeed even if audit logging fails.
-    // Keep this quiet (toast would be noisy for normal usage).
+    // Surface enough detail for debugging (do not silently swallow).
     // eslint-disable-next-line no-console
-    console.warn("Failed to write admin audit log:", error);
+    console.warn("[admin-audit-log] invoke error:", error);
+    throw error;
   }
+
+  return data;
 }
+
 
 export default function Admin() {
   const navigate = useNavigate();
@@ -90,6 +93,7 @@ export default function Admin() {
   const [registrationEnabled, setRegistrationEnabled] = useState<boolean>(false);
   const [registrationLoading, setRegistrationLoading] = useState(true);
   const [registrationSaving, setRegistrationSaving] = useState(false);
+  const registrationSaveInFlight = useRef(false);
 
   const [registrationAuditLoading, setRegistrationAuditLoading] = useState(true);
   const [registrationLastChangedAt, setRegistrationLastChangedAt] = useState<string | null>(null);
@@ -99,6 +103,54 @@ export default function Admin() {
     await supabase.auth.signOut();
     navigate("/");
   };
+
+  const refreshRegistrationSetting = async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) {
+      setRegistrationLoading(true);
+      setRegistrationAuditLoading(true);
+    }
+    try {
+      const { data, error } = await supabase
+        .from("app_settings")
+        .select("value")
+        .eq("key", APP_SETTING_KEYS.registrationEnabled)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      const value = data?.value ?? false;
+      setRegistrationEnabled(Boolean(value));
+
+      // Attribution from audit logs (best-effort)
+      const { data: auditRow, error: auditErr } = await supabase
+        .from("admin_audit_logs")
+        .select("created_at, details")
+        .eq("entity_type", "app_settings")
+        .eq("entity_id", APP_SETTING_AUDIT_ENTITY_IDS.registrationEnabled)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (auditErr) throw auditErr;
+
+      setRegistrationLastChangedAt(auditRow?.created_at ?? null);
+      const email = (auditRow?.details as unknown as { admin_email?: string } | null)?.admin_email ?? null;
+      setRegistrationLastChangedBy(email);
+    } catch (e) {
+      toast.error("Failed to load registration setting", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+      setRegistrationEnabled(false);
+      setRegistrationLastChangedAt(null);
+      setRegistrationLastChangedBy(null);
+    } finally {
+      if (!opts?.silent) {
+        setRegistrationLoading(false);
+        setRegistrationAuditLoading(false);
+      }
+    }
+  };
+
 
 
   const loadRecentResets = async () => {
@@ -148,84 +200,62 @@ export default function Admin() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadRegistrationSetting() {
-      setRegistrationLoading(true);
-      setRegistrationAuditLoading(true);
-      try {
-        const { data, error } = await supabase
-          .from("app_settings")
-          .select("value")
-          .eq("key", APP_SETTING_KEYS.registrationEnabled)
-          .maybeSingle();
-
-        if (error) throw error;
-
-        // If missing, default false (closed).
-        const value = data?.value ?? false;
-
-        if (!cancelled) setRegistrationEnabled(Boolean(value));
-
-        // Load last-change attribution from audit logs (best-effort)
-        const { data: auditRow, error: auditErr } = await supabase
-          .from("admin_audit_logs")
-          .select("created_at, details")
-          .eq("entity_type", "app_settings")
-          .eq("entity_id", APP_SETTING_AUDIT_ENTITY_IDS.registrationEnabled)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (auditErr) throw auditErr;
-
-        if (!cancelled) {
-          setRegistrationLastChangedAt(auditRow?.created_at ?? null);
-          const email = (auditRow?.details as unknown as { admin_email?: string } | null)?.admin_email ?? null;
-          setRegistrationLastChangedBy(email);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          toast.error("Failed to load registration setting", {
-            description: e instanceof Error ? e.message : String(e),
-          });
-          setRegistrationEnabled(false);
-        }
-      } finally {
-        if (!cancelled) {
-          setRegistrationLoading(false);
-          setRegistrationAuditLoading(false);
-        }
-      }
-    }
-
-    loadRegistrationSetting();
-
-    return () => {
-      cancelled = true;
-    };
+    // Load once on mount.
+    void refreshRegistrationSetting();
   }, []);
 
-  const handleToggleRegistration = async (next: boolean) => {
+  const handleToggleRegistration = (next: boolean) => {
+    if (registrationSaveInFlight.current || registrationLoading) return;
+
     const prev = registrationEnabled;
     setRegistrationEnabled(next); // optimistic
     setRegistrationSaving(true);
+    registrationSaveInFlight.current = true;
 
-    try {
-      const { error } = await supabase
-        .from("app_settings")
-        .upsert(
-          {
-            key: APP_SETTING_KEYS.registrationEnabled,
-            value: next,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "key" }
-        );
+    // Fire-and-forget: do not keep UI in "Saving…" while best-effort audit logging runs.
+    void (async () => {
+      try {
+        // Main write (should be fast). If this hangs, we time out and roll back.
+        const writePromise = supabase
+          .from("app_settings")
+          .upsert(
+            {
+              key: APP_SETTING_KEYS.registrationEnabled,
+              value: next,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "key" }
+          );
 
-      if (error) throw error;
+        const { error } = await Promise.race([
+          writePromise,
+          new Promise<{ error: Error }>((resolve) =>
+            window.setTimeout(() => resolve({ error: new Error("Write timeout") }), 3000)
+          ),
+        ]);
 
-      // Best-effort: write an audit log entry for attribution
+        if (error) throw error;
+
+        toast.success(`Registration ${next ? "enabled" : "disabled"}`, {
+          description: next
+            ? "Voters can now start registering for the upcoming election."
+            : "Registration is now closed. Voters will be blocked from starting registration.",
+        });
+      } catch (e) {
+        // rollback
+        setRegistrationEnabled(prev);
+        toast.error("Failed to update registration setting", {
+          description: e instanceof Error ? e.message : String(e),
+        });
+      } finally {
+        // Always clear UI quickly.
+        setRegistrationSaving(false);
+        registrationSaveInFlight.current = false;
+        // Sync UI from DB (silent) without blocking.
+        void refreshRegistrationSetting({ silent: true });
+      }
+
+      // Best-effort audit logging (never blocks UI)
       try {
         const { data: sessionData } = await supabase.auth.getSession();
         const adminEmail = sessionData.session?.user?.email ?? null;
@@ -242,28 +272,19 @@ export default function Admin() {
           },
         });
 
-        // Refresh attribution (best-effort)
+        // Best-effort local attribution update
         setRegistrationLastChangedAt(new Date().toISOString());
         setRegistrationLastChangedBy(adminEmail);
-      } catch {
-        // Do not block the main operation if audit logging fails.
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Failed to write ops audit entry for registration toggle:", e);
+        toast.warning("Audit log not saved", {
+          description: e instanceof Error ? e.message : String(e),
+        });
       }
-
-      toast.success(`Registration ${next ? "enabled" : "disabled"}`, {
-        description: next
-          ? "Voters can now start registering for the upcoming election."
-          : "Registration is now closed. Voters will be blocked from starting registration.",
-      });
-    } catch (e) {
-      // rollback
-      setRegistrationEnabled(prev);
-      toast.error("Failed to update registration setting", {
-        description: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setRegistrationSaving(false);
-    }
+    })();
   };
+
 
   const handleAdminResetVoter = async () => {
     const electionId = resetElectionId.trim();
@@ -441,7 +462,7 @@ export default function Admin() {
           </TabsList>
 
           <TabsContent value="analytics">
-            <AdminAnalytics />
+            <ControlPanel />
 
             <div className="mt-6 space-y-6">
               <Card>

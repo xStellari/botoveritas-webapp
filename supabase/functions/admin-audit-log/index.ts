@@ -58,6 +58,7 @@ export default async function handler(req: Request): Promise<Response> {
   });
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
+
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
@@ -69,6 +70,11 @@ export default async function handler(req: Request): Promise<Response> {
     });
     return json(500, { ok: false, error: "Server misconfigured" });
   }
+
+  // Service client (server-side insert + privileged reads)
+  const service = createClient<Database>(supabaseUrl, serviceKey, {
+    auth: { persistSession: false },
+  });
 
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) {
@@ -92,7 +98,9 @@ export default async function handler(req: Request): Promise<Response> {
   const caller = userData.user;
 
   // Verify caller is admin using user_roles (source of truth).
-  const { data: roleRow, error: roleErr } = await authed
+  // IMPORTANT: use the service role client to bypass RLS on user_roles while still
+  // attributing the action to the authenticated caller from the JWT.
+  const { data: roleRow, error: roleErr } = await service
     .from("user_roles")
     .select("role")
     .eq("user_id", caller.id)
@@ -110,6 +118,7 @@ export default async function handler(req: Request): Promise<Response> {
     console.warn("[admin-audit-log] Not authorized", { user_id: caller.id });
     return json(403, { ok: false, error: "Not authorized" });
   }
+
 
   let body: AuditLogBody;
   try {
@@ -135,11 +144,7 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   const details: Json = body.details ?? {};
-
   // Service client (server-side insert)
-  const service = createClient<Database>(supabaseUrl, serviceKey, {
-    auth: { persistSession: false },
-  });
 
   const { error: insertErr } = await service.from("admin_audit_logs").insert({
     admin_id: caller.id,

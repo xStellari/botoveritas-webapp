@@ -35,18 +35,28 @@ const FINISHED_LIMIT = 5;
 
 const Index = () => {
   const navigate = useNavigate();
-
   const formatTime = (value: string) => {
     const dt = new Date(value);
-    const time = dt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    // Convert "8:00 AM" -> "8 AM" while keeping minutes when needed (e.g., "3:32 PM").
-    return time.replace(/:00\s/, " ");
+    return new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      hour12: true,
+    }).format(dt);
   };
 
   const formatDateTime = (value: string) => {
     const dt = new Date(value);
-    const date = dt.toLocaleDateString();
-    return `${date}, ${formatTime(value)}`;
+    const datePart = new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(dt);
+
+    const timePart = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      hour12: true,
+    }).format(dt);
+
+    return `${datePart} ${timePart}`;
   };
 
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
