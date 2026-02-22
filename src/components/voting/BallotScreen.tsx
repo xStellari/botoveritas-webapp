@@ -426,6 +426,37 @@ const BallotScreenWithAbstain = ({
             </div>
 
             <div className="flex items-center gap-6">
+              {(() => {
+                const ms = Math.max(0, timeLeft ?? 0);
+                const min = Math.floor(ms / 60000);
+                const sec = Math.floor((ms % 60000) / 1000);
+                const isDanger = ms <= 15000;
+                const isWarn = ms > 15000 && ms <= 60000;
+
+                const pill =
+                  isDanger
+                    ? "border-red-200 bg-red-50 text-red-700"
+                    : isWarn
+                      ? "border-amber-200 bg-amber-50 text-amber-700"
+                      : "border-emerald-200 bg-emerald-50 text-emerald-800";
+
+                return (
+                  <div
+                    className={[
+                      "rounded-full border px-4 py-1.5 flex items-baseline gap-2",
+                      pill,
+                      isDanger ? "animate-pulse" : "",
+                    ].join(" ")}
+                    aria-label="Voting session timer"
+                  >
+                    <span className="text-[11px] uppercase tracking-wide opacity-80">Time</span>
+                    <span className="tabular-nums text-xl font-bold leading-none">
+                      {min}:{String(sec).padStart(2, "0")}
+                    </span>
+                  </div>
+                );
+              })()}
+
               <div className="flex items-center gap-2 text-sm">
                 <User className="h-4 w-4 text-primary" />
                 <span className="font-medium">
