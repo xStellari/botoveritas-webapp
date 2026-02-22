@@ -40,21 +40,51 @@ type AuditLogPayload = {
 };
 
 async function writeAdminAuditLog(payload: AuditLogPayload) {
-  // Write audit logs via an Edge Function using the service role.
-  // This prevents client-side tampering and avoids needing direct INSERT grants.
-  const { data, error } = await supabase.functions.invoke("admin-audit-log", {
-    body: payload,
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+
+  if (!accessToken) {
+    throw new Error("Not authenticated: missing access token");
+  }
+
+  const baseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+  if (!baseUrl || !anonKey) {
+    throw new Error("Supabase env missing: VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY");
+  }
+
+  const url = `${baseUrl.replace(/\/$/, "")}/functions/v1/admin-audit-log`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      apikey: anonKey,
+    },
+    body: JSON.stringify(payload),
   });
 
-  if (error) {
-    // Surface enough detail for debugging (do not silently swallow).
-    // eslint-disable-next-line no-console
-    console.warn("[admin-audit-log] invoke error:", error);
-    throw error;
+  const text = await resp.text();
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+
+  // eslint-disable-next-line no-console
+  console.log("[admin-audit-log] result", { status: resp.status, data });
+
+  if (!resp.ok) {
+    throw new Error(`admin-audit-log HTTP ${resp.status}: ${typeof data === "string" ? data : JSON.stringify(data)}`);
   }
 
   return data;
 }
+
+
 
 
 export default function Admin() {
@@ -126,7 +156,11 @@ export default function Admin() {
         .from("admin_audit_logs")
         .select("created_at, details")
         .eq("entity_type", "app_settings")
-        .eq("entity_id", APP_SETTING_AUDIT_ENTITY_IDS.registrationEnabled)
+        .eq("action", "APP_SETTING_UPDATE")
+        // Don't rely on entity_id for singleton settings: the audit function may coerce non-UUID or non-v4 UUIDs.
+        // Use the semantic key stored in details instead.
+        // PostgREST JSON path filter: details->>key
+        .eq("details->>key", APP_SETTING_KEYS.registrationEnabled)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -260,7 +294,7 @@ export default function Admin() {
         const { data: sessionData } = await supabase.auth.getSession();
         const adminEmail = sessionData.session?.user?.email ?? null;
 
-        await writeAdminAuditLog({
+        const auditResult = await writeAdminAuditLog({
           action: "APP_SETTING_UPDATE",
           entity_type: "app_settings",
           entity_id: APP_SETTING_AUDIT_ENTITY_IDS.registrationEnabled,
@@ -273,14 +307,17 @@ export default function Admin() {
         });
 
         // Best-effort local attribution update
-        setRegistrationLastChangedAt(new Date().toISOString());
+        const insertedAt =
+          (auditResult as any)?.inserted?.created_at ?? (auditResult as any)?.created_at ?? new Date().toISOString();
+        setRegistrationLastChangedAt(insertedAt);
         setRegistrationLastChangedBy(adminEmail);
+
+        // Ensure the "Last changed" line reflects the latest audit row (handles races with the silent refresh above).
+        void refreshRegistrationSetting({ silent: true });
       } catch (e) {
         // eslint-disable-next-line no-console
         console.warn("Failed to write ops audit entry for registration toggle:", e);
-        toast.warning("Audit log not saved", {
-          description: e instanceof Error ? e.message : String(e),
-        });
+        toast.warning("Audit log not saved", { description: e instanceof Error ? e.message : String(e) });
       }
     })();
   };
@@ -513,10 +550,25 @@ export default function Admin() {
               
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2">
-                    <Activity className="h-4 w-4" />
-                    Operations Audit Feed
-                  </CardTitle>
+                  <div className="flex items-center justify-between gap-3">
+                    <CardTitle className="flex items-center gap-2">
+                      <Activity className="h-4 w-4" />
+                      Operations Audit Feed
+                    </CardTitle>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        void loadOpsAuditFeed();
+                      }}
+                      disabled={opsAuditLoading}
+                      className="gap-2"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      Refresh
+                    </Button>
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <p className="text-sm text-muted-foreground">
