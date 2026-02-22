@@ -23,12 +23,15 @@ type Election = {
   title: string;
   start_date: string;
   end_date: string;
+  is_paused: boolean | null;
   is_active: boolean | null;
   is_final: boolean | null;
   is_archived: boolean | null;
 };
 
 type ElectionView = "active" | "upcoming" | "finished";
+
+const FINISHED_LIMIT = 5;
 
 const Index = () => {
   const navigate = useNavigate();
@@ -102,7 +105,7 @@ const Index = () => {
     try {
       const { data, error } = await supabase
         .from("elections")
-        .select("id,title,start_date,end_date,is_active,is_final,is_archived")
+        .select("id,title,start_date,end_date,is_paused,is_active,is_final,is_archived")
         .order("start_date", { ascending: true });
 
       if (error) throw error;
@@ -175,7 +178,7 @@ const Index = () => {
 
   const isArchived = (e: Election) => Boolean(e.is_archived);
   const isFinal = (e: Election) => Boolean(e.is_final);
-  const isExplicitlyInactive = (e: Election) => e.is_active === false;
+  const isPaused = (e: Election) => Boolean(e.is_paused);
 
   const parseMs = (value: string): number | null => {
     const ms = Date.parse(value);
@@ -188,36 +191,41 @@ const Index = () => {
     const finished: Election[] = [];
 
     for (const e of elections) {
-      if (isArchived(e)) continue;
+      // Voter-visible gate:
+      // - Archived: NEVER shown
+      // - Final: NEVER shown to voters
+      // - Inactive: hidden (admin-only concept)
+      // Voter-visible gate:
+      // - Archived: hidden from voters
+      // - Paused: hidden from voters (maintenance/typo fixes)
+      if (isArchived(e) || isPaused(e)) continue;
 
       const startMs = parseMs(e.start_date);
       const endMs = parseMs(e.end_date);
       const nowMs = now.getTime();
 
-      // If dates are malformed, fail closed (treat as finished/closed) so we never show an invalid election as Live.
-      if (startMs === null || endMs === null) {
-        finished.push(e);
-        continue;
+      // If dates are malformed, fail closed by hiding it (prevents confusing/incorrect voter info).
+      if (startMs === null || endMs === null) continue;
+
+      // Classify by time window
+      // - Live/Upcoming: must NOT be final (final implies no further voting/changes)
+      // - Finished: may be final or not (informational on Index)
+      if (nowMs >= startMs && nowMs < endMs) {
+        if (!isFinal(e)) active.push(e);
+      } else if (nowMs < startMs) {
+        if (!isFinal(e)) upcoming.push(e);
+      } else {
+        finished.push(e); // nowMs >= endMs
       }
-
-      const finalized = isFinal(e);
-      const timeEnded = nowMs > endMs;
-
-      // Closed elections (Index policy):
-      // - Archived: NEVER shown
-      // - Finalized: shown as closed (even if finalized early)
-      // - Time-ended: shown as closed
-      if (finalized || timeEnded) {
-        finished.push(e);
-        continue;
-      }
-
-      // Enabled: now decide active vs upcoming by schedule
-      if (nowMs >= startMs && nowMs <= endMs) active.push(e);
-      else if (nowMs < startMs) upcoming.push(e);
-      // else: between end and now would have been caught by timeEnded above
     }
 
+
+    // Show most recent finished elections first (so the cap displays the latest results).
+    finished.sort((a, b) => {
+      const aEnd = parseMs(a.end_date) ?? 0;
+      const bEnd = parseMs(b.end_date) ?? 0;
+      return bEnd - aEnd;
+    });
     return { active, upcoming, finished };
   }, [elections, now]);
 
@@ -586,7 +594,7 @@ const Index = () => {
                   <p className="text-sm text-muted-foreground">No finished elections.</p>
                 ) : (
                   <div className="space-y-4">
-                    {finished.map((election) => (
+                    {finished.slice(0, FINISHED_LIMIT).map((election) => (
                       <Card key={election.id} className="p-5 border hover:bg-rose-50/50">
                         <div className="flex items-start justify-between gap-3 mb-1">
                           <div className="min-w-0">

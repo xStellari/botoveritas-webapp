@@ -72,6 +72,7 @@ export type Database = {
           end_date: string
           id: string
           is_active: boolean | null
+          is_paused: boolean
           eligible_orgs: string[] | null
           start_date: string
           title: string
@@ -84,6 +85,7 @@ export type Database = {
           end_date: string
           id?: string
           is_active?: boolean | null
+          is_paused?: boolean
           eligible_orgs?: string[] | null
           start_date: string
           title: string
@@ -96,6 +98,7 @@ export type Database = {
           end_date?: string
           id?: string
           is_active?: boolean | null
+          is_paused?: boolean
           eligible_orgs?: string[] | null
           start_date?: string
           title?: string

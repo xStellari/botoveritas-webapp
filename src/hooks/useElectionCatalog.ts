@@ -8,7 +8,9 @@ type Election = {
   id: string;
   start_date: string;
   end_date: string;
-  is_active: boolean;
+  is_paused?: boolean | null;
+  // Legacy: kept for backward compatibility; do NOT use for voter visibility.
+  is_active?: boolean | null;
   is_final: boolean;
   is_archived: boolean;
   // Allow additional columns without losing type safety for core fields
@@ -28,7 +30,7 @@ const toValidDate = (value: any): Date | null => {
  * NOTE:
  * - Eligibility is authoritative (server-side) via `is_voter_eligible_for_election`.
  * - "Active" elections exclude finalized/archived elections even if within the time window.
- * - "Expired/Closed" includes ended-by-time OR ended-by-lifecycle (finalized/archived).
+ * - The second list is "Upcoming" elections (optional), computed from schedule + lifecycle (not `is_active`).
  */
 export function useElectionCatalog() {
   const [activeElections, setActiveElections] = useState<Election[]>([]);
@@ -36,7 +38,8 @@ export function useElectionCatalog() {
   const [completedElections, setCompletedElections] = useState<string[]>([]);
 
   // Finalized or archived elections must NEVER be treated as "active/ongoing".
-  const isOperationalElection = useCallback((e: Election) => !e?.is_final && !e?.is_archived, []);
+  // Visible to voters only when NOT paused and NOT archived. (Final elections are excluded from voter flows.)
+  const isOperationalElection = useCallback((e: Election) => !e?.is_final && !e?.is_archived && e?.is_paused !== true, []);
 
   const filterElectionsByEligibilityRpc = useCallback(async (elections: Election[], voterId: string) => {
     if (!elections.length) return [];
@@ -64,7 +67,7 @@ export function useElectionCatalog() {
       console.error("Eligibility checks failed for elections:", failedElectionIds);
     }
 
-    return results.filter(Boolean);
+    return results.filter((x): x is Election => Boolean(x));
   }, []);
 
   /**
@@ -73,7 +76,9 @@ export function useElectionCatalog() {
    */
   const refreshElectionsAndStatus = useCallback(async (voterId: string) => {
     // 1) Load elections
-    const { data: elections = [], error: electionsErr } = await supabase.from("elections").select("*");
+    const { data, error: electionsErr } = await supabase.from("elections").select("*");
+
+    const elections = data ?? [];
 
     if (electionsErr) {
       toast.error("Failed to load elections.");
@@ -82,31 +87,30 @@ export function useElectionCatalog() {
 
     const now = new Date();
 
-    // "Active" must exclude finalized/archived even if time window is valid
+    // "Active" elections for the voter UI are computed from schedule (start/end) + lifecycle.
+    // We intentionally do not rely on `is_active` here. Voter visibility uses schedule + lifecycle, plus the admin pause flag (`is_paused`).
     const activeTimeWindow = elections.filter((e) => {
       const start = toValidDate(e.start_date);
       const end = toValidDate(e.end_date);
       if (!start || !end) return false;
-      return Boolean(e.is_active) && isOperationalElection(e) && start <= now && end > now;
+      return isOperationalElection(e) && start <= now && end > now;
     });
 
-    // "Expired/Closed" includes:
-    // - ended by time
-    // - OR ended early due to lifecycle (finalized/archived)
-    const expiredTimeWindow = elections.filter((e) => {
+    // "Upcoming" elections (optional list shown to voters). Also computed purely from schedule + lifecycle.
+    const upcomingTimeWindow = elections.filter((e) => {
+      const start = toValidDate(e.start_date);
       const end = toValidDate(e.end_date);
-      if (!end) return false;
-      const endedByTime = end <= now;
-      const endedByLifecycle = !isOperationalElection(e);
-      return Boolean(e.is_active) && (endedByTime || endedByLifecycle);
+      if (!start || !end) return false;
+      return isOperationalElection(e) && start > now;
     });
+
 
     // Authoritative eligibility (server-side)
     const active = await filterElectionsByEligibilityRpc(activeTimeWindow, voterId);
-    const expired = await filterElectionsByEligibilityRpc(expiredTimeWindow, voterId);
+    const upcoming = await filterElectionsByEligibilityRpc(upcomingTimeWindow, voterId);
 
     setActiveElections(active);
-    setExpiredElections(expired);
+    setExpiredElections(upcoming);
 
     // 2) Refresh completed elections for ACTIVE only
     const activeIds = active.map((e) => e.id);
@@ -115,7 +119,7 @@ export function useElectionCatalog() {
       setCompletedElections([]);
       return {
         activeElections: active,
-        expiredElections: expired,
+        expiredElections: upcoming,
         completedElections: [],
         hasVotedAllActive: false,
       };
@@ -140,23 +144,23 @@ export function useElectionCatalog() {
 
     return {
       activeElections: active,
-      expiredElections: expired,
+      expiredElections: upcoming,
       completedElections: completed,
       hasVotedAllActive,
     };
-  }, [filterElectionsByEligibilityRpc, isOperationalElection]);
+      }, [filterElectionsByEligibilityRpc, isOperationalElection]);
 
-  const resetElectionCatalog = useCallback(() => {
+      const resetElectionCatalog = useCallback(() => {
     setActiveElections([]);
     setExpiredElections([]);
     setCompletedElections([]);
-  }, []);
+      }, []);
 
-  return {
+      return {
     activeElections,
     expiredElections,
     completedElections,
     refreshElectionsAndStatus,
     resetElectionCatalog,
-  };
-}
+      };
+    }

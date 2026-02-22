@@ -213,7 +213,7 @@ const VotingKiosk = () => {
   const assertElectionStillOperational = async (electionId: string) => {
     const { data, error } = await supabase
       .from("elections")
-      .select("id, is_final, is_archived, is_active, start_date, end_date")
+      .select("id, is_final, is_archived, start_date, end_date")
       .eq("id", electionId)
       .single();
 
@@ -228,13 +228,14 @@ const VotingKiosk = () => {
       return false;
     }
 
-    // Also ensure it's actually active + within time window (extra safety)
+    // Also ensure it's within the scheduled time window (extra safety).
+    // We do not rely on `is_active` here because it is a UI/admin flag and can drift out-of-sync.
     const now = new Date();
     const start = new Date((data as any).start_date);
     const end = new Date((data as any).end_date);
 
-    if (!Boolean((data as any).is_active) || start > now || end <= now) {
-      toast.error("This election is no longer active.");
+    if (start > now || end <= now) {
+      toast.error("This election is not within the voting period.");
       return false;
     }
 
@@ -875,22 +876,7 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
         </div>
       )}
 
-      {/* GLOBAL COUNTDOWN (Session Timer) */}
-      {currentStep !== "auth" && timeLeft !== null && (
-        <div className="fixed top-0 left-0 right-0 z-40">
-          <div className="mx-auto max-w-3xl px-4 pt-3">
-            <div className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm px-4 py-3 flex items-center justify-between">
-              <div className="text-sm font-medium">
-                Voting session time remaining
-              </div>
-              <div className="text-sm tabular-nums font-semibold">
-                {Math.max(0, Math.floor((timeLeft ?? 0) / 60000))}:
-                {String(Math.max(0, Math.floor(((timeLeft ?? 0) % 60000) / 1000))).padStart(2, "0")}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+
 
       {/* AUTH */}
       {currentStep === "auth" && <AuthenticationScreen onAuthSuccess={handleAuthSuccess} />}
@@ -903,6 +889,7 @@ void logSessionEvent({ voterId: voterData.id, action: "session_end" });
           completedElections={completedElections}
           activeElections={activeElections}
           expiredElections={expiredElections}
+            timeLeftMs={timeLeft}
           onRefresh={async () => { await refreshElectionsAndStatus(voterData.id); }} // ✅ NEW
         />
       )}

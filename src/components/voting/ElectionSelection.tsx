@@ -35,6 +35,7 @@ interface ElectionSelectionProps {
   activeElections: any[];
   expiredElections: any[];
   onRefresh?: () => Promise<void> | void;
+  timeLeftMs?: number | null;
 }
 
 const ElectionSelection = ({
@@ -44,6 +45,7 @@ const ElectionSelection = ({
   activeElections,
   expiredElections,
   onRefresh,
+  timeLeftMs,
 }: ElectionSelectionProps) => {
   const { endSession, getActiveSessionRow, getCurrentKioskId } =
     useVotingSessionLock();
@@ -120,6 +122,17 @@ onElectionSelect(election.id, election);
   const [localExpired, setLocalExpired] = useState<any[]>(
     Array.isArray(expiredElections) ? expiredElections : []
   );
+
+  // Show only Active + optional Upcoming for voters (hide finished/closed)
+  const visibleUpcomingElections = useMemo(() => {
+    const now = new Date();
+    return (localExpired ?? []).filter((e) => {
+      if (Boolean(e?.is_archived)) return false;
+      if (e?.is_active === false) return false;
+      const start = e?.start_date ? new Date(e.start_date) : null;
+      return start ? start.getTime() > now.getTime() : false;
+    });
+  }, [localExpired]);
   const navigate = useNavigate();
 
   // Track changes by IDs (stable even if array reference is reused)
@@ -188,39 +201,6 @@ onElectionSelect(election.id, election);
     "Some elections are restricted to specific organizations (e.g., ICpEP, HonSoc). " +
     "If you’re not eligible, that election won’t appear on this kiosk.";
 
-  // ✅ lifecycle-aware label helpers (kept for finalized vs plain closed)
-  // NOTE: archived elections are now hidden entirely from Closed Elections UI.
-  const getClosedBadgeLabel = (e: any) => {
-    if (Boolean(e?.is_final)) return "Closed (Finalized)";
-    return "Closed";
-  };
-
-  const getClosedReasonText = (e: any) => {
-    const now = new Date();
-    const end = e?.end_date ? new Date(e.end_date) : null;
-
-    const endedByLifecycle = Boolean(e?.is_final);
-    const endedByTime = end ? end <= now : true;
-
-    // If lifecycle ended it while time window might still be open
-    if (endedByLifecycle && end && end > now) {
-      return "Election finalized (ended early)";
-    }
-
-    // Default time-ended
-    if (endedByTime) return "Voting period closed";
-
-    // Fallback
-    if (endedByLifecycle) return "Election finalized";
-
-    return "Voting closed";
-  };
-
-  // ✅ NEW: Hide archived elections from Closed Elections list entirely
-  const visibleClosedElections = useMemo(() => {
-    return (localExpired ?? []).filter((e) => !Boolean(e?.is_archived));
-  }, [localExpired]);
-
   return (
     <div className="min-h-screen flex flex-col bg-neutral-50">
       {/* NAVBAR (match Index.tsx) */}
@@ -229,9 +209,41 @@ onElectionSelect(election.id, election);
           <div className="flex items-center gap-3">
             <img src={feuLogo} className="h-12" alt="FEU Logo" />
           </div>
-          <Button variant="outline" onClick={() => setBackConfirmOpen(true)}>
-            Back
-          </Button>
+          <div className="flex items-center gap-3">
+            {timeLeftMs !== null && timeLeftMs !== undefined && (
+              (() => {
+                const ms = Math.max(0, timeLeftMs);
+                const min = Math.floor(ms / 60000);
+                const sec = Math.floor((ms % 60000) / 1000);
+                const isDanger = ms <= 15000;
+                const isWarn = ms > 15000 && ms <= 60000;
+                const pill =
+                  isDanger
+                    ? "border-red-200 bg-red-50 text-red-700"
+                    : isWarn
+                      ? "border-amber-200 bg-amber-50 text-amber-700"
+                      : "border-emerald-200 bg-emerald-50 text-emerald-800";
+                return (
+                  <div
+                    className={[
+                      "rounded-full border px-4 py-2 flex items-baseline gap-2",
+                      pill,
+                      isDanger ? "animate-pulse" : "",
+                    ].join(" ")}
+                    aria-label="Voting session timer"
+                  >
+                    <span className="text-[11px] uppercase tracking-wide opacity-80">Time</span>
+                    <span className="tabular-nums text-xl font-bold leading-none">
+                      {min}:{String(sec).padStart(2, "0")}
+                    </span>
+                  </div>
+                );
+              })()
+            )}
+            <Button variant="outline" onClick={() => setBackConfirmOpen(true)}>
+              Back
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -271,7 +283,7 @@ onElectionSelect(election.id, election);
                 variant="outline"
                 className="border-gray-300 text-gray-700"
               >
-                Closed: {visibleClosedElections.length}
+                Upcoming: {visibleUpcomingElections.length}
               </Badge>
 
               {/* Refresh button */}
@@ -446,15 +458,15 @@ onElectionSelect(election.id, election);
           </section>
 
           {/* CLOSED ELECTIONS (archived hidden) */}
-          {visibleClosedElections.length > 0 && (
+          {visibleUpcomingElections.length > 0 && (
             <section className="space-y-4">
               <h2 className="text-xl font-bold text-red-500 flex items-center gap-2">
                 <CheckCircle className="h-5 w-5 text-red-500" />
-                Closed Elections
+                Upcoming Elections
               </h2>
 
               <div className="space-y-4">
-                {visibleClosedElections.map((election) => (
+                {visibleUpcomingElections.map((election) => (
                   <Card
                     key={election.id}
                     className="p-6 border hover:bg-red-50/50 transition"
@@ -466,7 +478,7 @@ onElectionSelect(election.id, election);
                         variant="outline"
                         className="border-gray-300 text-gray-700"
                       >
-                        {getClosedBadgeLabel(election)}
+                        Upcoming
                       </Badge>
                     </div>
 
@@ -487,9 +499,6 @@ onElectionSelect(election.id, election);
                         : "—"}
                     </p>
 
-                    <p className="text-xs text-red-500 mt-1 font-medium">
-                      {getClosedReasonText(election)}
-                    </p>
                   </Card>
                 ))}
               </div>

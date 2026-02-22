@@ -9,22 +9,16 @@ export const sortElections = (elections: any[]) => {
     const start = new Date(e.start_date);
     const end = new Date(e.end_date);
 
-    // ✅ STRICT: must be admin-active AND inside time window AND NOT lifecycle-closed
-    return (
-      Boolean(e?.is_active) &&
-      !isLifecycleClosed(e) &&
-      now >= start &&
-      now <= end
-    );
+    // Active = inside time window AND NOT lifecycle-closed (we do not rely on `is_active` for time truth)
+    return !isLifecycleClosed(e) && now >= start && now <= end;
   };
 
   const isUpcoming = (e: any) => {
     const start = new Date(e.start_date);
 
-    // ✅ STRICT: upcoming should also respect admin-active AND lifecycle (no finalized/archived)
-    // This prevents a finalized/archived election from being sorted as "upcoming"
-    // and prevents inactive elections from being promoted above closed.
-    return Boolean(e?.is_active) && !isLifecycleClosed(e) && now < start;
+    // Upcoming = starts in the future AND NOT lifecycle-closed (we do not rely on `is_active` here)
+    // This prevents a finalized/archived election from being sorted as "upcoming".
+    return !isLifecycleClosed(e) && now < start;
   };
 
   const isTimeEnded = (e: any) => {
