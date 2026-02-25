@@ -42,7 +42,7 @@ export default function ErrorPage() {
     if (isNoActiveElectionsMessage && !isNoEligibleElectionsMessage) {
       return (
         "There are currently no active elections at this time.\n\n" +
-        "If you believe this is incorrect, please contact an administrator."
+        "If you believe this is incorrect, please contact your system administrator."
       );
     }
 
@@ -51,20 +51,20 @@ export default function ErrorPage() {
         return (
           "This kiosk is primarily used for student elections.\n\n" +
           "There are currently no active elections for associates.\n\n" +
-          "If you believe this is incorrect, please contact an administrator."
+          "If you believe this is incorrect, please contact your system administrator."
         );
       }
 
       if (audience === "students") {
         return (
           "There are currently no active student elections.\n\n" +
-          "If you believe this is incorrect, please contact an administrator."
+          "If you believe this is incorrect, please contact your system administrator."
         );
       }
 
       return (
         "There are currently no active elections available at this time.\n\n" +
-        "If you believe this is incorrect, please contact an administrator."
+        "If you believe this is incorrect, please contact your system administrator."
       );
     }
 

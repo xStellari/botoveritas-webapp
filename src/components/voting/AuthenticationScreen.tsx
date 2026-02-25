@@ -309,7 +309,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
             reason: "NO_ELIGIBLE_ELECTIONS",
             voter_audience: (data as any).voter_audience,
             message:
-              "There are currently no eligible active elections available at this time. If you believe this is a mistake, please contact an administrator.",
+              "There are currently no eligible active elections available at this time. If you believe this is a mistake, please contact your system administrator.",
             recoverTo: "/voting",
             countdownSeconds: 10,
           },
