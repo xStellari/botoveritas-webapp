@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import { getKioskId } from "@/utils/kioskIdentity";
 
 function getKioskSecret(): string | null {
   // IMPORTANT: Vite only injects env vars when accessed via direct property reads.
@@ -65,6 +66,7 @@ export async function logSessionEvent({
         user_agent: ua,
       },
       headers: {
+        "x-kiosk-id": await getKioskId(),
         "x-kiosk-secret": kioskSecret,
       },
     });

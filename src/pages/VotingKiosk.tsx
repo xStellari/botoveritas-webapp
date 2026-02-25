@@ -28,6 +28,7 @@ import { toast } from "sonner";
 import { logSessionEvent } from "@/utils/logSessionEvent";
 import { useElectionCatalog } from "@/hooks/useElectionCatalog";
 import { useVotingSessionLock } from "@/hooks/useVotingSessionLock";
+import { kioskGetVoterByRfid, kioskSubmitVotes } from "@/utils/kioskApi";
 
 export type VoterRow = {
   id: string;
@@ -260,15 +261,21 @@ const VotingKiosk = () => {
   // AUTH SUCCESS (NO TIMER HERE)
   // -----------------------------------------------------
   const handleAuthSuccess = async (auth: { rfidTag: string }) => {
-    // 1) Find voter by RFID (via RPC to avoid direct voters SELECT under RLS)
-    const { data: voterRows, error: voterErr } = await supabase.rpc(
-      "get_voter_by_rfid" as any,
-      { p_rfid: auth.rfidTag } as any
-    );
+    // 1) Find voter by RFID via Edge Function (Option 3: no Supabase Auth dependency)
+    let voterRow: any | null = null;
+    try {
+      voterRow = await kioskGetVoterByRfid(auth.rfidTag);
+    } catch (e: any) {
+      const status = (e as any)?.status;
+      if (status === 401 || status === 403) {
+        toast.error("Kiosk is not authorized. Please ask an admin to authorize this device.");
+      } else {
+        toast.error("Failed to validate voter. Please try again.");
+      }
+      return;
+    }
 
-    const voterRow = voterRows?.[0];
-
-    if (voterErr || !voterRow) {
+    if (!voterRow) {
       toast.error("Voter not found.");
       return;
     }
@@ -508,24 +515,26 @@ if (lockErr) {
       return { ok: false as const };
     }
 
-    // ✅ Batch UPSERT votes (idempotent)
-    // Why: if anything after vote persistence fails (e.g., RLS on voter_election_status),
-    // the user may retry — and INSERT would throw 409 due to unique_vote_per_position.
-    const voteRows = selections.map((sel) => ({
-      voter_id: voterId,
-      election_id: electionId,
-      position: sel.position,
-      candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
-      is_abstain: sel.candidateId === "ABSTAIN",
-    }));
-
-    const { error: votesErr } = await supabase
-      .from("votes")
-      .upsert(voteRows, { onConflict: "voter_id,election_id,position" });
-
-    if (votesErr) {
-      console.error("Failed to persist votes:", votesErr);
-      toast.error("Failed to save your votes. Please try again.");
+    // ✅ Persist votes via Edge Function (Option 3)
+    // This avoids relying on Supabase Auth stored in localStorage on the kiosk.
+    try {
+      await kioskSubmitVotes({
+        voter_id: voterId,
+        election_id: electionId,
+        selections: selections.map((sel) => ({
+          position: sel.position,
+          candidate_id: sel.candidateId === "ABSTAIN" ? null : sel.candidateId,
+          is_abstain: sel.candidateId === "ABSTAIN",
+        })),
+      });
+    } catch (e: any) {
+      const status = (e as any)?.status;
+      if (status === 401 || status === 403) {
+        toast.error("Kiosk is not authorized. Please ask an admin to authorize this device.");
+      } else {
+        toast.error("Failed to save your votes. Please try again.");
+      }
+      console.error("Failed to persist votes via kiosk-submit-votes:", e);
       return { ok: false as const };
     }
 
