@@ -515,7 +515,7 @@ const Index = () => {
                     }
                     onClick={() => setElectionView("active")}
                   >
-                    Live <span className="ml-2 text-[11px] opacity-90">({active.length})</span>
+                    Live <span className="ml-1 text-[11px] opacity-90">({active.length})</span>
                   </Button>
 
                   <Button
@@ -528,7 +528,7 @@ const Index = () => {
                     }
                     onClick={() => setElectionView("upcoming")}
                   >
-                    Upcoming <span className="ml-2 text-[11px] opacity-90">({upcoming.length})</span>
+                    Upcoming <span className="ml-1 text-[11px] opacity-90">({upcoming.length})</span>
                   </Button>
 
                   <Button
@@ -541,7 +541,7 @@ const Index = () => {
                     }
                     onClick={() => setElectionView("finished")}
                   >
-                    Finished <span className="ml-2 text-[11px] opacity-90">({finished.length})</span>
+                    Done <span className="ml-1 text-[11px] opacity-90">({finished.length})</span>
                   </Button>
                 </div>
               </div>
