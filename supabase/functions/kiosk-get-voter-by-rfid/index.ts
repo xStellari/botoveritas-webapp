@@ -7,7 +7,7 @@ import { json, kioskCorsHeaders, requireKioskAuth } from "../_shared/kioskAuth.t
 
 type Body = { rfid_tag?: string };
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: kioskCorsHeaders });
   }
@@ -25,6 +25,7 @@ export default async function handler(req: Request): Promise<Response> {
 
   const auth = await requireKioskAuth(req, service as any);
   if (auth instanceof Response) return auth;
+  const rotateSecret = (auth as any).rotate_secret as string | undefined;
 
   let body: Body;
   try {
@@ -65,5 +66,7 @@ export default async function handler(req: Request): Promise<Response> {
     return json(500, { ok: false, error: "Failed to lookup voter" });
   }
 
-  return json(200, { ok: true, voter: data ?? null });
+  return json(200, { ok: true, voter: data ?? null , rotate_secret: rotateSecret ?? null });
 }
+
+Deno.serve(handler);

@@ -16,7 +16,7 @@ type Body = {
   seconds?: number;
 };
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: kioskCorsHeaders });
   }
@@ -33,6 +33,7 @@ export default async function handler(req: Request): Promise<Response> {
   const service = createClient<Database>(supabaseUrl, serviceKey, { auth: { persistSession: false } });
   const auth = await requireKioskAuth(req, service as any);
   if (auth instanceof Response) return auth;
+  const rotateSecret = (auth as any).rotate_secret as string | undefined;
 
   let body: Body;
   try {
@@ -53,7 +54,7 @@ export default async function handler(req: Request): Promise<Response> {
   if (action === "has_active") {
     const { data, error } = await service.rpc("has_active_voter_session" as any, { p_voter_id: voterId } as any);
     if (error) return json(500, { ok: false, error: "Failed to check session" });
-    return json(200, { ok: true, hasActive: Boolean(data) });
+    return json(200, { ok: true, hasActive: Boolean(data) , rotate_secret: rotateSecret ?? null });
   }
 
   if (action === "get_active") {
@@ -63,7 +64,7 @@ export default async function handler(req: Request): Promise<Response> {
     );
     if (error) return json(500, { ok: false, error: "Failed to read session" });
     const row = Array.isArray(data) ? data[0] : data;
-    return json(200, { ok: true, session: row ?? null });
+    return json(200, { ok: true, session: row ?? null , rotate_secret: rotateSecret ?? null });
   }
 
   if (action === "upsert") {
@@ -76,7 +77,7 @@ export default async function handler(req: Request): Promise<Response> {
     );
 
     if (error) return json(500, { ok: false, error: "Failed to upsert session" });
-    return json(200, { ok: true });
+    return json(200, { ok: true, rotate_secret: rotateSecret ?? null });
   }
 
   if (action === "extend") {
@@ -90,7 +91,7 @@ export default async function handler(req: Request): Promise<Response> {
       { p_voter_id: voterId, p_kiosk_id: kioskId, p_seconds: seconds } as any
     );
     if (error) return json(500, { ok: false, error: "Failed to extend session" });
-    return json(200, { ok: true });
+    return json(200, { ok: true, rotate_secret: rotateSecret ?? null });
   }
 
   if (action === "end") {
@@ -99,8 +100,10 @@ export default async function handler(req: Request): Promise<Response> {
       { p_voter_id: voterId, p_kiosk_id: kioskId } as any
     );
     if (error) return json(500, { ok: false, error: "Failed to end session" });
-    return json(200, { ok: true });
+    return json(200, { ok: true, rotate_secret: rotateSecret ?? null });
   }
 
   return json(400, { ok: false, error: "Unknown action" });
 }
+
+Deno.serve(handler);

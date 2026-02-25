@@ -27,7 +27,7 @@ type Body = {
   selections?: Selection[];
 };
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: kioskCorsHeaders });
   }
@@ -44,6 +44,7 @@ export default async function handler(req: Request): Promise<Response> {
   const service = createClient<Database>(supabaseUrl, serviceKey, { auth: { persistSession: false } });
   const auth = await requireKioskAuth(req, service as any);
   if (auth instanceof Response) return auth;
+  const rotateSecret = (auth as any).rotate_secret as string | undefined;
 
   let body: Body;
   try {
@@ -133,5 +134,7 @@ export default async function handler(req: Request): Promise<Response> {
     return json(500, { ok: false, error: "Failed to persist votes" });
   }
 
-  return json(200, { ok: true });
+  return json(200, { ok: true, rotate_secret: rotateSecret ?? null });
 }
+
+Deno.serve(handler);

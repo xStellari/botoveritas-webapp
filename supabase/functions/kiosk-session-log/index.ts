@@ -8,15 +8,13 @@
 // Required env vars:
 // - SUPABASE_URL
 // - SUPABASE_SERVICE_ROLE_KEY
-// - KIOSK_SECRET  (random long string)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import type { Database } from "../_shared/database.types.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-kiosk-secret",
+    "authorization, x-client-info, apikey, content-type, x-kiosk-secret, x-kiosk-id",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -33,6 +31,15 @@ function json(status: number, body: Record<string, unknown>): Response {
       "Cache-Control": "no-store",
     },
   });
+}
+
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 type KioskSessionLogBody = {
@@ -66,16 +73,39 @@ export default async function handler(req: Request): Promise<Response> {
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const sharedSecret = Deno.env.get("KIOSK_SECRET");
 
-  if (!supabaseUrl || !serviceKey || !sharedSecret) {
+  if (!supabaseUrl || !serviceKey) {
     return json(500, { ok: false, error: "Server misconfigured" });
   }
 
-  const reqSecret = req.headers.get("x-kiosk-secret");
-  if (!reqSecret || reqSecret !== sharedSecret) {
-    return json(401, { ok: false, error: "Unauthorized" });
-  }
+
+const service = createClient(supabaseUrl, serviceKey, {
+  auth: { persistSession: false },
+});
+
+const headerKioskId = req.headers.get("x-kiosk-id")?.trim() ?? "";
+const headerKioskSecret = req.headers.get("x-kiosk-secret")?.trim() ?? "";
+
+if (!headerKioskId || !headerKioskSecret) {
+  return json(401, { ok: false, error: "Unauthorized" });
+}
+
+const { data: kiosk, error: kioskError } = await service
+  .from("kiosk_devices")
+  .select("secret_sha256, is_approved")
+  .eq("kiosk_id", headerKioskId)
+  .maybeSingle();
+
+if (kioskError || !kiosk?.is_approved) {
+  return json(401, { ok: false, error: "Unauthorized" });
+}
+
+const providedHash = await sha256Hex(headerKioskSecret);
+const expectedHash = String(kiosk.secret_sha256 ?? "").toLowerCase();
+
+if (!expectedHash || providedHash !== expectedHash) {
+  return json(401, { ok: false, error: "Unauthorized" });
+}
 
   let body: KioskSessionLogBody;
   try {
@@ -110,10 +140,6 @@ export default async function handler(req: Request): Promise<Response> {
   const kioskIdSafe = kioskId && kioskId.length > 80 ? kioskId.slice(0, 80) : kioskId;
   const ipSafe = ipAddress && ipAddress.length > 64 ? ipAddress.slice(0, 64) : ipAddress;
   const uaSafe = userAgent && userAgent.length > 256 ? userAgent.slice(0, 256) : userAgent;
-
-  const service = createClient<Database>(supabaseUrl, serviceKey, {
-    auth: { persistSession: false },
-  });
 
   const { error } = await service.from("voter_session_logs").insert({
     voter_id: voterId,
