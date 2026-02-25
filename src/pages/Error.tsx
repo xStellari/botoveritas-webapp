@@ -29,6 +29,11 @@ export default function ErrorPage() {
   const rawMessage =
     state.message || "An unexpected error occurred.";
 
+  // Defensive UI sanitization: avoid showing raw Postgres constraint errors.
+  const isDuplicateRFIDConstraint =
+    /duplicate\s+key\s+value\s+violates\s+unique\s+constraint/i.test(rawMessage) &&
+    /voters_rfid_tag_key|rfid_tag/i.test(rawMessage);
+
   const isNoEligibleElectionsMessage =
     state.reason === "NO_ELIGIBLE_ELECTIONS" ||
     /no\s+active\s+elections/i.test(rawMessage) ||
@@ -38,6 +43,10 @@ export default function ErrorPage() {
     state.reason === "NO_ACTIVE_ELECTIONS" || /no\s+active\s+elections/i.test(rawMessage);
 
   const message = (() => {
+    if (isDuplicateRFIDConstraint) {
+      return "RFID is already registered in the database. Please use a different RFID or contact an administrator.";
+    }
+
     // Make the “no elections” case explicit and non-personal.
     if (isNoActiveElectionsMessage && !isNoEligibleElectionsMessage) {
       return (
