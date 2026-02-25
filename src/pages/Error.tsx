@@ -44,7 +44,7 @@ export default function ErrorPage() {
 
   const message = (() => {
     if (isDuplicateRFIDConstraint) {
-      return "RFID is already registered in the database. Please use a different RFID or contact an administrator.";
+      return "RFID is already registered in the database. Please use a different RFID or contact your system administrator.";
     }
 
     // Make the “no elections” case explicit and non-personal.
