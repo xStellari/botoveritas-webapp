@@ -23,7 +23,7 @@ type OrgMemberRow = {
   created_at: string;
 };
 
-type EmployeeRow = {
+type AssociateRow = {
   id: string;
   email: string;
   email_norm: string | null;
@@ -145,8 +145,8 @@ function parseCsvFirstColumn(raw: string) {
         "e-mail",
         "member",
         "member name",
-        "employee",
-        "employee name",
+        "associate",
+        "associate name",
       ].includes(header)
     ) {
       continue;
@@ -232,7 +232,7 @@ export default function RostersManagement() {
   const [orgsLoading, setOrgsLoading] = useState(true);
   const [orgs, setOrgs] = useState<OrgRow[]>([]);
   const [selectedOrg, setSelectedOrg] = useState<string>("");
-  const [activePanel, setActivePanel] = useState<"org" | "employees">("org");
+  const [activePanel, setActivePanel] = useState<"org" | "associates">("org");
 
   // ----------------------------
   // Org member roster UI
@@ -253,24 +253,24 @@ const [orgMemberSource, setOrgMemberSource] = useState("Admin import");
   const [voterLookupRows, setVoterLookupRows] = useState<VoterLookupRow[]>([]);
   const [voterAddBusyId, setVoterAddBusyId] = useState<string | null>(null);
 
-  // Quick-add employees from registered voters
-  const [employeeVoterLookupQuery, setEmployeeVoterLookupQuery] = useState("");
-  const [employeeVoterLookupLoading, setEmployeeVoterLookupLoading] = useState(false);
-  const [employeeVoterLookupRows, setEmployeeVoterLookupRows] = useState<VoterLookupRow[]>([]);
-  const [employeeVoterAddBusyId, setEmployeeVoterAddBusyId] = useState<string | null>(null);
+  // Quick-add associates from registered voters
+  const [associateVoterLookupQuery, setAssociateVoterLookupQuery] = useState("");
+  const [associateVoterLookupLoading, setAssociateVoterLookupLoading] = useState(false);
+  const [associateVoterLookupRows, setAssociateVoterLookupRows] = useState<VoterLookupRow[]>([]);
+  const [associateVoterAddBusyId, setAssociateVoterAddBusyId] = useState<string | null>(null);
 
 
   // ----------------------------
-  // Employee registry (email) UI
+  // Associate registry (email) UI
   // ----------------------------
-  const [employeeLoading, setEmployeeLoading] = useState(false);
-  const [employeeRows, setEmployeeRows] = useState<EmployeeRow[]>([]);
-  const [employeeSearch, setEmployeeSearch] = useState("");
-const [employeeBusy, setEmployeeBusy] = useState(false);
-  const [employeeManualEmails, setEmployeeManualEmails] = useState("");
+  const [associateLoading, setAssociateLoading] = useState(false);
+  const [associateRows, setAssociateRows] = useState<AssociateRow[]>([]);
+  const [associateSearch, setAssociateSearch] = useState("");
+const [associateBusy, setAssociateBusy] = useState(false);
+  const [associateManualEmails, setAssociateManualEmails] = useState("");
 
-  const employeeEmailPreview = useMemo(() => {
-    const raw = employeeManualEmails;
+  const associateEmailPreview = useMemo(() => {
+    const raw = associateManualEmails;
     if (!raw.trim()) return [];
     const tokens = raw
       .split(/[\r\n,;]+/)
@@ -282,9 +282,9 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
 
     const valid = cleaned.filter(isValidEmail);
     return dedupeEmails(valid);
-  }, [employeeManualEmails]);
+  }, [associateManualEmails]);
 
-  const [employeeSource, setEmployeeSource] = useState("Admin import");
+  const [associateSource, setAssociateSource] = useState("Admin import");
 
   // ----------------------------
   // Loaders
@@ -330,25 +330,25 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
     setOrgMemberLoading(false);
   };
 
-  const loadEmployees = async () => {
-    setEmployeeLoading(true);
+  const loadAssociates = async () => {
+    setAssociateLoading(true);
 
-    // Employee registry lives in employee_registry.
+    // Associate registry lives in associate_registry.
     // Cast table name to any to avoid typegen drift until you regenerate Supabase types.
     const { data, error } = await supabase
-      .from("employee_registry" as any)
+      .from("associate_registry" as any)
       .select("id, email, email_norm, full_name, source, created_at")
       .order("created_at", { ascending: false });
 
     if (error) {
       console.error(error);
-      toast.error("Failed to load employee registry.");
-      setEmployeeRows([]);
+      toast.error("Failed to load associate registry.");
+      setAssociateRows([]);
     } else {
-      setEmployeeRows((data as any) || []);
+      setAssociateRows((data as any) || []);
     }
 
-    setEmployeeLoading(false);
+    setAssociateLoading(false);
   };
 
   useEffect(() => {
@@ -363,7 +363,7 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
   }, [selectedOrg]);
 
   useEffect(() => {
-    void loadEmployees();
+    void loadAssociates();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -387,16 +387,16 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
     });
   }, [orgMemberRows, orgMemberSearch]);
 
-  const filteredEmployees = useMemo(() => {
-    const q = employeeSearch.trim().toLowerCase();
-    if (!q) return employeeRows;
-    return employeeRows.filter((r) => {
+  const filteredAssociates = useMemo(() => {
+    const q = associateSearch.trim().toLowerCase();
+    if (!q) return associateRows;
+    return associateRows.filter((r) => {
       const a = (r.email ?? "").toLowerCase();
       const b = (r.full_name ?? "").toLowerCase();
       const c = (r.source ?? "").toLowerCase();
       return a.includes(q) || b.includes(q) || c.includes(q);
     });
-  }, [employeeRows, employeeSearch]);
+  }, [associateRows, associateSearch]);
 
   // ----------------------------
   // CSV readers
@@ -523,14 +523,14 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
 
   };
 
-  const searchVotersForEmployeeQuickAdd = async () => {
-    const q = normalizeLine(employeeVoterLookupQuery);
+  const searchVotersForAssociateQuickAdd = async () => {
+    const q = normalizeLine(associateVoterLookupQuery);
     if (!q) {
       toast.error("Enter an email or name to search.");
       return;
     }
 
-    setEmployeeVoterLookupLoading(true);
+    setAssociateVoterLookupLoading(true);
     try {
       const qb = (supabase
         .from("voters" as any)
@@ -556,52 +556,52 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
       if (error) {
         console.error(error);
         toast.error(error.message);
-        setEmployeeVoterLookupRows([]);
+        setAssociateVoterLookupRows([]);
         return;
       }
 
-      setEmployeeVoterLookupRows(((data as any) || []) as VoterLookupRow[]);
+      setAssociateVoterLookupRows(((data as any) || []) as VoterLookupRow[]);
       if (!data || (data as any[]).length === 0) {
         toast.message("No matching voters found.");
       }
     } finally {
-      setEmployeeVoterLookupLoading(false);
+      setAssociateVoterLookupLoading(false);
     }
   };
 
-  const quickAddVoterToEmployeeRegistry = async (v: VoterLookupRow) => {
+  const quickAddVoterToAssociateRegistry = async (v: VoterLookupRow) => {
     const email = normalizeLine(v.email || "");
     if (!email || !isValidEmail(email)) {
       toast.error("This voter record has no valid email.");
       return;
     }
 
-    setEmployeeVoterAddBusyId(v.id);
+    setAssociateVoterAddBusyId(v.id);
     try {
       const fullName = buildVoterFullName(v) || null;
       const sourceBits = ["From voter"].concat(email ? [`${email}`] : [], v.id ? [`ID: ${v.id}`] : []);
       const payload = {
         email,
         full_name: fullName,
-        source: normalizeLine(employeeSource) || sourceBits.join(" • "),
+        source: normalizeLine(associateSource) || sourceBits.join(" • "),
       };
 
-      const { error } = await supabase.from("employee_registry" as any).insert([payload] as any);
+      const { error } = await supabase.from("associate_registry" as any).insert([payload] as any);
       if (error) {
         console.error(error);
         // Friendly message for duplicates
         if ((error as any).code === "23505") {
-          toast.message("Employee already in registry.");
+          toast.message("Associate already in registry.");
         } else {
           toast.error(error.message);
         }
         return;
       }
 
-      toast.success(`Added ${email} to employee registry.`);
-      await loadEmployees();
+      toast.success(`Added ${email} to associate registry.`);
+      await loadAssociates();
     } finally {
-      setEmployeeVoterAddBusyId(null);
+      setAssociateVoterAddBusyId(null);
     }
   };
   const addOrgMembers = async () => {
@@ -739,24 +739,24 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
   };
 
   // ----------------------------
-  // Actions: Employee registry (email)
+  // Actions: Associate registry (email)
   // ----------------------------
-  const addEmployees = async () => {
-    const combined = employeeEmailPreview;
+  const addAssociates = async () => {
+    const combined = associateEmailPreview;
 
     if (combined.length === 0) {
-      toast.error("Enter at least one employee email, or add from voters.");
+      toast.error("Enter at least one associate email, or add from voters.");
       return;
     }
 
     const unique = combined;
 
     if (unique.length === 0) {
-      toast.error("No valid employee emails found.");
+      toast.error("No valid associate emails found.");
       return;
     }
 
-    setEmployeeBusy(true);
+    setAssociateBusy(true);
     try {
       // Optional: populate full_name when the email already exists in voters (for readability).
       const { data: voterData } = await supabase
@@ -777,52 +777,52 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
         return {
           email,
           full_name,
-          source: normalizeLine(employeeSource) || null,
+          source: normalizeLine(associateSource) || null,
         };
       });
 
-      const { error } = await supabase.from("employee_registry" as any).insert(payload as any);
+      const { error } = await supabase.from("associate_registry" as any).insert(payload as any);
       if (error) {
         console.error(error);
         toast.error(error.message);
         return;
       }
 
-      toast.success(`Imported ${unique.length} employee email(s).`);
-      setEmployeeManualEmails("");
-      await loadEmployees();
+      toast.success(`Imported ${unique.length} associate email(s).`);
+      setAssociateManualEmails("");
+      await loadAssociates();
     } finally {
-      setEmployeeBusy(false);
+      setAssociateBusy(false);
     }
   };
 
-  const deleteEmployee = async (rowId: string) => {
-    if (!confirm("Delete this employee entry?")) return;
+  const deleteAssociate = async (rowId: string) => {
+    if (!confirm("Delete this associate entry?")) return;
 
-    const { error } = await supabase.from("employee_registry" as any).delete().eq("id", rowId);
+    const { error } = await supabase.from("associate_registry" as any).delete().eq("id", rowId);
     if (error) {
       toast.error(error.message);
       return;
     }
-    toast.success("Deleted employee entry.");
-    await loadEmployees();
+    toast.success("Deleted associate entry.");
+    await loadAssociates();
   };
 
-  const clearEmployeeRegistry = async () => {
-    if (!confirm("Delete ALL employee registry entries?")) return;
+  const clearAssociateRegistry = async () => {
+    if (!confirm("Delete ALL associate registry entries?")) return;
 
-    setEmployeeBusy(true);
+    setAssociateBusy(true);
     try {
       // Supabase delete requires at least one filter. This condition matches all rows.
-      const { error } = await supabase.from("employee_registry" as any).delete().not("id", "is", null);
+      const { error } = await supabase.from("associate_registry" as any).delete().not("id", "is", null);
       if (error) {
         toast.error(error.message);
         return;
       }
-      toast.success("Cleared employee registry.");
-      await loadEmployees();
+      toast.success("Cleared associate registry.");
+      await loadAssociates();
     } finally {
-      setEmployeeBusy(false);
+      setAssociateBusy(false);
     }
   };
 
@@ -1054,15 +1054,15 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
     </Card>
   );
 
-  const renderEmployeePanel = () => (
+  const renderAssociatePanel = () => (
     <Card className="p-5 md:p-6 space-y-4">
       <div className="space-y-1">
         <div className="flex items-center gap-2">
-          <div className="text-lg font-semibold">Employee Registry</div>
-          <Badge variant="outline">{filteredEmployees.length}</Badge>
+          <div className="text-lg font-semibold">Associate Registry</div>
+          <Badge variant="outline">{filteredAssociates.length}</Badge>
         </div>
         <div className="text-sm text-muted-foreground">
-          Writes to <code>employee_registry</code>.
+          Writes to <code>associate_registry</code>.
         </div>
       </div>
 
@@ -1070,8 +1070,8 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
         {/* Import */}
         <div className="rounded-2xl border p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <div className="font-semibold">Import employees</div>
-            <Badge variant="outline">{employeeRows.length}</Badge>
+            <div className="font-semibold">Import associates</div>
+            <Badge variant="outline">{associateRows.length}</Badge>
           </div>
 
           <div className="text-xs text-muted-foreground">
@@ -1090,31 +1090,31 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
             <div className="flex flex-col md:flex-row gap-2">
               <Input
                 placeholder="Search voter (email or name)…"
-                value={employeeVoterLookupQuery}
-                onChange={(e) => setEmployeeVoterLookupQuery(e.target.value)}
-                disabled={employeeBusy || employeeVoterLookupLoading}
+                value={associateVoterLookupQuery}
+                onChange={(e) => setAssociateVoterLookupQuery(e.target.value)}
+                disabled={associateBusy || associateVoterLookupLoading}
               />
               <div className="flex gap-2 md:ml-auto">
                 <Button
                   variant="outline"
                   onClick={() => {
-                    setEmployeeVoterLookupQuery("");
-                    setEmployeeVoterLookupRows([]);
+                    setAssociateVoterLookupQuery("");
+                    setAssociateVoterLookupRows([]);
                   }}
-                  disabled={employeeBusy || employeeVoterLookupLoading}
+                  disabled={associateBusy || associateVoterLookupLoading}
                 >
                   Clear
                 </Button>
-                <Button onClick={searchVotersForEmployeeQuickAdd} disabled={employeeBusy || employeeVoterLookupLoading}>
-                  {employeeVoterLookupLoading ? "Searching…" : "Search"}
+                <Button onClick={searchVotersForAssociateQuickAdd} disabled={associateBusy || associateVoterLookupLoading}>
+                  {associateVoterLookupLoading ? "Searching…" : "Search"}
                 </Button>
               </div>
             </div>
 
-            {employeeVoterLookupRows.length > 0 ? (
+            {associateVoterLookupRows.length > 0 ? (
               <div className="rounded-xl border max-h-[220px] overflow-auto">
                 <div className="divide-y">
-                  {employeeVoterLookupRows.map((v) => {
+                  {associateVoterLookupRows.map((v) => {
                     const name = buildVoterFullName(v) || "—";
                     return (
                       <div key={v.id} className="p-3 flex items-start justify-between gap-3">
@@ -1125,10 +1125,10 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => quickAddVoterToEmployeeRegistry(v)}
-                          disabled={employeeBusy || employeeVoterAddBusyId === v.id}
+                          onClick={() => quickAddVoterToAssociateRegistry(v)}
+                          disabled={associateBusy || associateVoterAddBusyId === v.id}
                         >
-                          {employeeVoterAddBusyId === v.id ? "Adding…" : "Add"}
+                          {associateVoterAddBusyId === v.id ? "Adding…" : "Add"}
                         </Button>
                       </div>
                     );
@@ -1142,29 +1142,29 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
             <div className="text-xs text-muted-foreground">Manual email entry</div>
             <textarea
               className="w-full min-h-[120px] rounded-xl border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-              placeholder={"Paste employee emails (one per line)\njadelacruz@feualabang.edu.ph"}
-              value={employeeManualEmails}
-              onChange={(e) => setEmployeeManualEmails(e.target.value)}
-              disabled={employeeBusy}
+              placeholder={"Paste associate emails (one per line)\njadelacruz@feualabang.edu.ph"}
+              value={associateManualEmails}
+              onChange={(e) => setAssociateManualEmails(e.target.value)}
+              disabled={associateBusy}
             />
             <div className="text-xs text-muted-foreground">
               Tip: separate emails by new lines, commas, or semicolons.
             </div>
-            <CsvPreview items={employeeEmailPreview} />
+            <CsvPreview items={associateEmailPreview} />
           </div>
 
 <div className="flex flex-col md:flex-row gap-2 md:items-center">
             <Input
               placeholder="Source label (optional) e.g., HR list 2026"
-              value={employeeSource}
-              onChange={(e) => setEmployeeSource(e.target.value)}
-              disabled={employeeBusy}
+              value={associateSource}
+              onChange={(e) => setAssociateSource(e.target.value)}
+              disabled={associateBusy}
             />
             <div className="flex gap-2 md:ml-auto">
-              <Button variant="destructive" onClick={clearEmployeeRegistry} disabled={employeeBusy}>
+              <Button variant="destructive" onClick={clearAssociateRegistry} disabled={associateBusy}>
                 Clear
               </Button>
-              <Button onClick={addEmployees} disabled={employeeBusy}>
+              <Button onClick={addAssociates} disabled={associateBusy}>
                 Import
               </Button>
             </div>
@@ -1174,25 +1174,25 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
         {/* List */}
         <div className="rounded-2xl border p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <div className="font-semibold">Employee entries</div>
-            <Badge variant="outline">{filteredEmployees.length}</Badge>
+            <div className="font-semibold">Associate entries</div>
+            <Badge variant="outline">{filteredAssociates.length}</Badge>
           </div>
 
           <Input
             placeholder="Search email/name/source…"
-            value={employeeSearch}
-            onChange={(e) => setEmployeeSearch(e.target.value)}
-            disabled={employeeLoading}
+            value={associateSearch}
+            onChange={(e) => setAssociateSearch(e.target.value)}
+            disabled={associateLoading}
           />
 
           <div className="rounded-xl border max-h-[360px] overflow-auto">
-            {employeeLoading ? (
-              <div className="p-4 text-sm text-muted-foreground">Loading employees…</div>
-            ) : filteredEmployees.length === 0 ? (
-              <div className="p-4 text-sm text-muted-foreground">No employee entries yet.</div>
+            {associateLoading ? (
+              <div className="p-4 text-sm text-muted-foreground">Loading associates…</div>
+            ) : filteredAssociates.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground">No associate entries yet.</div>
             ) : (
               <div className="divide-y">
-                {filteredEmployees.map((r) => {
+                {filteredAssociates.map((r) => {
                   const display = r.full_name || r.email;
                   return (
                     <div key={r.id} className="p-3 flex items-start justify-between gap-3 hover:bg-muted/20">
@@ -1210,7 +1210,7 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
                         </div>
                       </div>
 
-                    <Button variant="outline" size="sm" onClick={() => deleteEmployee(r.id)} disabled={employeeBusy}>
+                    <Button variant="outline" size="sm" onClick={() => deleteAssociate(r.id)} disabled={associateBusy}>
                       Delete
                     </Button>
                   </div>
@@ -1240,7 +1240,7 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
                   Rosters & Eligibility
                 </h2>
                 <p className="text-sm text-muted-foreground">
-                  Manage org rosters and employee registry used for voter eligibility rules.
+                  Manage org rosters and associate registry used for voter eligibility rules.
                 </p>
               </div>
             </div>
@@ -1254,9 +1254,9 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
               variant="outline"
               onClick={() => {
                 if (selectedOrg) void loadOrgMembers(selectedOrg);
-                void loadEmployees();
+                void loadAssociates();
               }}
-              disabled={orgsLoading || orgMemberLoading || employeeLoading}
+              disabled={orgsLoading || orgMemberLoading || associateLoading}
               className="justify-center"
             >
               Refresh lists
@@ -1270,8 +1270,8 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
             <SegButton active={activePanel === "org"} onClick={() => setActivePanel("org")}>
               Org roster
             </SegButton>
-            <SegButton active={activePanel === "employees"} onClick={() => setActivePanel("employees")}>
-              Employee registry
+            <SegButton active={activePanel === "associates"} onClick={() => setActivePanel("associates")}>
+              Associate registry
             </SegButton>
           </div>
 
@@ -1286,14 +1286,14 @@ const [employeeBusy, setEmployeeBusy] = useState(false);
               <span className="font-medium">{selectedOrg ? orgMemberRows.length : 0}</span>
             </div>
             <div className="rounded-full border bg-muted/20 px-3 py-1">
-              <span className="text-muted-foreground">Employees:</span>{" "}
-              <span className="font-medium">{employeeRows.length}</span>
+              <span className="text-muted-foreground">Associates:</span>{" "}
+              <span className="font-medium">{associateRows.length}</span>
             </div>
           </div>
         </div>
       </Card>
 
-      {activePanel === "org" ? renderOrgPanel() : renderEmployeePanel()}
+      {activePanel === "org" ? renderOrgPanel() : renderAssociatePanel()}
     </div>
   );
 }

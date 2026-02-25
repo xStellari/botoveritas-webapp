@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
-import type { ElectionFormState, OrganizationRow } from "./types";
+import type { ElectionFormState, OrganizationRow, VoterAudience } from "./types";
 
 type Props = {
   audienceEditable: boolean;
@@ -87,7 +87,7 @@ export function AudienceEditor(props: Props) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="students">Students</SelectItem>
-                  <SelectItem value="employees">Employees</SelectItem>
+                  <SelectItem value="associates">Associates</SelectItem>
                   <SelectItem value="mixed">Mixed</SelectItem>
                 </SelectContent>
               </Select>

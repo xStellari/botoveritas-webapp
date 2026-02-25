@@ -458,7 +458,7 @@ export default function Register() {
               <div className="grid gap-6 md:grid-cols-[2fr_0.5fr_2fr_1.2fr]">
                 {/* First Name */}
                 <div>
-                  <Label className="font-semibold">First Name</Label>
+                  <Label className="font-semibold">Given Name</Label>
                   <Input
                     value={firstName}
                     onChange={(e) => setFirstName(formatName(e.target.value))}
@@ -523,7 +523,7 @@ export default function Register() {
                   <option>2nd Year</option>
                   <option>3rd Year</option>
                   <option>4th Year</option>
-                  <option>Others</option>
+                  <option>Associate</option>
                 </select>
               </div>
 

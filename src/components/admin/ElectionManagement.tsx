@@ -315,7 +315,7 @@ export default function ElectionManagement() {
     endLocal: "",
     is_paused: false,
     is_active: true,
-    voter_audience: "students" as "students" | "employees" | "mixed",
+    voter_audience: "students" as "students" | "associates" | "mixed",
     allow_all_orgs: true,
     eligible_orgs_selected: [] as string[],
     custom_org_input: "",
@@ -1088,7 +1088,7 @@ export default function ElectionManagement() {
   const audienceBadge = (e: ElectionRow) => {
     const v = (e.voter_audience || "students").toString();
     const label =
-      v === "employees" ? "Employees" : v === "mixed" ? "Mixed" : "Students";
+      v === "associates" ? "Associates" : v === "mixed" ? "Mixed" : "Students";
     return (
       <Badge variant="outline" className="text-xs">
         {label}

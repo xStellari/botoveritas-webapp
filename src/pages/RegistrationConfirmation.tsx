@@ -29,7 +29,7 @@ type ConfirmationState = {
   suffix?: string;
   orgAffiliations?: string[];
   email?: string;
-  voterAudience?: "students" | "employees";
+  voterAudience?: "students" | "associates";
 };
 
 const ORG_REQUEST_OPTIONS = ["ICpEP", "HonSoc"] as const;
@@ -65,7 +65,7 @@ const RegistrationConfirmation = () => {
   const [elections, setElections] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [voterAudience, setVoterAudience] = useState<"students" | "employees">(
+  const [voterAudience, setVoterAudience] = useState<"students" | "associates">(
     voterAudienceFromState ?? "students"
   );
 
@@ -84,12 +84,12 @@ const RegistrationConfirmation = () => {
     .join(" ");
 
   const orgSet = useMemo(() => {
-    if (voterAudience === "employees") return new Set<string>();
+    if (voterAudience === "associates") return new Set<string>();
     return new Set((orgAffiliations || []).filter(Boolean));
   }, [orgAffiliations, voterAudience]);
 
   const detectedOrgs = useMemo(() => {
-    if (voterAudience === "employees") return [] as string[];
+    if (voterAudience === "associates") return [] as string[];
     const uniq = Array.from(new Set((orgAffiliations || []).filter(Boolean)));
     uniq.sort((a, b) => {
       if (a === "SCC") return -1;
@@ -100,7 +100,7 @@ const RegistrationConfirmation = () => {
   }, [orgAffiliations, voterAudience]);
 
   const missingRequestableOrgs = useMemo(() => {
-    if (voterAudience === "employees") return [] as (typeof ORG_REQUEST_OPTIONS)[number][];
+    if (voterAudience === "associates") return [] as (typeof ORG_REQUEST_OPTIONS)[number][];
     // SCC is open to all; only request ICpEP/HonSoc if missing
     return ORG_REQUEST_OPTIONS.filter((o) => !orgSet.has(o));
   }, [orgSet, voterAudience]);
@@ -135,8 +135,8 @@ const RegistrationConfirmation = () => {
         console.warn("[RegistrationConfirmation] Failed to resolve voter_audience:", error.message);
         return;
       }
-      const a = (data?.voter_audience as "students" | "employees" | undefined) ?? undefined;
-      if (a && (a === "students" || a === "employees")) setVoterAudience(a);
+      const a = (data?.voter_audience as "students" | "associates" | undefined) ?? undefined;
+      if (a && (a === "students" || a === "associates")) setVoterAudience(a);
     };
     resolveAudience();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -165,7 +165,7 @@ const RegistrationConfirmation = () => {
       const all = data || [];
 
       const visible = all.filter((e) => {
-        // Audience gate first (employees should only see employee elections, students only student elections)
+        // Audience gate first (associates should only see associate elections, students only student elections)
         if (e.voter_audience && e.voter_audience !== voterAudience) return false;
 
         // Time gate: show upcoming + ongoing only; hide anything finished (defense-in-depth)
@@ -175,8 +175,8 @@ const RegistrationConfirmation = () => {
         const isUpcoming = start > now;
         const isOngoing = start <= now && end >= now;
         if (!isUpcoming && !isOngoing) return false;
-        if (voterAudience === "employees") {
-          // Employees do not use org-based eligibility.
+        if (voterAudience === "associates") {
+          // Associates do not use org-based eligibility.
           return true;
         }
 
@@ -296,13 +296,13 @@ const RegistrationConfirmation = () => {
           <span
             className={[
               "inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold border",
-              voterAudience === "employees"
+              voterAudience === "associates"
                 ? "bg-blue-500/10 border-blue-500/20 text-blue-700"
                 : "bg-emerald-500/10 border-emerald-500/20 text-emerald-700",
             ].join(" ")}
           >
             <span className="h-2 w-2 rounded-full bg-current opacity-70" />
-            Registered as: {voterAudience === "employees" ? "Employee" : "Student"}
+            Registered as: {voterAudience === "associates" ? "Associate" : "Student"}
           </span>
         </div>
 
@@ -346,13 +346,13 @@ const RegistrationConfirmation = () => {
           </div>
         </div>
 
-        {voterAudience === "employees" ? (
+        {voterAudience === "associates" ? (
           <div className="mb-8 rounded-2xl border border-border bg-muted/10 p-6 text-left">
             <div className="text-sm text-muted-foreground">
               Organization memberships apply to student elections only.
             </div>
             <div className="mt-2 text-sm text-muted-foreground">
-              Employee elections will appear on the kiosk when available.
+              Associate elections will appear on the kiosk when available.
             </div>
           </div>
         ) : (

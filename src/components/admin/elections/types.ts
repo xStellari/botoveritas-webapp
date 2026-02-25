@@ -1,4 +1,4 @@
-export type VoterAudience = "students" | "employees" | "mixed";
+export type VoterAudience = "students" | "associates" | "mixed";
 
 export type ElectionFormState = {
   title: string;

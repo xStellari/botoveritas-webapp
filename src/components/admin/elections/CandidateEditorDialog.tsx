@@ -211,7 +211,7 @@ export function CandidateEditorDialog(props: Props) {
               <div className="grid gap-4">
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="grid gap-2">
-                    <Label>First name</Label>
+                    <Label>Given name</Label>
                     <Input
                       value={cForm.first_name}
                       onChange={(e) =>
