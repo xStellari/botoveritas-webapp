@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { CalendarDays, Flame, ShieldCheck, UserPlus, Vote } from "lucide-react";
-
 import feuLogo from "@/assets/feu-logo.png";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +34,7 @@ const FINISHED_LIMIT = 5;
 
 const Index = () => {
   const navigate = useNavigate();
+
   const formatTime = (value: string) => {
     const dt = new Date(value);
     return new Intl.DateTimeFormat("en-US", {
@@ -228,7 +228,6 @@ const Index = () => {
         finished.push(e); // nowMs >= endMs
       }
     }
-
 
     // Show most recent finished elections first (so the cap displays the latest results).
     finished.sort((a, b) => {
@@ -630,7 +629,6 @@ const Index = () => {
           </section>
         </div>
       </main>
-
       <footer className="py-6 border-t bg-white/70 backdrop-blur text-center text-xs text-muted-foreground shrink-0">
         © {new Date().getFullYear()} BotoVeritas — FEU Alabang Student Elections
       </footer>

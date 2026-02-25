@@ -4,7 +4,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
   AlertCircle,
@@ -17,6 +16,65 @@ import {
 } from "lucide-react";
 import feuLogo from "@/assets/feu-logo.png";
 import type { CandidateSelection, VoterData } from "@/pages/VotingKiosk";
+
+const normalizePosition = (raw: string) => {
+  const s = (raw ?? "").trim().replace(/\s+/g, " ");
+  const lower = s.toLowerCase();
+
+  // Normalize VP variants (common patterns)
+  if (lower.includes("vp") || lower.includes("vice president")) {
+    if (lower.includes("internal")) return "Vice President - Internal";
+    if (lower.includes("external")) return "Vice President - External";
+    return "Vice President";
+  }
+
+  // Normalize PRO variants
+  if (lower === "pro" || lower.includes("public relations")) {
+    return "Public Relations Officer";
+  }
+
+  if (lower === "president") return "President";
+  if (lower === "secretary") return "Secretary";
+  if (lower === "treasurer") return "Treasurer";
+  if (lower === "auditor") return "Auditor";
+
+  return s;
+};
+
+const positionPriority = (normalized: string) => {
+  // Heuristic ordering (works even without electionData)
+  switch (normalized) {
+    case "President":
+      return 10;
+    case "Vice President - Internal":
+      return 20;
+    case "Vice President - External":
+      return 21;
+    case "Vice President":
+      return 22;
+    case "Secretary":
+      return 30;
+    case "Assistant Secretary":
+      return 31;
+    case "Treasurer":
+      return 40;
+    case "Auditor":
+      return 50;
+    case "Public Relations Officer":
+      return 60;
+    default:
+      return 999;
+  }
+};
+
+const compareSelectionsByPosition = (a: CandidateSelection, b: CandidateSelection) => {
+  const an = normalizePosition(a.position);
+  const bn = normalizePosition(b.position);
+  const ap = positionPriority(an);
+  const bp = positionPriority(bn);
+  if (ap !== bp) return ap - bp;
+  return a.position.localeCompare(b.position, undefined, { sensitivity: "base" });
+};
 
 interface ReviewScreenProps {
   voterData: VoterData;
@@ -83,6 +141,12 @@ const ReviewScreen = ({
         {}
       )
     : null;
+
+  const orderedSelections = useMemo(() => {
+    // Keep review display stable and deterministic.
+    // (BallotScreen also emits selections in ballot order, but this is a second safety net.)
+    return [...selections].sort(compareSelectionsByPosition);
+  }, [selections]);
 
   // ---------------------------------------------------------
   // Collect candidate IDs and fetch photo_url for review display
@@ -158,8 +222,8 @@ const ReviewScreen = ({
   };
 
   return (
-    <div className="min-h-screen p-6 flex items-center justify-center">
-      <div className="w-full max-w-4xl">
+    <div className="h-[100dvh] overflow-hidden p-4 flex items-center justify-center">
+      <div className="w-full max-w-4xl h-full flex flex-col min-h-0">
         {/* ------------------------------------ */}
         {/* HEADER WITH TIMER                    */}
         {/* ------------------------------------ */}
@@ -203,104 +267,111 @@ const ReviewScreen = ({
           </div>
         </Card>
 
-        {/* ------------------------------------ */}
-        {/* WARNING CARD                         */}
-        {/* ------------------------------------ */}
-        <Card className="mb-6 border-2 border-warning/50 bg-warning/5">
-          <div className="p-6 flex items-start gap-4">
-            <AlertCircle className="h-6 w-6 text-warning flex-shrink-0 mt-0.5" />
-            <div>
-              <h3 className="font-semibold text-lg mb-2">Important Notice</h3>
-              <p className="text-sm text-muted-foreground">
-                Once you confirm, your selections for this election <strong>cannot be changed</strong>.
-                We will generate a blockchain participation receipt (NFT) during <strong>final submission</strong> — one receipt per election you vote in.
-              </p>
-            </div>
-          </div>
-        </Card>
-
-        {/* ------------------------------------ */}
-        {/* VOTER INFORMATION                     */}
-        {/* ------------------------------------ */}
-        <Card className="mb-6 border-2 border-primary/10 bg-card/95 backdrop-blur-sm">
-          <div className="p-6">
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Shield className="h-5 w-5 text-primary" />
-              Voter Information
-            </h2>
-
-            <div className="grid grid-cols-2 gap-4 text-sm">
+        {/*
+          NOTE: We keep the browser/page from scrolling (overflow-hidden on the outer shell),
+          but we still need an internal scroll region so users can reach the bottom "Confirm" button.
+          This wrapper is the ONLY scroll container on the review screen.
+        */}
+        <div className="flex-1 min-h-0 overflow-y-auto pr-2">
+          {/* ------------------------------------ */}
+          {/* WARNING CARD                         */}
+          {/* ------------------------------------ */}
+          <Card className="mb-6 border-2 border-warning/50 bg-warning/5">
+            <div className="p-6 flex items-start gap-4">
+              <AlertCircle className="h-6 w-6 text-warning flex-shrink-0 mt-0.5" />
               <div>
-                <p className="text-muted-foreground">Name</p>
-                <p className="font-medium">
-                  {voterData.first_name}{" "}
-                  {voterData.middle_name ? voterData.middle_name + ". " : ""}
-                  {voterData.last_name}
-                  {voterData.suffix}
+                <h3 className="font-semibold text-lg mb-2">Important Notice</h3>
+                <p className="text-sm text-muted-foreground">
+                  Once you confirm, your selections for this election <strong>cannot be changed</strong>.
+                  We will generate a blockchain participation receipt (NFT) during <strong>final submission</strong> — one receipt per election you vote in.
                 </p>
               </div>
+            </div>
+          </Card>
 
-              <div>
-                <p className="text-muted-foreground">Email</p>
-                <p className="font-medium">{voterData.email}</p>
-              </div>
+          {/* ------------------------------------ */}
+          {/* VOTER INFORMATION                     */}
+          {/* ------------------------------------ */}
+          <Card className="mb-6 border-2 border-primary/10 bg-card/95 backdrop-blur-sm">
+            <div className="p-6">
+              <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                <Shield className="h-5 w-5 text-primary" />
+                Voter Information
+              </h2>
 
-              <div>
-                <p className="text-muted-foreground">Year Level</p>
-                <p className="font-medium">{voterData.year_level}</p>
-              </div>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Name</p>
+                  <p className="font-medium">
+                    {voterData.first_name}{" "}
+                    {voterData.middle_name ? voterData.middle_name + ". " : ""}
+                    {voterData.last_name}
+                    {voterData.suffix}
+                  </p>
+                </div>
 
-              <div>
-                <p className="text-muted-foreground">Eligible Elections</p>
-                <div className="mt-1 space-y-1 text-sm">
-                  {activeElections.map((election) => {
-                    const voted = completedElections.includes(election.id);
+                <div>
+                  <p className="text-muted-foreground">Email</p>
+                  <p className="font-medium">{voterData.email}</p>
+                </div>
 
-                    return (
-                      <div key={election.id} className="flex items-center gap-2">
-                        <span className="font-medium">{election.title}</span>
+                <div>
+                  <p className="text-muted-foreground">Year Level</p>
+                  <p className="font-medium">{voterData.year_level}</p>
+                </div>
 
-                        {voted ? (
-                          <Badge
-                            variant="outline"
-                            className="bg-success/10 text-success text-xs px-2 py-0.5"
-                          >
-                            Voted ✓
-                          </Badge>
-                        ) : (
-                          <Badge
-                            variant="outline"
-                            className="bg-warning/10 text-warning text=xs px-2 py-0.5"
-                          >
-                            Pending
-                          </Badge>
-                        )}
-                      </div>
-                    );
-                  })}
+                <div>
+                  <p className="text-muted-foreground">Eligible Elections</p>
+                  <div className="mt-1 space-y-1 text-sm">
+                    {activeElections.map((election) => {
+                      const voted = completedElections.includes(election.id);
+
+                      return (
+                        <div key={election.id} className="flex items-center gap-2">
+                          <span className="font-medium">{election.title}</span>
+
+                          {voted ? (
+                            <Badge
+                              variant="outline"
+                              className="bg-success/10 text-success text-xs px-2 py-0.5"
+                            >
+                              Voted ✓
+                            </Badge>
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className="bg-warning/10 text-warning text=xs px-2 py-0.5"
+                            >
+                              Pending
+                            </Badge>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        </Card>
+          </Card>
 
-        {/* ------------------------------------ */}
-        {/* SELECTIONS DISPLAY (CARD LAYOUT)      */}
-        {/* ------------------------------------ */}
-        <Card className="mb-6 border-2 border-primary/10 bg-card/95 backdrop-blur-sm">
-          <div className="p-6">
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <CheckCircle2 className="h-5 w-5 text-primary" />
-              {showAll ? "Your Completed Ballots" : "Selections"}
-            </h2>
+          {/* ------------------------------------ */}
+          {/* SELECTIONS DISPLAY (CARD LAYOUT)      */}
+          {/* ------------------------------------ */}
+          <Card className="mb-6 border-2 border-primary/10 bg-card/95 backdrop-blur-sm">
+            <div className="p-6">
+              <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                <CheckCircle2 className="h-5 w-5 text-primary" />
+                {showAll ? "Your Completed Ballots" : "Selections"}
+              </h2>
 
-            <ScrollArea className="h-[60vh] pr-4 overflow-y-auto">
-              <div className="space-y-8">
+              <div className="space-y-8 pr-4">
                 {/* ------------------------------------------------ */}
                 {/* MULTI-ELECTION REVIEW (FINAL REVIEW MODE)       */}
                 {/* ------------------------------------------------ */}
                 {showAll && groupedByElection
-                  ? Object.entries(groupedByElection).map(([electionId, group]) => (
+                  ? Object.entries(groupedByElection).map(([electionId, group]) => {
+                      const sortedItems = [...group.items].sort(compareSelectionsByPosition);
+                      return (
                       <Card
                         key={electionId}
                         className="border border-primary/30 bg-primary/5 rounded-xl shadow-sm px-6 py-5"
@@ -311,7 +382,7 @@ const ReviewScreen = ({
                         </h3>
 
                         <div className="space-y-5">
-                          {group.items.map((sel, index) => {
+                          {sortedItems.map((sel, index) => {
                             const candidateId = (sel as any).candidateId as string | null | undefined;
 
                             return (
@@ -345,8 +416,9 @@ const ReviewScreen = ({
                           })}
                         </div>
                       </Card>
-                    ))
-                  : selections.map((sel, index) => {
+                    );
+                    })
+                  : orderedSelections.map((sel, index) => {
                       const candidateId = (sel as any).candidateId as string | null | undefined;
 
                       return (
@@ -373,16 +445,16 @@ const ReviewScreen = ({
                             <CheckCircle2 className="h-6 w-6 text-success" />
                           </div>
 
-                          {index < selections.length - 1 && (
+                          {index < orderedSelections.length - 1 && (
                             <Separator className="my-4" />
                           )}
                         </div>
                       );
                     })}
               </div>
-            </ScrollArea>
-          </div>
-        </Card>
+            </div>
+          </Card>
+        </div>
 
         {/* ------------------------------------ */}
         {/* ACTION BUTTONS                       */}

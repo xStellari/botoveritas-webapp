@@ -16,8 +16,8 @@ export default function ErrorPage() {
   type ErrorState = {
     title?: string;
     message?: string;
-    voterAudience?: "students" | "employees";
-    voter_audience?: "students" | "employees";
+    voterAudience?: "students" | "associates";
+    voter_audience?: "students" | "associates";
     reason?: "NO_ELIGIBLE_ELECTIONS" | "NO_ACTIVE_ELECTIONS" | string;
     recoverTo?: string;
     countdownSeconds?: number;
@@ -47,10 +47,10 @@ export default function ErrorPage() {
     }
 
     if (isNoEligibleElectionsMessage) {
-      if (audience === "employees") {
+      if (audience === "associates") {
         return (
           "This kiosk is primarily used for student elections.\n\n" +
-          "There are currently no active elections for employees.\n\n" +
+          "There are currently no active elections for associates.\n\n" +
           "If you believe this is incorrect, please contact an administrator."
         );
       }
