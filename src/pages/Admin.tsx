@@ -20,6 +20,7 @@ import ElectionManagement from "@/components/admin/ElectionManagement";
 import ZKVerification from "@/components/admin/ZKVerification";
 import OrgMembershipRequests from "@/components/admin/OrgMembershipRequests";
 import RostersManagement from "@/components/admin/RostersManagement";
+import KioskProvisioning from "@/components/admin/KioskProvisioning";
 
 const APP_SETTING_KEYS = {
   registrationEnabled: "registration_enabled",
@@ -466,7 +467,7 @@ export default function Admin() {
 
       <main className="max-w-7xl mx-auto p-6 animate-fade-in-up">
         <Tabs defaultValue="analytics" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-6">
+          <TabsList className="grid w-full grid-cols-7">
             <TabsTrigger value="analytics">
               <BarChart className="h-4 w-4 mr-2" />
               Operations
@@ -490,6 +491,11 @@ export default function Admin() {
             <TabsTrigger value="rosters">
               <ListPlus className="h-4 w-4 mr-2" />
               Rosters
+            </TabsTrigger>
+
+
+            <TabsTrigger value="kiosks">
+              Kiosks
             </TabsTrigger>
 
             <TabsTrigger value="zk">
@@ -713,6 +719,11 @@ export default function Admin() {
           <TabsContent value="rosters">
             <RostersManagement />
           </TabsContent>
+
+          <TabsContent value="kiosks">
+            <KioskProvisioning />
+          </TabsContent>
+
 
           <TabsContent value="zk">
             <ZKVerification />

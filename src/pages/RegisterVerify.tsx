@@ -45,53 +45,53 @@ export default function RegisterVerify() {
   const [registrationEnabled, setRegistrationEnabled] = useState<boolean>(false);
   const [registrationLoading, setRegistrationLoading] = useState<boolean>(true);
 
-  // Determine voter audience from authoritative registry (employees override).
+  // Determine voter audience from authoritative registry (associates override).
   // This keeps election eligibility deterministic post-RFID.
-  // Determine voter audience from authoritative registry (employees override).
+  // Determine voter audience from authoritative registry (associates override).
 // Uses a SECURITY DEFINER RPC first so it works even before auth session exists.
-const resolveVoterAudience = async (email: string): Promise<"students" | "employees"> => {
+const resolveVoterAudience = async (email: string): Promise<"students" | "associates"> => {
   const normalized = (email || "").trim().toLowerCase();
   if (!normalized) return "students";
 
-  // 1) Preferred: RPC that returns a boolean without exposing employee list.
+  // 1) Preferred: RPC that returns a boolean without exposing associate list.
   try {
-    const { data, error } = await (supabase as any).rpc("is_employee_email", { p_email: normalized });
+    const { data, error } = await (supabase as any).rpc("is_associate_email", { p_email: normalized });
     if (!error && typeof data === "boolean") {
-      return data ? "employees" : "students";
+      return data ? "associates" : "students";
     }
     if (error) {
-      console.warn("resolveVoterAudience: is_employee_email RPC failed:", error);
+      console.warn("resolveVoterAudience: is_associate_email RPC failed:", error);
     }
   } catch (e) {
-    console.warn("resolveVoterAudience: is_employee_email RPC exception:", e);
+    console.warn("resolveVoterAudience: is_associate_email RPC exception:", e);
   }
 
   // 2) Fallback: direct table lookup (may be blocked depending on RLS/policies).
   try {
     const { data, error } = await supabase
-      .from("employee_registry" as any)
+      .from("associate_registry" as any)
       .select("id")
       .ilike("email_norm", normalized)
       .limit(1);
 
     if (error) {
-      console.warn("resolveVoterAudience: employee_registry lookup failed:", error);
+      console.warn("resolveVoterAudience: associate_registry lookup failed:", error);
       return "students";
     }
-    if (data && data.length > 0) return "employees";
+    if (data && data.length > 0) return "associates";
 
     const { data: data2, error: error2 } = await supabase
-      .from("employee_registry" as any)
+      .from("associate_registry" as any)
       .select("id")
       .ilike("email", normalized)
       .limit(1);
 
     if (error2) {
-      console.warn("resolveVoterAudience: employee_registry fallback lookup failed:", error2);
+      console.warn("resolveVoterAudience: associate_registry fallback lookup failed:", error2);
       return "students";
     }
 
-    return data2 && data2.length > 0 ? "employees" : "students";
+    return data2 && data2.length > 0 ? "associates" : "students";
   } catch (e) {
     console.warn("resolveVoterAudience: exception:", e);
     return "students";
@@ -291,10 +291,10 @@ const resolveVoterAudience = async (email: string): Promise<"students" | "employ
       // 3b) Refresh and persist system-assigned org affiliations (RLS-safe)
       // This RPC updates voters.org_affiliations server-side and returns the computed array.
       // If email confirmation is enabled and no session exists, we fall back to SCC-only display.
-      // Students: compute orgs. Employees: org affiliations are not applicable.
-      let finalOrgs: string[] = voterAudience === "employees" ? [] : ["SCC"]; // SCC is open to all students (safe fallback)
+      // Students: compute orgs. Associates: org affiliations are not applicable.
+      let finalOrgs: string[] = voterAudience === "associates" ? [] : ["SCC"]; // SCC is open to all students (safe fallback)
       try {
-        if (voterAudience !== "employees") {
+        if (voterAudience !== "associates") {
           const { data: refreshed, error: refreshErr } = await supabase.rpc(
             "refresh_voter_org_affiliations" as any,
             { p_voter_id: user.id } as any
@@ -380,8 +380,8 @@ console.log("signupData.session exists?", Boolean(signupData.session));
             animation: gradientShift 12s ease-in-out infinite;
           }
 
-          @keyframes progressFillStep2 {
-            0% { width: 50%; }
+          @keyframes progressFillStep3 {
+            0% { width: 66.6667%; }
             100% { width: 100%; }
           }
 
@@ -403,7 +403,7 @@ console.log("signupData.session exists?", Boolean(signupData.session));
         <Card className="shadow-xl rounded-2xl border border-primary/20 bg-white/90 backdrop-blur">
           <CardHeader className="pb-6">
             <CardTitle className="text-3xl font-extrabold text-center bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-              Step 2: Verify Your Identity
+              Step 3 of 3 — Verify Your Identity
             </CardTitle>
             <CardDescription className="text-center">
               Scan your RFID and capture your Face ID to finish registration.
@@ -413,7 +413,7 @@ console.log("signupData.session exists?", Boolean(signupData.session));
             <div className="mt-6 h-2 w-full bg-muted rounded-full overflow-hidden">
               <div
                 className="h-full bg-gradient-to-r from-primary to-secondary rounded-full"
-                style={{ animation: "progressFillStep2 1.4s ease-out forwards" }}
+                style={{ animation: "progressFillStep3 1.4s ease-out forwards" }}
               />
             </div>
 

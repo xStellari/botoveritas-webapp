@@ -372,12 +372,15 @@ const BallotScreenWithAbstain = ({
       return;
     }
 
-    const candidateSelections = Object.entries(selections).map(([positionId, candidateId]) => {
-      const position = positions.find((p) => p.id === positionId);
+    // IMPORTANT: Build the final selection list in the SAME ORDER as the ballot positions
+    // (not in the order the voter happened to click). This prevents ReviewScreen from
+    // showing positions in a "selection order" sequence.
+    const candidateSelections = positions.map((position) => {
+      const candidateId = selections[position.id];
 
       if (candidateId === "ABSTAIN") {
         return {
-          position: position?.title,
+          position: position.title,
           candidateId: "ABSTAIN",
           candidateName: "ABSTAIN",
           slate: "N/A",
@@ -386,10 +389,10 @@ const BallotScreenWithAbstain = ({
         };
       }
 
-      const candidate = position?.candidates.find((c) => c.id === candidateId);
+      const candidate = position.candidates.find((c) => c.id === candidateId);
 
       return {
-        position: position?.title,
+        position: position.title,
         candidateId: candidate?.id,
         candidateName: candidate ? getCandidateDisplayName(candidate) : "",
         slate: candidate?.slate || "N/A",
@@ -410,8 +413,9 @@ const BallotScreenWithAbstain = ({
   }
 
   return (
-    <div className="min-h-screen p-6">
-      <div className="max-w-6xl mx-auto">
+    // Kiosk-friendly: prevent the *page* from scrolling; only the ballot list should scroll.
+    <div className="h-[100dvh] overflow-hidden p-4">
+      <div className="max-w-6xl mx-auto h-full flex flex-col">
         {/* Header */}
         <Card className="mb-6 border-2 border-primary/20 bg-card/95 backdrop-blur-sm">
           <div className="p-6 flex items-center justify-between flex-wrap gap-4">
@@ -477,8 +481,9 @@ const BallotScreenWithAbstain = ({
         </Card>
 
         {/* Ballot Positions */}
-        <ScrollArea className="h-[calc(100vh-280px)]">
-          <div className="space-y-6 pr-4">
+        <div className="flex-1 min-h-0">
+          <ScrollArea className="h-full">
+            <div className="space-y-6 pr-4">
             {positions.map((position) => (
               <Card
                 key={position.id}
@@ -586,8 +591,9 @@ const BallotScreenWithAbstain = ({
                 </div>
               </Card>
             ))}
-          </div>
-        </ScrollArea>
+            </div>
+          </ScrollArea>
+        </div>
 
         {/* Submit Button */}
         <Card className="mt-6 border-2 border-primary/20 bg-card/95 backdrop-blur-sm">

@@ -129,3 +129,10 @@ All colors MUST be HSL.
     scrollbar-width: none;
   }
 }
+
+/* Kiosk UX: disable pinch zoom on touchscreen while keeping panning/scrolling */
+html, body, #root {
+  touch-action: pan-x pan-y;
+  overscroll-behavior: none;
+}
+

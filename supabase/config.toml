@@ -1,1 +1,16 @@
 project_id = "begfxccqfdvalkbqjrjk"
+
+[functions.kiosk-get-voter-by-rfid]
+verify_jwt = false
+
+[functions.kiosk-session]
+verify_jwt = false
+
+[functions.kiosk-submit-votes]
+verify_jwt = false
+
+[functions.kiosk-provision-exchange]
+verify_jwt = false
+
+[functions.kiosk-heartbeat]
+verify_jwt = false
