@@ -482,7 +482,7 @@ const RegistrationConfirmation = () => {
           ) : (
             <div className="rounded-xl border border-border bg-muted/10 p-5">
               <p className="text-sm text-muted-foreground">
-                No memberships were detected. Please contact the admin desk for assistance.
+                No memberships were detected. Please contact an election staff for assistance.
               </p>
             </div>
           )}
