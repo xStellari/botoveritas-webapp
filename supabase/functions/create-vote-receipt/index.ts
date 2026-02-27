@@ -10,7 +10,7 @@ type Body = {
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-kiosk-secret",
+    "authorization, x-client-info, apikey, content-type, x-kiosk-id, x-kiosk-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -35,15 +35,21 @@ function requireEnvAny(...names: string[]) {
   return v;
 }
 
-function requireKioskSecret(req: Request) {
-  // Prefer your existing name KIOSK_SECRET, but allow the old one as fallback
-  const expected = requireEnvAny("KIOSK_SECRET", "KIOSK_RECEIPT_SECRET");
-  const got = req.headers.get("x-kiosk-secret") || "";
-  if (!got || got !== expected) {
-    return json(401, { error: "Unauthorized" });
-  }
-  return null;
+function getKioskHeaders(req: Request) {
+  const kioskId = (req.headers.get("x-kiosk-id") || "").trim();
+  const kioskSecret = (req.headers.get("x-kiosk-secret") || "").trim();
+  return { kioskId, kioskSecret };
 }
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+
 
 function isUuid(v: string) {
   return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
@@ -126,15 +132,34 @@ serve(async (req: Request) => {
       return json(405, { error: "Method not allowed" });
     }
 
-    const authErr = requireKioskSecret(req);
-    if (authErr) return authErr;
-
     const supabaseUrl = requireEnvAny("SUPABASE_URL");
     const serviceRole = requireEnvAny("SERVICE_ROLE_KEY", "SUPABASE_SERVICE_ROLE_KEY");
 
     const supabase = createClient(supabaseUrl, serviceRole, {
       auth: { persistSession: false },
     });
+
+    // Validate kiosk identity using kiosk_devices.
+    // kiosk_devices stores only secret hashes (secret_sha256), not the plaintext secret.
+    const { kioskId, kioskSecret } = getKioskHeaders(req);
+    if (!kioskId || !kioskSecret) {
+      return json(401, { error: "Unauthorized" });
+    }
+
+    const secretSha = await sha256Hex(kioskSecret);
+
+    const { data: kioskRow, error: kioskErr } = await supabase
+      .from("kiosk_devices")
+      .select("kiosk_id")
+      .eq("kiosk_id", kioskId)
+      .eq("secret_sha256", secretSha)
+      .eq("is_approved", true)
+      .is("revoked_at", null)
+      .maybeSingle();
+
+    if (kioskErr || !kioskRow) {
+      return json(401, { error: "Unauthorized" });
+    }
 
     const body = (await req.json().catch(() => null)) as Partial<Body> | null;
     const voterId = typeof body?.voterId === "string" ? body.voterId : "";

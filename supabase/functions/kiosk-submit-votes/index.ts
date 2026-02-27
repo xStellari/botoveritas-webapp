@@ -134,6 +134,25 @@ async function handler(req: Request): Promise<Response> {
     return json(500, { ok: false, error: "Failed to persist votes" });
   }
 
+  // 4) Mark voter as having voted (authoritative gating for ElectionSelection + eligibility RPCs)
+  // NOTE: voter_election_status.voter_id is a FK to public.voters(id), so we MUST use the voters UUID.
+  const votedAt = new Date().toISOString();
+  const { error: statusErr } = await service
+    .from("voter_election_status")
+    .upsert(
+      {
+        voter_id: voterId,
+        election_id: electionId,
+        has_voted: true,
+        voted_at: votedAt,
+      } as any,
+      { onConflict: "voter_id,election_id" }
+    );
+
+  if (statusErr) {
+    return json(500, { ok: false, error: "Failed to mark voter as voted" });
+  }
+
   return json(200, { ok: true, rotate_secret: rotateSecret ?? null });
 }
 

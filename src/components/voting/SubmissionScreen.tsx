@@ -158,6 +158,37 @@ const SubmissionScreen = ({
   // Main pipeline (real on-chain mint)
   // -------------------------------
   useEffect(() => {
+    const getKioskHeaders = (): Record<string, string> | undefined => {
+      // Prefer provisioned kiosk identity in localStorage; fall back to env for local dev.
+      // NOTE: Some parts of the codebase previously used botoveritas_* keys.
+      const readLS = (key: string) => {
+        try {
+          return (localStorage.getItem(key) || "").trim();
+        } catch {
+          return "";
+        }
+      };
+
+      const kioskId =
+        readLS("kiosk_id") ||
+        readLS("botoveritas_kiosk_id") ||
+        (import.meta.env.VITE_KIOSK_ID as string | undefined)?.trim() ||
+        "";
+
+      const kioskSecret =
+        readLS("kiosk_secret") ||
+        readLS("botoveritas_kiosk_secret") ||
+        (import.meta.env.VITE_KIOSK_SECRET as string | undefined)?.trim() ||
+        "";
+
+      if (!kioskSecret) return undefined;
+
+      // Always send secret; send kiosk id when available.
+      return kioskId
+        ? { "x-kiosk-secret": kioskSecret, "x-kiosk-id": kioskId }
+        : { "x-kiosk-secret": kioskSecret };
+    };
+
     const run = async () => {
       if (isComplete) return;
       if (startedRef.current) return;
@@ -177,8 +208,8 @@ const SubmissionScreen = ({
         await sleep(700);
 
         setCurrentStep("minting");
+        const kioskHeaders = getKioskHeaders();
 
-        const kioskSecret = import.meta.env.VITE_KIOSK_SECRET as string | undefined;
 
         if (!uniqueElections.length) {
           throw new Error("No electionId found in selections. Cannot mint receipt.");
@@ -191,7 +222,7 @@ const SubmissionScreen = ({
 
           const { data, error } = await supabase.functions.invoke("create-vote-receipt", {
             body: requestBody,
-            headers: kioskSecret ? { "x-kiosk-secret": kioskSecret } : undefined,
+            headers: kioskHeaders,
           });
 
           if (error) {
