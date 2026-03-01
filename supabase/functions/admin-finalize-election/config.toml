@@ -1,0 +1,5 @@
+# supabase/functions/admin-finalize-election/config.toml
+# Admin-only: generate election manifest, then finalize (lock) the election.
+# Requires Authorization header (authenticated admin) and checks public.user_roles.role = 'admin'.
+
+verify_jwt = true

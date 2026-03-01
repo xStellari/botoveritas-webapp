@@ -5,6 +5,8 @@ import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
 
+import AdminLogs from "@/components/admin/AdminLogs";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,12 +14,13 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus, RotateCcw, UserPlus, Activity } from "lucide-react";
+import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus, RotateCcw, UserPlus, Activity, ScrollText } from "lucide-react";
 
 import ControlPanel from "@/components/admin/ControlPanel";
 import VoterManagement from "@/components/admin/VoterManagement";
 import ElectionManagement from "@/components/admin/ElectionManagement";
 import ZKVerification from "@/components/admin/ZKVerification";
+import ZKTally from "@/components/admin/ZKTally";
 import OrgMembershipRequests from "@/components/admin/OrgMembershipRequests";
 import RostersManagement from "@/components/admin/RostersManagement";
 import KioskProvisioning from "@/components/admin/KioskProvisioning";
@@ -467,7 +470,7 @@ export default function Admin() {
 
       <main className="max-w-7xl mx-auto p-6 animate-fade-in-up">
         <Tabs defaultValue="analytics" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-7">
+          <TabsList className="grid w-full grid-cols-9">
             <TabsTrigger value="analytics">
               <BarChart className="h-4 w-4 mr-2" />
               Operations
@@ -501,6 +504,16 @@ export default function Admin() {
             <TabsTrigger value="zk">
               <Shield className="h-4 w-4 mr-2" />
               ZK
+            </TabsTrigger>
+
+            <TabsTrigger value="zk-tally">
+              <Activity className="h-4 w-4 mr-2" />
+              ZK Tally
+            </TabsTrigger>
+
+            <TabsTrigger value="logs">
+              <ScrollText className="h-4 w-4 mr-2" />
+              Logs
             </TabsTrigger>
           </TabsList>
 
@@ -728,7 +741,16 @@ export default function Admin() {
           <TabsContent value="zk">
             <ZKVerification />
           </TabsContent>
-        </Tabs>
+        
+
+          <TabsContent value="zk-tally">
+            <ZKTally />
+          </TabsContent>
+
+          <TabsContent value="logs">
+            <AdminLogs />
+          </TabsContent>
+</Tabs>
       </main>
     </div>
   );

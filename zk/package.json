@@ -1,0 +1,13 @@
+{
+  "name": "zk",
+  "version": "1.0.0",
+  "description": "- `zk/circuits/` : Circom sources (generated + committed) - `zk/scripts/`  : Offline tooling (codegen, snarkjs workflows) - `zk/manifests/`: Reproducible manifest snapshots used for circuit/proof generation",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

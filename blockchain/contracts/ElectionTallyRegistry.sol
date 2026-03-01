@@ -56,7 +56,20 @@ contract ElectionTallyRegistry {
     return keccak256(abi.encodePacked(electionIdHash, electionVoteRoot));
   }
 
-  function submitTally(
+  
+
+  function hasTally(bytes32 electionIdHash, bytes32 electionVoteRoot) external view returns (bool) {
+    bytes32 key = tallyKey(electionIdHash, electionVoteRoot);
+    return _tallies[key].submittedAt != 0;
+  }
+
+  function getTally(bytes32 electionIdHash, bytes32 electionVoteRoot) external view returns (TallyRecord memory) {
+    bytes32 key = tallyKey(electionIdHash, electionVoteRoot);
+    TallyRecord memory rec = _tallies[key];
+    require(rec.submittedAt != 0, "TALLY_NOT_FOUND");
+    return rec;
+  }
+function submitTally(
     bytes32 electionIdHash,
     bytes32 electionVoteRoot,
     bytes32 manifestHash,

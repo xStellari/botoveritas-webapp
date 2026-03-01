@@ -42,14 +42,22 @@ const CIRCUIT_PATH = path.join(ROOT, "zk", "circuits", "tally.circom");
 const META_PATH = path.join(ROOT, "zk", "circuits", "tally.meta.json");
 const BUILD_DIR = path.join(ROOT, "zk", "build", "tally");
 
+function resolveCmd(cmd: string): string {
+  // On Windows, "npx" is typically "npx.cmd". Using shell=true causes quoting issues
+  // with paths that contain spaces, so we avoid shell execution and resolve the cmd.
+  if (process.platform === "win32" && cmd.toLowerCase() === "npx") return "npx.cmd";
+  return cmd;
+}
+
 function run(cmd: string, args: string[], opts?: { cwd?: string }) {
-  const res = spawnSync(cmd, args, {
+  const resolved = resolveCmd(cmd);
+  const res = spawnSync(resolved, args, {
     stdio: "inherit",
     cwd: opts?.cwd ?? ROOT,
-    shell: process.platform === "win32",
+    shell: false,
   });
   if (res.status !== 0) {
-    throw new Error(`Command failed: ${cmd} ${args.join(" ")}`);
+    throw new Error(`Command failed: ${resolved} ${args.join(" ")}`);
   }
 }
 

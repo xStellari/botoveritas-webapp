@@ -7,6 +7,24 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ShieldCheck, FileText, Layers, RefreshCw } from "lucide-react";
 
+type ZkRunResult = {
+  ok: boolean;
+  electionId: string;
+  proofGenerated: boolean;
+  proofVerified: boolean;
+  genMs: number;
+  verifyMs: number;
+  proofSha256?: string;
+  publicSignalsSha256?: string;
+  positionsTotal?: number;
+  positionsMatched?: number;
+  mismatchCount?: number;
+  accuracy?: number;
+  notes?: string;
+  error?: string;
+  details?: string;
+};
+
 type ElectionRow = {
   id: string;
   title: string;
@@ -44,6 +62,9 @@ export default function ZKVerification() {
     Record<string, { chunkCount: number; totalLeaves: number; lastChunkAt: string | null }>
   >({});
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const [zkRuns, setZkRuns] = useState<Record<string, ZkRunResult>>({});
+  const [running, setRunning] = useState<Record<string, boolean>>({});
 
   const finalizedCount = useMemo(
     () => elections.filter((e) => Boolean(e.is_final) && !Boolean(e.is_archived)).length,
@@ -125,6 +146,37 @@ export default function ZKVerification() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const runZkForElection = async (electionId: string) => {
+    setRunning((m) => ({ ...m, [electionId]: true }));
+    setErrorMsg(null);
+    try {
+      const { data: sessionData, error: sessErr } = await supabase.auth.getSession();
+      if (sessErr) throw sessErr;
+      const accessToken = sessionData?.session?.access_token;
+      if (!accessToken) throw new Error("Not authenticated");
+
+      const res = await fetch("/api/zk/run", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ electionId }),
+      });
+
+      const json = (await res.json().catch(() => null)) as ZkRunResult | null;
+      if (!res.ok || !json) {
+        throw new Error(json?.details || json?.error || `ZK run failed (HTTP ${res.status})`);
+      }
+
+      setZkRuns((m) => ({ ...m, [electionId]: json }));
+    } catch (e: any) {
+      setErrorMsg(e?.message ?? String(e));
+    } finally {
+      setRunning((m) => ({ ...m, [electionId]: false }));
+    }
+  };
+
   const statusBadge = (e: ElectionRow) => {
     if (Boolean(e.is_archived)) {
       return <Badge className="border-amber-600 text-amber-700 bg-amber-600/10">Archived</Badge>;
@@ -192,19 +244,23 @@ export default function ZKVerification() {
                   <TableHead>Chunks</TableHead>
                   <TableHead>Total Leaves</TableHead>
                   <TableHead>Last Updated</TableHead>
+                  <TableHead>ZK Proof</TableHead>
+                  <TableHead>Accuracy</TableHead>
+                  <TableHead>Timing</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
 
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center">
+                    <TableCell colSpan={10} className="text-center">
                       Loading…
                     </TableCell>
                   </TableRow>
                 ) : elections.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center">
+                    <TableCell colSpan={10} className="text-center">
                       No elections found.
                     </TableCell>
                   </TableRow>
@@ -212,6 +268,8 @@ export default function ZKVerification() {
                   elections.map((e) => {
                     const m = manifests[e.id];
                     const s = chunkStats[e.id];
+
+                    const run = zkRuns[e.id];
 
                     const hasManifest = Boolean(m?.manifest_hash);
                     const chunkCount = s?.chunkCount ?? 0;
@@ -260,6 +318,47 @@ export default function ZKVerification() {
                         <TableCell className="text-sm text-muted-foreground">
                           {lastUpdated ? new Date(lastUpdated).toLocaleString() : "—"}
                         </TableCell>
+
+                        <TableCell>
+                          {!run ? (
+                            <Badge variant="outline">—</Badge>
+                          ) : run.proofVerified ? (
+                            <Badge className="border-emerald-600 text-emerald-700 bg-emerald-600/10">Verified</Badge>
+                          ) : (
+                            <Badge className="border-red-600 text-red-700 bg-red-600/10">Failed</Badge>
+                          )}
+                        </TableCell>
+
+                        <TableCell className="text-xs font-mono">
+                          {run?.accuracy != null ? `${run.accuracy.toFixed(2)}%` : "—"}
+                          {run?.positionsMatched != null && run?.positionsTotal != null ? (
+                            <div className="text-[11px] text-muted-foreground">
+                              {run.positionsMatched}/{run.positionsTotal} positions
+                            </div>
+                          ) : null}
+                        </TableCell>
+
+                        <TableCell className="text-xs font-mono">
+                          {run ? (
+                            <div className="space-y-1">
+                              <div>gen: {run.genMs}ms</div>
+                              <div>ver: {run.verifyMs}ms</div>
+                            </div>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant={run?.proofVerified ? "outline" : "default"}
+                            disabled={!ready || running[e.id]}
+                            onClick={() => runZkForElection(e.id)}
+                          >
+                            {running[e.id] ? "Running…" : run ? "Re-run" : "Run ZK"}
+                          </Button>
+                        </TableCell>
                       </TableRow>
                     );
                   })
@@ -267,6 +366,47 @@ export default function ZKVerification() {
               </TableBody>
             </Table>
           </div>
+
+          {Object.keys(zkRuns).length ? (
+            <div className="mt-4 space-y-2">
+              <div className="text-sm font-medium">Latest ZK run details</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {Object.values(zkRuns)
+                  .slice(0, 4)
+                  .map((r) => (
+                    <div key={r.electionId} className="rounded-lg border p-3 text-sm">
+                      <div className="font-mono text-xs text-muted-foreground">{r.electionId}</div>
+                      <div className="mt-1 flex items-center gap-2">
+                        {r.proofVerified ? (
+                          <Badge className="border-emerald-600 text-emerald-700 bg-emerald-600/10">Verified</Badge>
+                        ) : (
+                          <Badge className="border-red-600 text-red-700 bg-red-600/10">Failed</Badge>
+                        )}
+                        <span className="text-xs text-muted-foreground">{r.notes ?? ""}</span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <div className="text-muted-foreground">Accuracy</div>
+                          <div className="font-mono">{r.accuracy != null ? `${r.accuracy.toFixed(2)}%` : "—"}</div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">Mismatches</div>
+                          <div className="font-mono">{r.mismatchCount ?? "—"}</div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">Proof SHA</div>
+                          <div className="font-mono">{r.proofSha256 ? shortHex(r.proofSha256, 8) : "—"}</div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">Signals SHA</div>
+                          <div className="font-mono">{r.publicSignalsSha256 ? shortHex(r.publicSignalsSha256, 8) : "—"}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </div>

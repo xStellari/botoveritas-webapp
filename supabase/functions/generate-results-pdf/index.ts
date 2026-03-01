@@ -58,6 +58,7 @@ type Signatory = {
 type VotesVoterIdRow = { voter_id: string | null };
 
 type Body = {
+  mode?: "draft" | "final";
   election_id?: string;
   include_charts?: boolean;
   chart_images?: {
@@ -113,9 +114,64 @@ type Body = {
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+    "authorization, x-client-info, apikey, content-type, x-kiosk-id, x-kiosk-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+function json(status: number, payload: Record<string, unknown>) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function requireKioskSecret(req: Request) {
+  const expected =
+    Deno.env.get("KIOSK_SECRET") ||
+    Deno.env.get("KIOSK_RECEIPT_SECRET") ||
+    "";
+
+  const got = (req.headers.get("x-kiosk-secret") ?? "").trim();
+  if (!expected || !got || got !== expected) {
+    return json(401, { ok: false, error: "Unauthorized" });
+  }
+  return null;
+}
+
+async function isAdminCaller(req: Request, supabaseUrl: string, anonKey: string): Promise<false | true | Response> {
+  const authHeader = req.headers.get("Authorization") ?? "";
+  if (!authHeader) return false;
+
+  const authed = createClient(supabaseUrl, anonKey, {
+    global: { headers: { Authorization: authHeader } },
+    auth: { persistSession: false },
+  });
+
+  const { data: userData, error: userErr } = await authed.auth.getUser();
+  if (userErr || !userData?.user) {
+    console.error("[generate-results-pdf] Invalid token", { error: userErr?.message ?? String(userErr) });
+    return json(401, { ok: false, error: "Invalid token" });
+  }
+
+  const { data: roleRow, error: roleErr } = await authed
+    .from("user_roles")
+    .select("role")
+    .eq("user_id", userData.user.id)
+    .maybeSingle<{ role: string }>();
+
+  if (roleErr) {
+    console.error("[generate-results-pdf] Role lookup failed", { error: roleErr.message });
+    return json(500, { ok: false, error: "Failed to validate admin role" });
+  }
+
+  return roleRow?.role === "admin";
+}
+
+
 
 /* =========================
    Helpers
@@ -808,10 +864,25 @@ serve(async (req: Request) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
+  if (req.method !== "POST") {
+    return json(405, { ok: false, error: "Method not allowed" });
+  }
+
+  // Allow either: (A) authenticated admin, or (B) kiosk secret header (legacy)
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("ANON_KEY") || "";
+  if (!supabaseUrl) return json(500, { ok: false, error: "Missing SUPABASE_URL env var" });
+  if (!anonKey) return json(500, { ok: false, error: "Missing SUPABASE_ANON_KEY env var" });
+
+  const adminOk = await isAdminCaller(req, supabaseUrl, anonKey);
+  if (adminOk instanceof Response) return adminOk;
+  if (!adminOk) return json(403, { ok: false, error: 'Forbidden: admin access required' });
+
   try {
     const body: Body = await req.json().catch(() => ({} as Body));
 
     const election_id = body?.election_id;
+    const mode = (body?.mode === 'final' ? 'final' : 'draft') as 'draft' | 'final';
     // Default to showing charts unless the caller explicitly disables them.
     const includeCharts = body?.include_charts ?? true;
     const chart_images = body?.chart_images;
@@ -879,31 +950,30 @@ serve(async (req: Request) => {
     // Parsed for forward-compat; may be rendered later if you decide to include it
     const _contract_address = body?.contract_address || "";
     const _nft_collection = body?.nft_collection || "BotoVeritas Proof-of-Vote";
-const tally_commitment = body?.tally_commitment || "";
-const zk_proof_hash = body?.zk_proof_hash || "";
-const zk_verifier_contract = body?.zk_verifier_contract || "";
-const zk_verification_tx = body?.zk_verification_tx || "";
-const public_inputs_hash = body?.public_inputs_hash || "";
-const onchain_anchor_tx = body?.onchain_anchor_tx || "";
+let tally_commitment = body?.tally_commitment || "";
+let zk_proof_hash = body?.zk_proof_hash || "";
+let zk_verifier_contract = body?.zk_verifier_contract || "";
+let zk_verification_tx = body?.zk_verification_tx || "";
+let public_inputs_hash = body?.public_inputs_hash || "";
+let onchain_anchor_tx = body?.onchain_anchor_tx || "";
 
-const onchain_anchor_note = body?.onchain_anchor_note || "";
+let onchain_anchor_note = body?.onchain_anchor_note || "";
 
 // BV ZK tally anchors (optional)
-const election_id_hash_bytes32 = body?.election_id_hash_bytes32 || "";
-const election_vote_root_bytes32 = body?.election_vote_root_bytes32 || "";
-const manifest_hash_bytes32 = body?.manifest_hash_bytes32 || "";
-const results_hash_bytes32 = body?.results_hash_bytes32 || "";
-const results_uri = body?.results_uri || "";
+let election_id_hash_bytes32 = body?.election_id_hash_bytes32 || "";
+let election_vote_root_bytes32 = body?.election_vote_root_bytes32 || "";
+let manifest_hash_bytes32 = body?.manifest_hash_bytes32 || "";
+let results_hash_bytes32 = body?.results_hash_bytes32 || "";
+let results_uri = body?.results_uri || "";
 
 // On-chain tally submission (optional)
-const tally_registry_address = body?.tally_registry_address || "";
-const tally_submit_tx = body?.tally_submit_tx || "";
-const tally_submitter = body?.tally_submitter || "";
-const tally_submitted_at = body?.tally_submitted_at || "";
+let tally_registry_address = body?.tally_registry_address || "";
+let tally_submit_tx = body?.tally_submit_tx || "";
+let tally_submitter = body?.tally_submitter || "";
+let tally_submitted_at = body?.tally_submitted_at || "";
 
     // Supabase (service role)
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    if (!supabaseUrl) throw new Error("Missing SUPABASE_URL env var");
+    // supabaseUrl validated above (admin/kiosk gate)
 
     const serviceRoleKey =
       Deno.env.get("SERVICE_ROLE_KEY") ||
@@ -911,6 +981,32 @@ const tally_submitted_at = body?.tally_submitted_at || "";
     if (!serviceRoleKey) throw new Error("Missing SERVICE_ROLE_KEY secret");
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+    // --- ZK metadata hydration (DB -> PDF) ---
+    const [mRes, rRes, pRes] = await Promise.all([
+      supabase.from('election_manifests').select('manifest_hash').eq('election_id', election_id).maybeSingle(),
+      supabase.from('election_vote_roots').select('election_vote_root').eq('election_id', election_id).maybeSingle(),
+      supabase.from('election_tally_proofs').select('status,manifest_hash,election_vote_root,results_hash,tx_hash,chain,registry_address,verifier_address,results_pdf_url,results_json_url,public_signals_json_url,proof_json_url,updated_at').eq('election_id', election_id).maybeSingle(),
+    ]);
+
+    const manifestHashDb = (mRes.data as any)?.manifest_hash ?? (pRes.data as any)?.manifest_hash ?? null;
+    const rootDb = (rRes.data as any)?.election_vote_root ?? (pRes.data as any)?.election_vote_root ?? null;
+    const proofDb = (pRes.data as any) ?? null;
+
+    if (!manifest_hash_bytes32 && manifestHashDb) manifest_hash_bytes32 = String(manifestHashDb);
+    if (!election_vote_root_bytes32 && rootDb) election_vote_root_bytes32 = String(rootDb);
+    if (!results_hash_bytes32 && proofDb?.results_hash) results_hash_bytes32 = String(proofDb.results_hash);
+
+    if (!zk_verification_tx && proofDb?.tx_hash) zk_verification_tx = String(proofDb.tx_hash);
+    if (!tally_registry_address && proofDb?.registry_address) tally_registry_address = String(proofDb.registry_address);
+    if (!zk_verifier_contract && proofDb?.verifier_address) zk_verifier_contract = String(proofDb.verifier_address);
+
+    // Prefer storing the on-chain anchor as the same verification tx
+    if (!onchain_anchor_tx && zk_verification_tx) onchain_anchor_tx = zk_verification_tx;
+
+    if (mode === 'final' && !zk_verification_tx) {
+      return json(409, { ok: false, error: 'Final PDF requires an on-chain verification tx_hash. Proof must be submitted first.' });
+    }
 
     const buildSingleElectionPdf = async (singleElectionId: string) => {
       // Election metadata

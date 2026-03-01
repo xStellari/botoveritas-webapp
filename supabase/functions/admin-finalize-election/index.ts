@@ -2,59 +2,34 @@ import { serve } from "std/http/server";
 import { createClient } from "@supabase/supabase-js";
 import { ethers } from "ethers";
 
-import { requireAdmin } from "../_shared/requireAdmin.ts";
-import { CHUNK_SIZE } from "../_shared/bvCrypto.ts";
-
 type Body = {
   electionId: string;
 };
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-kiosk-id, x-kiosk-secret",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
 function json(status: number, payload: Record<string, unknown>) {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 }
 
-function envAny(...names: string[]) {
-  for (const n of names) {
-    const v = Deno.env.get(n);
-    if (v) return v;
-  }
-  return null;
+function isUuid(v: string) {
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(v);
 }
 
-function requireEnvAny(...names: string[]) {
-  const v = envAny(...names);
-  if (!v) throw new Error(`Missing required secret: ${names.join(" OR ")}`);
+function requireEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`Missing env: ${name}`);
   return v;
 }
 
-function requireKioskSecret(req: Request) {
-  const expected = requireEnvAny("KIOSK_SECRET", "KIOSK_RECEIPT_SECRET");
-  const got = req.headers.get("x-kiosk-secret") || "";
-  if (!got || got !== expected) {
-    return json(401, { error: "Unauthorized" });
-  }
-  return null;
-}
-
-
-
-function isUuid(v: string) {
-  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
-    v,
-  );
-}
-
-// ---------- Canonical ordering helpers ----------
+// ---------- Canonical ordering helpers (kept consistent with generate-election-manifest) ----------
 
 type CandidateRow = {
   id: string;
@@ -143,60 +118,71 @@ function stableStringify(value: unknown): string {
 
   if (Array.isArray(value)) {
     return "[" + value.map((v) => stableStringify(v)).join(",") + "]";
-    }
+  }
 
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort((a, b) => a.localeCompare(b));
   return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") + "}";
 }
 
-// ---------- Edge Function ----------
-
 serve(async (req: Request) => {
   try {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
-    if (req.method !== "POST") return json(405, { error: "Method not allowed" });
+    if (req.method !== "POST") return json(405, { ok: false, error: "Method not allowed" });
 
-    const supabaseUrl = requireEnvAny("SUPABASE_URL");
-    const anonKey = requireEnvAny("SUPABASE_ANON_KEY", "ANON_KEY");
-    const serviceRoleKey = requireEnvAny("SERVICE_ROLE_KEY", "SUPABASE_SERVICE_ROLE_KEY");
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) return json(401, { ok: false, error: "Missing Authorization header" });
 
-    // Admin-only (as agreed)
-    try {
-      await requireAdmin({ req, supabaseUrl, anonKey, serviceRoleKey });
-    } catch (e: any) {
-      const status = e?.status ?? 500;
-      return json(status, { error: e?.message ?? String(e) });
-    }
+    const supabaseUrl = requireEnv("SUPABASE_URL");
+    const anonKey = requireEnv("SUPABASE_ANON_KEY");
+    const serviceKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-    const supabase = createClient(supabaseUrl, serviceRoleKey, {
+    // Authed client (caller JWT) — used for identity + admin authorization.
+    const authed = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: authHeader } },
       auth: { persistSession: false },
     });
 
+    const { data: userData, error: userErr } = await authed.auth.getUser();
+    if (userErr || !userData?.user) {
+      return json(401, { ok: false, error: "Invalid token" });
+    }
+    const caller = userData.user;
+
+    // Verify caller is admin using user_roles.
+    const { data: roleRow, error: roleErr } = await authed
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", caller.id)
+      .maybeSingle();
+
+    if (roleErr) return json(500, { ok: false, error: "Failed to verify admin role", details: roleErr.message });
+    if (!roleRow || roleRow.role !== "admin") return json(403, { ok: false, error: "Forbidden: admin role required" });
+
     const body = (await req.json().catch(() => null)) as Partial<Body> | null;
     const electionId = typeof body?.electionId === "string" ? body.electionId : "";
+    if (!electionId || !isUuid(electionId)) return json(400, { ok: false, error: "Invalid electionId" });
 
-    if (!electionId || !isUuid(electionId)) {
-      return json(400, { error: "Invalid electionId" });
-    }
+    const service = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
     // Load election (for metadata + sanity)
-    const { data: election, error: eErr } = await supabase
+    const { data: election, error: eErr } = await service
       .from("elections")
-      .select("id, title, is_final, is_archived, finalized_at")
+      .select("id, title, is_final, is_archived, is_active, finalized_at")
       .eq("id", electionId)
       .maybeSingle();
 
-    if (eErr) return json(500, { error: "Failed to load election", details: eErr.message });
-    if (!election) return json(404, { error: "Election not found" });
+    if (eErr) return json(500, { ok: false, error: "Failed to load election", details: eErr.message });
+    if (!election) return json(404, { ok: false, error: "Election not found" });
+    if (election.is_archived) return json(409, { ok: false, error: "Election is archived" });
 
     // Load candidates
-    const { data: candidatesData, error: cErr } = await supabase
+    const { data: candidatesData, error: cErr } = await service
       .from("candidates")
       .select("id, election_id, position, name, first_name, last_name, slate, photo_url, bio")
       .eq("election_id", electionId);
 
-    if (cErr) return json(500, { error: "Failed to load candidates", details: cErr.message });
+    if (cErr) return json(500, { ok: false, error: "Failed to load candidates", details: cErr.message });
 
     const candidates = (candidatesData ?? []) as CandidateRow[];
 
@@ -244,8 +230,6 @@ serve(async (req: Request) => {
       const ap = positionPriority(a.normalizedTitle);
       const bp = positionPriority(b.normalizedTitle);
       if (ap !== bp) return ap - bp;
-
-      // same bucket → alphabetical by displayed title
       return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
     });
 
@@ -255,7 +239,7 @@ serve(async (req: Request) => {
       election: {
         id: election.id,
         title: election.title,
-        is_final: election.is_final,
+        is_final: true, // finalization implies true
         is_archived: election.is_archived,
       },
       ordering: {
@@ -263,17 +247,7 @@ serve(async (req: Request) => {
         position_fallback: "alphabetical",
         candidate_order: ["last_name", "first_name", "id"],
       },
-      zk: {
-  circuitId: "tally",
-  circuitVersion: "BV_TALLY_V1",
-  chunkSize: CHUNK_SIZE,
-  // artifacts will be attached/pinned after admin uploads to Storage
-  artifacts: null,
-},
-snapshot: {
-  finalizedAt: election.finalized_at ?? null,
-},
-positions: positionBlocks.map((p, idx) => ({
+      positions: positionBlocks.map((p, idx) => ({
         index: idx,
         title: p.title,
         normalizedTitle: p.normalizedTitle,
@@ -286,36 +260,53 @@ positions: positionBlocks.map((p, idx) => ({
     const manifestString = stableStringify(manifest);
     const manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestString));
 
-    // Upsert into election_manifests
-    const { error: upErr } = await supabase
+    // Save manifest first. If this fails, we DO NOT lock the election.
+    const { error: upErr } = await service
       .from("election_manifests")
-      .insert(
+      .upsert(
         {
           election_id: electionId,
           spec_version: "BV_ELECTION_MANIFEST_V1",
           manifest,
           manifest_hash: manifestHash,
-        }
+        } as any,
+        { onConflict: "election_id" },
       );
 
-    if (upErr) return json(500, { error: "Failed to save manifest", details: upErr.message });
+    if (upErr) return json(500, { ok: false, error: "Failed to save manifest", details: upErr.message });
+
+    // Now lock/finalize the election.
+    // IMPORTANT RULE: Once finalized, election must no longer be considered active.
+    const finalizeUpdate: Record<string, unknown> = {
+      is_final: true,
+      is_active: false,
+    };
+
+    // Only stamp finalized metadata if this is the first finalization.
+    if (!election.is_final || !election.finalized_at) {
+      finalizeUpdate.finalized_at = new Date().toISOString();
+      finalizeUpdate.finalized_by = caller.id;
+      finalizeUpdate.finalized_by_email = caller.email ?? null;
+    }
+
+    const { error: finErr } = await service
+      .from("elections")
+      .update(finalizeUpdate as any)
+      .eq("id", electionId);
+
+    if (finErr) return json(500, { ok: false, error: "Failed to finalize election", details: finErr.message });
 
     return json(200, {
-      status: "manifest_saved",
+      ok: true,
+      status: election.is_final ? "finalized_already_manifest_refreshed" : "finalized_manifest_saved",
       electionId,
       manifestHash,
       positionCount: manifest.positions.length,
-      // return only a small preview to keep response light
-      preview: {
-        positions: manifest.positions.map((p: any) => ({
-          title: p.title,
-          candidateCount: p.candidates.length,
-        })),
-      },
     });
   } catch (e) {
-    console.error("generate-election-manifest error:", e);
+    console.error("[admin-finalize-election] error:", e);
     return json(500, {
+      ok: false,
       error: "Unexpected error",
       details: e instanceof Error ? e.message : String(e),
     });

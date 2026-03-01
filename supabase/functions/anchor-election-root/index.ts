@@ -1,6 +1,8 @@
 import { serve } from "std/http/server";
 import { createClient } from "@supabase/supabase-js";
 import { ethers } from "ethers";
+import { requireAdmin } from "../_shared/requireAdmin.ts";
+
 import {
   BV_VOTE_CHUNK_SPEC_V1,
   BV_ELECTION_MANIFEST_V1,
@@ -48,7 +50,7 @@ type CandidateRow = {
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-kiosk-secret",
+    "authorization, x-client-info, apikey, content-type, x-kiosk-id, x-kiosk-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -80,6 +82,36 @@ function requireKioskSecret(req: Request) {
     return json(401, { error: "Unauthorized" });
   }
   return null;
+}
+
+
+async function isAdminCaller(req: Request, supabaseUrl: string, anonKey: string): Promise<false | true | Response> {
+  const authHeader = req.headers.get("Authorization") ?? "";
+  if (!authHeader) return false;
+
+  const authed = createClient(supabaseUrl, anonKey, {
+    global: { headers: { Authorization: authHeader } },
+    auth: { persistSession: false },
+  });
+
+  const { data: userData, error: userErr } = await authed.auth.getUser();
+  if (userErr || !userData?.user) {
+    console.error("[anchor-election-root] Invalid token", { error: userErr?.message ?? String(userErr) });
+    return json(401, { error: "Invalid token" });
+  }
+
+  const { data: roleRow, error: roleErr } = await authed
+    .from("user_roles")
+    .select("role")
+    .eq("user_id", userData.user.id)
+    .maybeSingle<{ role: string }>();
+
+  if (roleErr) {
+    console.error("[anchor-election-root] Role lookup failed", { error: roleErr.message });
+    return json(500, { error: "Failed to validate admin role" });
+  }
+
+  return roleRow?.role === "admin";
 }
 
 function isUuid(v: string) {
@@ -275,11 +307,25 @@ serve(async (req: Request) => {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
     if (req.method !== "POST") return json(405, { error: "Method not allowed" });
 
-    const authErr = requireKioskSecret(req);
-    if (authErr) return authErr;
-
     const supabaseUrl = requireEnvAny("SUPABASE_URL");
+    const anonKey = requireEnvAny("SUPABASE_ANON_KEY", "ANON_KEY");
+
+    // Allow either: (A) authenticated admin, or (B) kiosk secret header (legacy)
+    const adminOk = await isAdminCaller(req, supabaseUrl, anonKey);
+    if (adminOk instanceof Response) return adminOk;
+    if (!adminOk) {
+      const authErr = requireKioskSecret(req);
+      if (authErr) return authErr;
+    }
+
     const serviceRole = requireEnvAny("SERVICE_ROLE_KEY", "SUPABASE_SERVICE_ROLE_KEY");
+
+    try {
+      await requireAdmin({ req, supabaseUrl, anonKey, serviceRoleKey: serviceRole });
+    } catch (e: any) {
+      const status = e?.status ?? 500;
+      return json(status, { error: e?.message ?? String(e) });
+    }
     const supabase = createClient(supabaseUrl, serviceRole, { auth: { persistSession: false } });
 
     const body = (await req.json().catch(() => null)) as Partial<Body> | null;
@@ -306,7 +352,22 @@ serve(async (req: Request) => {
       });
     }
 
-    // 2) Generate + upsert canonical manifest FIRST
+    // 2) Prevent re-anchoring: once a root is stored, it is immutable
+    const { data: existingRoot, error: erErr } = await supabase
+      .from("election_vote_roots")
+      .select("election_id, election_vote_root, computed_at")
+      .eq("election_id", electionId)
+      .maybeSingle();
+
+    if (erErr) return json(500, { error: "Failed to check existing election root", details: erErr.message });
+    if (existingRoot) {
+      return json(409, {
+        error: "Election vote root already exists for this election",
+        election_vote_root: existingRoot.election_vote_root,
+      });
+    }
+
+    // 3) Generate + upsert canonical manifest FIRST
     let manifestHash = "";
     let manifestPositionCount = 0;
 
@@ -393,6 +454,28 @@ serve(async (req: Request) => {
         error: "Failed to persist election vote chunks",
         details: chunkUpsertErr.message,
         hint: "Ensure public.election_vote_chunks table exists (Step 4.1 SQL).",
+      });
+    }
+
+
+    // 7.5) persist canonical election vote root (for ZK public inputs)
+    const { error: rootUpsertErr } = await (supabase as any)
+      .from("election_vote_roots")
+      .upsert(
+        {
+          election_id: electionId,
+          election_vote_root: electionRoot,
+          chunk_count: chunkRows.length,
+          computed_at: new Date().toISOString(),
+        },
+        { onConflict: "election_id" },
+      );
+
+    if (rootUpsertErr) {
+      return json(500, {
+        error: "Failed to persist election vote root",
+        details: rootUpsertErr.message,
+        hint: "Ensure public.election_vote_roots table exists (you created it).",
       });
     }
 

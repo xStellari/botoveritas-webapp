@@ -1,0 +1,8 @@
+{
+  "imports": {
+    "std/": "https://deno.land/std@0.224.0/",
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.49.1",
+    "ethers": "npm:ethers@6.13.4",
+    "circomlibjs": "npm:circomlibjs@0.1.7"
+  }
+}

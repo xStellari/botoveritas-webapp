@@ -531,27 +531,20 @@ export default function ElectionManagement() {
 
     setSaving(true);
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      // IMPORTANT RULE:
-      // Once finalized, election must no longer be considered active (even if end_date is in the future).
-      // So we force is_active=false at finalize-time.
-      const { error } = await supabase
-        .from("elections")
-        .update({
-          is_final: true,
-          is_active: false,
-          finalized_at: new Date().toISOString(),
-          finalized_by: user?.id ?? null,
-          finalized_by_email: user?.email ?? null,
-        } as any)
-        .eq("id", finalizeTarget.id);
+      const { data, error } = await supabase.functions.invoke(
+        "admin-finalize-election",
+        {
+          body: { electionId: finalizeTarget.id },
+        }
+      );
 
       if (error) throw error;
 
-      toast.success("Election finalized. Editing is now locked.");
+      toast.success(
+        data?.manifestHash
+          ? `Election finalized. Manifest saved (${String(data.manifestHash).slice(0, 10)}…).`
+          : "Election finalized. Editing is now locked."
+      );
       setFinalizeDialogOpen(false);
       setFinalizeTarget(null);
       setFinalizeConfirmText("");

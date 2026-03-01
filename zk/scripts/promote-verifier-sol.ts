@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const inPath = path.join("zk", "build", "tally", "verifier.sol");
-const outPath = path.join("contracts", "TallyGroth16Verifier.sol");
+const outPath = path.join("blockchain", "contracts", "TallyGroth16Verifier.sol");
 
 if (!fs.existsSync(inPath)) {
   console.error("Missing zk/build/tally/verifier.sol");
@@ -17,4 +17,4 @@ src = src.replace(/\bVerifier\s*\(/g, "TallyGroth16Verifier(");
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
 fs.writeFileSync(outPath, src, "utf8");
 
-console.log("Promoted verifier to contracts/TallyGroth16Verifier.sol");
+console.log("Promoted verifier to blockchain/contracts/TallyGroth16Verifier.sol");

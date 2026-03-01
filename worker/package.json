@@ -1,11 +1,10 @@
 {
-  "name": "botoveritas-api",
+  "name": "bv-zk-worker",
   "private": true,
+  "type": "module",
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
-    "@vercel/node": "^3.2.0",
-    "circomlibjs": "^0.1.7",
     "ethers": "^6.13.2",
-    "snarkjs": "^0.7.5"
+    "node-fetch": "^3.3.2"
   }
 }

@@ -1,8 +1,6 @@
-import { serve } from "std/http/server";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "@supabase/supabase-js";
 import { ethers } from "ethers";
-
-import { requireAdmin } from "../_shared/requireAdmin.ts";
 
 type Body = {
   electionId: string; // UUID
@@ -17,6 +15,12 @@ const corsHeaders: Record<string, string> = {
     "authorization, x-client-info, apikey, content-type, x-kiosk-id, x-kiosk-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+function errMsg(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  try { return JSON.stringify(e); } catch { return String(e); }
+}
 
 function json(status: number, payload: Record<string, unknown>) {
   return new Response(JSON.stringify(payload), {
@@ -37,6 +41,13 @@ function requireEnvAny(...names: string[]) {
   const v = envAny(...names);
   if (!v) throw new Error(`Missing required secret: ${names.join(" OR ")}`);
   return v;
+}
+
+function requireInternal(req: Request) {
+  const expected = envAny("INTERNAL_WORKER_KEY");
+  if (!expected) throw new Error("Missing INTERNAL_WORKER_KEY secret");
+  const got = req.headers.get("x-internal-key") ?? "";
+  return got === expected;
 }
 
 function requireKioskSecret(req: Request) {
@@ -98,7 +109,7 @@ async function isAdminCaller(req: Request, supabaseUrl: string, anonKey: string,
   }
 
   if (roleErr) {
-    console.error("[generate-zk-tally-witness] Role lookup failed", { error: roleErr.message });
+    console.error("[generate-zk-tally-witness] Role lookup failed", { error: errMsg(roleErr) });
     return json(500, { error: "Failed to validate admin role" });
   }
 
@@ -290,6 +301,10 @@ const ELECTION_ROOT_ANCHOR_ABI = [
 // -------------------- Edge Function --------------------
 
 serve(async (req: Request) => {
+    if (!requireInternal(req)) {
+      return json(401, { error: "Unauthorized" });
+    }
+
   try {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
     if (req.method !== "POST") return json(405, { error: "Method not allowed" });
@@ -311,13 +326,6 @@ serve(async (req: Request) => {
     // - If caller provides an Authorization Bearer token, require that they are an admin (do NOT require kiosk secret).
     // - If no Authorization token is provided (kiosk/automation callers), fall back to kiosk secret.
     const serviceRoleKey = requireEnvAny("SUPABASE_SERVICE_ROLE_KEY", "SERVICE_ROLE_KEY");
-
-    try {
-      await requireAdmin({ req, supabaseUrl: supabaseUrl, anonKey: anonKey, serviceRoleKey: serviceRoleKey });
-    } catch (e: any) {
-      const status = e?.status ?? 500;
-      return json(status, { error: e?.message ?? String(e) });
-    }
     const hasAuth = !!(req.headers.get("Authorization") ?? "");
     const adminOk = hasAuth ? await isAdminCaller(req, supabaseUrl, anonKey, serviceRoleKey) : false;
     if (adminOk instanceof Response) return adminOk;
@@ -341,7 +349,7 @@ serve(async (req: Request) => {
       .eq("id", electionId)
       .maybeSingle();
 
-    if (eErr) return json(500, { error: "Failed to load election", details: eErr.message });
+    if (eErr) return json(500, { error: "Failed to load election", details: errMsg(eErr) });
     if (!election) return json(404, { error: "Election not found" });
 
     const electionRow = election as ElectionRow;
@@ -359,7 +367,7 @@ serve(async (req: Request) => {
       .eq("election_id", electionId)
       .maybeSingle();
 
-    if (mErr) return json(500, { error: "Failed to load manifest", details: mErr.message });
+    if (mErr) return json(500, { error: "Failed to load manifest", details: errMsg(mErr) });
     if (!manifestRow) {
       return json(404, {
         error: "Election manifest not found",
@@ -399,7 +407,7 @@ serve(async (req: Request) => {
       .order("candidate_id", { ascending: true, nullsFirst: true })
       .order("id", { ascending: true });
 
-    if (vErr) return json(500, { error: "Failed to load votes", details: vErr.message });
+    if (vErr) return json(500, { error: "Failed to load votes", details: errMsg(vErr) });
 
     const votes = (votesRaw ?? []) as VoteRow[];
 
@@ -451,7 +459,7 @@ serve(async (req: Request) => {
       .maybeSingle();
 
     if (dbRootErr) {
-      dbRootCheck = { status: "skipped", reason: "Failed to load election_vote_roots", details: dbRootErr.message };
+      dbRootCheck = { status: "skipped", reason: "Failed to load election_vote_roots", details: errMsg(dbRootErr) };
     } else if (dbRootRow && (dbRootRow as any).election_vote_root) {
       const stored = ensure0x(String((dbRootRow as any).election_vote_root));
       const matches = stored.toLowerCase() === electionRootComputed.toLowerCase();
@@ -485,7 +493,7 @@ serve(async (req: Request) => {
       dbChunkCheck = {
         status: "skipped",
         reason: "Failed to load election_vote_chunks",
-        details: dbChunksErr.message,
+        details: errMsg(dbChunksErr),
       };
     } else {
       const dbChunks = (dbChunksRaw ?? []) as ChunkDbRow[];

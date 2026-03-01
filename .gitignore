@@ -32,3 +32,22 @@ dist-ssr
 # Supabase Edge Functions local env files
 supabase/functions/.env
 supabase/functions/.env.*
+
+# secrets
+.env
+.env.*
+**/.env
+**/.env.*
+
+# local keys
+*.pem
+*.key
+
+# build artifacts / huge files
+zk/build/
+zk/**/*.zkey
+zk/**/*.wasm
+zk/**/*.ptau
+
+# optional: local dumps
+schema.sql
