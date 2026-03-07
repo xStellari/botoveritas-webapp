@@ -21,6 +21,7 @@ import { AdminRoute } from "@/components/AdminRoute";
 import RegisterVerify from "./pages/RegisterVerify";
 import Error from "./pages/Error";
 import VerifyEmail from "./pages/VerifyEmail";
+import VerifyTally from "./pages/VerifyTally";
 
 const queryClient = new QueryClient();
 
@@ -100,6 +101,7 @@ const App = () => (
           <Route path="/results" element={<Results />} />
           <Route path="/verify" element={<Verify />} />
           <Route path="/verify-email" element={<VerifyEmail />} />
+          <Route path="/verify/tally/:electionId" element={<VerifyTally />} />
 
 
           {/* Admin routes */}

@@ -565,8 +565,8 @@ const scoped = electionRows;
       )}
 
       {/* Section 2: Guarantees & Exceptions */}
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
+      <div className="space-y-4">
+        <Card>
           <CardHeader className="flex flex-row items-start justify-between gap-4">
             <div>
               <CardTitle>Guarantee: Proof-of-vote pointers issued</CardTitle>
@@ -608,55 +608,55 @@ const scoped = electionRows;
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>System Health</CardTitle>
-          </CardHeader>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card className="h-full">
+            <CardHeader>
+              <CardTitle>Authentication Health</CardTitle>
+            </CardHeader>
 
-          <CardContent className="space-y-4">
-            {(snapshot.auth.totalEvents60m === 0 && snapshot.sessions.activeSessions === 0) && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-                <div className="font-medium">No recent health signals detected.</div>
-              </div>
-            )}
-
-            <div className="rounded-lg border p-3">
-              <div className="flex items-start gap-3">
-                {statusIcon(authStatus)}
-                <div className="min-w-0">
-                  <div className="text-sm font-medium">Authentication</div>
-                  <div className="text-xs text-muted-foreground">
-                    {statusLabel(authStatus)} • Events (60m): {snapshot.auth.totalEvents60m} • Failures: {snapshot.auth.failureEvents60m} ({(snapshot.auth.failureRate60m * 100).toFixed(1)}%)
-                  </div>
-                </div>
-              </div>
-
-              
-              <div className="mt-2 flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={openInspectAuth}
-                  disabled={inspectAuthLoading || snapshot.auth.failureEvents60m === 0}
-                >
-                  Inspect failures
-                </Button>
-              </div>
-
-{snapshot.auth.topEventTypes.length > 0 && (
-                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                  {snapshot.auth.topEventTypes.map((t) => (
-                    <div key={t.event_type} className="flex items-center justify-between gap-2">
-                      <span className="truncate">{t.event_type}</span>
-                      <span className="tabular-nums">{t.count}</span>
-                    </div>
-                  ))}
+            <CardContent className="space-y-4">
+              {snapshot.auth.totalEvents60m === 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                  <div className="font-medium">No recent authentication signals detected.</div>
                 </div>
               )}
-            </div>
+
+              <div className="rounded-lg border p-3">
+                <div className="flex items-start gap-3">
+                  {statusIcon(authStatus)}
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">Authentication</div>
+                    <div className="text-xs text-muted-foreground">
+                      {statusLabel(authStatus)} • Events (60m): {snapshot.auth.totalEvents60m} • Failures: {snapshot.auth.failureEvents60m} ({(snapshot.auth.failureRate60m * 100).toFixed(1)}%)
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-2 flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={openInspectAuth}
+                    disabled={inspectAuthLoading || snapshot.auth.failureEvents60m === 0}
+                  >
+                    Inspect failures
+                  </Button>
+                </div>
+
+                {snapshot.auth.topEventTypes.length > 0 && (
+                  <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                    {snapshot.auth.topEventTypes.map((t) => (
+                      <div key={t.event_type} className="flex items-center justify-between gap-2">
+                        <span className="truncate">{t.event_type}</span>
+                        <span className="tabular-nums">{t.count}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {snapshot.auth.topFailureTypes.length > 0 && (
-                <div className="mt-3 rounded-md border bg-muted/30 p-2">
+                <div className="rounded-md border bg-muted/30 p-2">
                   <div className="text-xs font-medium">Failure breakdown (60m)</div>
                   <div className="mt-1 space-y-1 text-xs text-muted-foreground">
                     {snapshot.auth.topFailureTypes.map((t) => (
@@ -668,44 +668,57 @@ const scoped = electionRows;
                   </div>
                 </div>
               )}
+            </CardContent>
+          </Card>
 
-            <div className="rounded-lg border p-3">
-              <div className="flex items-start gap-3">
-                {statusIcon(sessionStatus)}
-                <div className="min-w-0">
-                  <div className="text-sm font-medium">Sessions</div>
-                  <div className="text-xs text-muted-foreground">
-                    {statusLabel(sessionStatus)} • Active: {snapshot.sessions.activeSessions} • Expiring soon:{" "}
-                    {snapshot.sessions.expiringSoon} • Unfinished (≥5m, no end): {snapshot.sessions.stuckSessions}
-                  </div>
-                </div>
-              </div>
+          <Card className="h-full">
+            <CardHeader>
+              <CardTitle>Session Health</CardTitle>
+            </CardHeader>
 
-              
-              <div className="mt-2 flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={openInspectSessions}
-                  disabled={inspectSessionsLoading || snapshot.sessions.activeSessions === 0}
-                >
-                  Inspect open sessions
-                </Button>
-              </div>
-
-{snapshot.sessions.topActions60m.length > 0 && (
-                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                  {snapshot.sessions.topActions60m.map((a) => (
-                    <div key={a.action} className="flex items-center justify-between gap-2">
-                      <span className="truncate">{a.action}</span>
-                      <span className="tabular-nums">{a.count}</span>
-                    </div>
-                  ))}
+            <CardContent className="space-y-4">
+              {snapshot.sessions.activeSessions === 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                  <div className="font-medium">No open voting sessions right now.</div>
                 </div>
               )}
 
+              <div className="rounded-lg border p-3">
+                <div className="flex items-start gap-3">
+                  {statusIcon(sessionStatus)}
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">Sessions</div>
+                    <div className="text-xs text-muted-foreground">
+                      {statusLabel(sessionStatus)} • Active: {snapshot.sessions.activeSessions} • Expiring soon: {snapshot.sessions.expiringSoon} • Unfinished (≥5m, no end): {snapshot.sessions.stuckSessions}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-2 flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={openInspectSessions}
+                    disabled={inspectSessionsLoading || snapshot.sessions.activeSessions === 0}
+                  >
+                    Inspect open sessions
+                  </Button>
+                </div>
+
+                {snapshot.sessions.topActions60m.length > 0 && (
+                  <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                    {snapshot.sessions.topActions60m.map((a) => (
+                      <div key={a.action} className="flex items-center justify-between gap-2">
+                        <span className="truncate">{a.action}</span>
+                        <span className="tabular-nums">{a.count}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {snapshot.sessions.stuckSample.length > 0 && (
-                <div className="mt-3 rounded-md border bg-muted/30 p-2">
+                <div className="rounded-md border bg-muted/30 p-2">
                   <div className="text-xs font-medium">Unfinished sessions (≥5m, no end)</div>
                   <div className="mt-1 space-y-1 text-xs text-muted-foreground">
                     {snapshot.sessions.stuckSample.map((s) => (
@@ -717,10 +730,9 @@ const scoped = electionRows;
                   </div>
                 </div>
               )}
-
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       {/* Minimal readiness signal (no deep ZK UI) */}
@@ -903,20 +915,17 @@ const scoped = electionRows;
       </Dialog>
 
 {/* Note about interventions */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Manual interventions</CardTitle>
-          <CardDescription>
-            Destructive actions (e.g., voter reset) remain in the Operations tab container (Admin.tsx) under a separate
-            &quot;Danger Zone&quot; section.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="text-sm text-muted-foreground">
-            This page focuses on procedural truth signals. Actions are intentionally separated to reduce accidental use.
-          </div>
-        </CardContent>
-      </Card>
+      <div className="flex flex-col gap-1 rounded-lg border border-dashed bg-muted/10 px-4 py-3 text-sm md:flex-row md:items-center md:justify-between">
+        <div>
+          <span className="font-semibold">Manual interventions</span>
+          <span className="ml-2 text-muted-foreground">
+            Emergency recovery actions are intentionally kept outside Overview.
+          </span>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          Use the separate danger zone or maintenance view when needed.
+        </div>
+      </div>
     </div>
   );
 }

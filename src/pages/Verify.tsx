@@ -25,10 +25,12 @@ export default function Verify() {
 
   const [voteId, setVoteId] = useState("");
   const [tokenId, setTokenId] = useState("");
+  const [tallyElectionId, setTallyElectionId] = useState("");
   const [showOversightTools, setShowOversightTools] = useState(false);
 
   const voteIdTrim = useMemo(() => voteId.trim(), [voteId]);
   const tokenIdTrim = useMemo(() => tokenId.trim(), [tokenId]);
+  const tallyElectionIdTrim = useMemo(() => tallyElectionId.trim(), [tallyElectionId]);
 
   const onOpenVoteVerify = () => {
     if (!voteIdTrim) {
@@ -47,6 +49,17 @@ export default function Verify() {
       return;
     }
     openInSameTab(`/verify/nft/${encodeURIComponent(tokenIdTrim)}`);
+  };
+
+  const onOpenTallyVerify = () => {
+    if (!tallyElectionIdTrim) {
+      toast.error("Please enter an Election ID.");
+      return;
+    }
+    if (!looksLikeUuid(tallyElectionIdTrim)) {
+      toast.warning("That does not look like a UUID Election ID — opening anyway.");
+    }
+    openInSameTab(`/verify/tally/${encodeURIComponent(tallyElectionIdTrim)}`);
   };
 
   return (
@@ -218,12 +231,16 @@ export default function Verify() {
 
                   <div className="mt-5 space-y-2">
                     <label className="text-xs font-semibold text-slate-700">Election ID</label>
-                    <Input disabled placeholder="e.g., election UUID" />
-                    <Button disabled className="w-full mt-2">
+                    <Input
+                      value={tallyElectionId}
+                      onChange={(e) => setTallyElectionId(e.target.value)}
+                      placeholder="e.g., 9b6e3529-b41e-410c-9d4e-693f23e82029"
+                    />
+                    <Button className="w-full mt-2" onClick={onOpenTallyVerify}>
                       Open ZK Tally Verification
                     </Button>
                     <p className="text-xs text-muted-foreground">
-                      Enable this once your on-chain tally registry is populated.
+                      Publicly verifies proof.json, publicSignals.json, and verification_key.json in the browser.
                     </p>
                   </div>
                 </Card>

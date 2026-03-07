@@ -45,6 +45,34 @@ type DailySecretRow = {
   revoked_at: string | null;
 };
 
+const AUTO_PURGE_AFTER_DAYS = 3;
+const AUTO_PURGE_AFTER_MS = AUTO_PURGE_AFTER_DAYS * 24 * 60 * 60 * 1000;
+
+function getProvisionedAtMs(kiosk: KioskRow): number | null {
+  const value = kiosk.approved_at || kiosk.created_at;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getLastSeenAtMs(kiosk: KioskRow): number | null {
+  if (!kiosk.last_seen_at) return null;
+  const parsed = new Date(kiosk.last_seen_at).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function shouldAutoPurgeKiosk(kiosk: KioskRow, todaySecret: DailySecretRow | undefined, currentTimeMs: number): boolean {
+  if (kiosk.revoked_at) return false;
+  if (todaySecret && !todaySecret.revoked_at) return false;
+
+  const provisionedAtMs = getProvisionedAtMs(kiosk);
+  if (provisionedAtMs === null) return false;
+
+  const lastSeenAtMs = getLastSeenAtMs(kiosk);
+  if (lastSeenAtMs !== null && currentTimeMs - lastSeenAtMs <= AUTO_PURGE_AFTER_MS) return false;
+
+  return currentTimeMs - provisionedAtMs > AUTO_PURGE_AFTER_MS;
+}
+
 function getFunctionsBaseUrl(): string {
   const url = (import.meta.env.VITE_SUPABASE_URL || "") as string;
   if (!url) return "";
@@ -165,7 +193,7 @@ export default function KioskProvisioning() {
       if (kioskErr) throw kioskErr;
       if (tokenErr) throw tokenErr;
 
-      setKiosks((kioskData ?? []) as KioskRow[]);
+      const kioskRows = ((kioskData ?? []) as KioskRow[]).filter((kiosk) => !kiosk.revoked_at);
       setTokens((tokenData ?? []) as ProvisionTokenRow[]);
 
       // Daily secrets are optional until migration is applied.
@@ -174,14 +202,45 @@ export default function KioskProvisioning() {
         .select("kiosk_id,valid_date,issued_at,revoked_at")
         .eq("valid_date", manilaToday);
 
+      let secretRows: DailySecretRow[] = [];
       if (!secretErr && secretData) {
-        const map: Record<string, DailySecretRow> = {};
-        for (const row of secretData as DailySecretRow[]) map[row.kiosk_id] = row;
-        setTodaySecrets(map);
-      } else {
-        // If table doesn't exist yet, keep it empty without spamming errors.
-        setTodaySecrets({});
+        secretRows = (secretData as DailySecretRow[]).filter((row) => !row.revoked_at);
       }
+
+      const refreshNow = Date.now();
+      const staleKioskIds = kioskRows
+        .filter((kiosk) => shouldAutoPurgeKiosk(kiosk, secretRows.find((row) => row.kiosk_id === kiosk.kiosk_id), refreshNow))
+        .map((kiosk) => kiosk.kiosk_id);
+
+      let visibleKiosks = kioskRows;
+      let visibleSecrets = secretRows;
+
+      if (staleKioskIds.length > 0) {
+        const revokedAt = new Date(refreshNow).toISOString();
+        const [{ error: revokeKioskErr }, { error: revokeSecretErr }] = await Promise.all([
+          supabase.from("kiosk_devices").update({ revoked_at: revokedAt }).in("kiosk_id", staleKioskIds).is("revoked_at", null),
+          supabase.from("kiosk_daily_secrets").update({ revoked_at: revokedAt }).in("kiosk_id", staleKioskIds).is("revoked_at", null),
+        ]);
+
+        if (revokeKioskErr) throw revokeKioskErr;
+        if (revokeSecretErr) {
+          console.warn("Failed to revoke stale kiosk daily secrets", revokeSecretErr);
+        }
+
+        const purged = new Set(staleKioskIds);
+        visibleKiosks = kioskRows.filter((kiosk) => !purged.has(kiosk.kiosk_id));
+        visibleSecrets = secretRows.filter((row) => !purged.has(row.kiosk_id));
+
+        toast.success(`Auto-purged ${staleKioskIds.length} stale kiosk${staleKioskIds.length === 1 ? "" : "s"}`, {
+          description: `Provisioned more than ${AUTO_PURGE_AFTER_DAYS} days ago and no longer active.`,
+        });
+      }
+
+      setKiosks(visibleKiosks);
+
+      const map: Record<string, DailySecretRow> = {};
+      for (const row of visibleSecrets) map[row.kiosk_id] = row;
+      setTodaySecrets(map);
     } catch (e) {
       toast.error("Failed to load kiosks data", { description: e instanceof Error ? e.message : String(e) });
     } finally {

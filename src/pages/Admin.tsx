@@ -9,12 +9,10 @@ import AdminLogs from "@/components/admin/AdminLogs";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus, RotateCcw, UserPlus, Activity, ScrollText } from "lucide-react";
+import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus, RotateCcw, UserPlus, Activity, ScrollText, FolderKanban, ClipboardList, CheckCircle2 } from "lucide-react";
 
 import ControlPanel from "@/components/admin/ControlPanel";
 import VoterManagement from "@/components/admin/VoterManagement";
@@ -89,28 +87,19 @@ async function writeAdminAuditLog(payload: AuditLogPayload) {
 }
 
 
-
+function PageIntro({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="mb-4 rounded-xl border bg-card/60 p-5">
+      <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+      <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+    </div>
+  );
+}
 
 export default function Admin() {
   const navigate = useNavigate();
 
-  const [resetElectionId, setResetElectionId] = useState("");
-  const [resetVoterId, setResetVoterId] = useState("");
-  const [resetBusy, setResetBusy] = useState(false);
-
   
-  const [resetAuditLoading, setResetAuditLoading] = useState(true);
-  const [recentResets, setRecentResets] = useState<
-    Array<{
-      id: number;
-      created_at: string;
-      admin_id: string | null;
-      entity_id: string;
-      details: any;
-    }>
-  >([]);
-
-
   const [opsAuditLoading, setOpsAuditLoading] = useState(true);
   const [opsAuditEntries, setOpsAuditEntries] = useState<
     Array<{
@@ -191,33 +180,13 @@ export default function Admin() {
 
 
 
-  const loadRecentResets = async () => {
-    setResetAuditLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from("admin_audit_logs")
-        .select("id, created_at, admin_id, entity_id, details")
-        .eq("action", "RESET_VOTER_FOR_ELECTION")
-        .order("created_at", { ascending: false })
-        .limit(5);
-
-      if (error) throw error;
-      setRecentResets(data ?? []);
-    } catch (e) {
-      // Silent: this is a convenience panel, not a blocker.
-      setRecentResets([]);
-    } finally {
-      setResetAuditLoading(false);
-    }
-  };
-
   const loadOpsAuditFeed = async () => {
     setOpsAuditLoading(true);
     try {
       const { data, error } = await supabase
         .from("admin_audit_logs")
         .select("id, created_at, admin_id, action, entity_type, entity_id, details")
-        .in("action", ["APP_SETTING_UPDATE", "RESET_VOTER_FOR_ELECTION"])
+        .eq("action", "APP_SETTING_UPDATE")
         .order("created_at", { ascending: false })
         .limit(10);
 
@@ -233,7 +202,6 @@ export default function Admin() {
 
 
   useEffect(() => {
-    void loadRecentResets();
     void loadOpsAuditFeed();
   }, []);
 
@@ -327,70 +295,6 @@ export default function Admin() {
   };
 
 
-  const handleAdminResetVoter = async () => {
-    const electionId = resetElectionId.trim();
-    const voterId = resetVoterId.trim();
-
-    if (!electionId || !voterId) {
-      toast.error("Missing fields", { description: "Please provide both electionId and voterId." });
-      return;
-    }
-
-    const confirmed = window.confirm(
-      "This will DELETE the voter's votes and voter_election_status for the given election (even if FINAL).\n\nProceed?"
-    );
-    if (!confirmed) return;
-
-    setResetBusy(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("admin-reset-voter", {
-        body: { electionId, voterId },
-      });
-
-      if (error) {
-        toast.error("Reset failed", { description: error.message });
-        return;
-      }
-
-      if (!data?.ok) {
-        toast.error("Reset failed", { description: data?.error ?? "Unknown error." });
-        return;
-      }
-
-      toast.success("Voter reset complete", {
-        description: `Cleared vote state for voter ${voterId} in election ${electionId}.`,
-      });
-
-
-      // Best-effort audit trail (do not block success UX)
-      try {
-        const { data: authData } = await supabase.auth.getUser();
-        const admin = authData.user;
-        const adminEmail = admin?.email ?? null;
-
-        await writeAdminAuditLog({
-          action: "RESET_VOTER_FOR_ELECTION",
-          entity_type: "election",
-          entity_id: electionId,
-          details: {
-            voter_id: voterId,
-            election_id: electionId,
-            admin_email: adminEmail,
-          },
-        });
-
-        await loadRecentResets();
-        void loadOpsAuditFeed();
-      } catch {
-        // ignore
-      }
-    } catch (e) {
-      toast.error("Reset failed", { description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setResetBusy(false);
-    }
-  };
-
   return (
     <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-feu-green/10 via-background to-feu-gold/10 animate-fade-in-up">
 
@@ -469,59 +373,44 @@ export default function Admin() {
       </header>
 
       <main className="max-w-7xl mx-auto p-6 animate-fade-in-up">
-        <Tabs defaultValue="analytics" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-9">
-            <TabsTrigger value="analytics">
-              <BarChart className="h-4 w-4 mr-2" />
-              Operations
+        <Tabs defaultValue="overview" className="space-y-6">
+          <TabsList className="grid h-auto w-full grid-cols-2 gap-2 md:grid-cols-6">
+            <TabsTrigger value="overview" className="gap-2">
+              <BarChart className="h-4 w-4" />
+              <span>Overview</span>
             </TabsTrigger>
-
-            <TabsTrigger value="elections">
-              <Vote className="h-4 w-4 mr-2" />
-              Elections
+            <TabsTrigger value="elections" className="gap-2">
+              <Vote className="h-4 w-4" />
+              <span>Elections</span>
             </TabsTrigger>
-
-            <TabsTrigger value="voters">
-              <Users className="h-4 w-4 mr-2" />
-              Voters
+            <TabsTrigger value="voters" className="gap-2">
+              <Users className="h-4 w-4" />
+              <span>Voters</span>
             </TabsTrigger>
-
-            <TabsTrigger value="requests">
-              <Inbox className="h-4 w-4 mr-2" />
-              Requests
+            <TabsTrigger value="membership" className="gap-2">
+              <FolderKanban className="h-4 w-4" />
+              <span>Membership</span>
             </TabsTrigger>
-
-            <TabsTrigger value="rosters">
-              <ListPlus className="h-4 w-4 mr-2" />
-              Rosters
+            <TabsTrigger value="kiosks" className="gap-2">
+              <ListPlus className="h-4 w-4" />
+              <span>Kiosks</span>
             </TabsTrigger>
-
-
-            <TabsTrigger value="kiosks">
-              Kiosks
-            </TabsTrigger>
-
-            <TabsTrigger value="zk">
-              <Shield className="h-4 w-4 mr-2" />
-              ZK
-            </TabsTrigger>
-
-            <TabsTrigger value="zk-tally">
-              <Activity className="h-4 w-4 mr-2" />
-              ZK Tally
-            </TabsTrigger>
-
-            <TabsTrigger value="logs">
-              <ScrollText className="h-4 w-4 mr-2" />
-              Logs
+            <TabsTrigger value="verification" className="gap-2">
+              <CheckCircle2 className="h-4 w-4" />
+              <span>Verification</span>
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="analytics">
+          <TabsContent value="overview" className="space-y-6">
+            <PageIntro
+              title="Overview"
+              description="Monitor election operations, registration status, and recent audit activity from one place."
+            />
+
             <ControlPanel />
 
-            <div className="mt-6 space-y-6">
-              <Card>
+            <div className="grid gap-6 xl:grid-cols-12">
+              <Card className="xl:col-span-4">
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2">
                     <UserPlus className="h-4 w-4" />
@@ -566,14 +455,18 @@ export default function Admin() {
                 </CardContent>
               </Card>
 
-              
-              <Card>
+              <Card className="xl:col-span-8">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between gap-3">
-                    <CardTitle className="flex items-center gap-2">
-                      <Activity className="h-4 w-4" />
-                      Operations Audit Feed
-                    </CardTitle>
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <Activity className="h-4 w-4" />
+                        Operations Audit Feed
+                      </CardTitle>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Recent registration-related admin actions surfaced as compact activity cards.
+                      </p>
+                    </div>
                     <Button
                       type="button"
                       variant="outline"
@@ -590,44 +483,36 @@ export default function Admin() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-muted-foreground">
-                    Recent high-impact Operations actions (registration toggles and voter resets).
-                  </p>
-
                   {opsAuditLoading ? (
-                    <p className="mt-3 text-sm text-muted-foreground">Loading…</p>
+                    <p className="text-sm text-muted-foreground">Loading…</p>
                   ) : opsAuditEntries.length === 0 ? (
-                    <p className="mt-3 text-sm text-muted-foreground">No recent Operations actions.</p>
+                    <p className="text-sm text-muted-foreground">No recent Operations actions.</p>
                   ) : (
-                    <div className="mt-3 space-y-2">
+                    <div className="grid gap-3 md:grid-cols-2">
                       {opsAuditEntries.map((row) => {
                         const actionLabel =
                           row.action === "APP_SETTING_UPDATE" && row.details?.key === "registration_enabled"
                             ? `Registration ${row.details?.to ? "opened" : "closed"}`
-                            : row.action === "RESET_VOTER_FOR_ELECTION"
-                              ? "Reset voter for election"
-                              : row.action;
+                            : row.action;
 
                         const meta =
-                          row.action === "RESET_VOTER_FOR_ELECTION"
-                            ? `Election: ${row.entity_id} • Voter: ${row.details?.voter_id ?? "—"}`
-                            : row.action === "APP_SETTING_UPDATE"
-                              ? `Setting: ${row.details?.key ?? row.entity_type}`
-                              : `${row.entity_type}: ${row.entity_id}`;
+                          row.action === "APP_SETTING_UPDATE"
+                            ? `Setting: ${row.details?.key ?? row.entity_type}`
+                            : `${row.entity_type}: ${row.entity_id}`;
 
                         return (
                           <div key={row.id} className="rounded-lg border bg-background p-3">
                             <div className="flex items-start justify-between gap-3">
                               <div>
                                 <p className="text-sm font-medium text-foreground">{actionLabel}</p>
-                                <p className="text-xs text-muted-foreground mt-1">{meta}</p>
+                                <p className="mt-1 text-xs text-muted-foreground">{meta}</p>
                               </div>
                               <div className="text-right">
                                 <p className="text-xs text-muted-foreground">
                                   {row.created_at ? new Date(row.created_at).toLocaleString() : "—"}
                                 </p>
                                 {row.details?.admin_email ? (
-                                  <p className="text-xs text-muted-foreground mt-1">{row.details.admin_email}</p>
+                                  <p className="mt-1 text-xs text-muted-foreground">{row.details.admin_email}</p>
                                 ) : null}
                               </div>
                             </div>
@@ -639,118 +524,101 @@ export default function Admin() {
                 </CardContent>
               </Card>
 
-<Card>
+              <Card className="xl:col-span-12">
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2">
-                    <RotateCcw className="h-4 w-4" />
-                    Testing / Maintenance: Reset Voter for an Election
+                    <ScrollText className="h-4 w-4" />
+                    Recent Audit Logs
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <p className="text-sm text-muted-foreground">
-                    This is intended for test resets only. It clears the selected voter's vote state for the given election
-                    (votes + voter_election_status) via the secure{" "}
-                    <code className="px-1 py-0.5 rounded bg-muted">admin-reset-voter</code> Edge Function.
+                <CardContent>
+                  <p className="mb-4 text-sm text-muted-foreground">
+                    Full admin activity stays visible from Overview so operators do not need a separate logs tab.
                   </p>
-
-                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3">
-                    <p className="text-xs font-medium text-destructive">Danger Zone</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Use only for testing/maintenance. This action removes recorded vote state for a voter in a specific election.
-                    </p>
-
-                    <div className="mt-3 space-y-1">
-                      <p className="text-xs font-medium text-foreground">Recent resets</p>
-                      {resetAuditLoading ? (
-                        <p className="text-xs text-muted-foreground">Loading…</p>
-                      ) : recentResets.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">No recent reset actions logged.</p>
-                      ) : (
-                        <div className="space-y-1">
-                          {recentResets.map((r) => (
-                            <div key={r.id} className="text-xs text-muted-foreground">
-                              <span className="text-foreground">
-                                {new Date(r.created_at).toLocaleString()}
-                              </span>{" "}
-                              — election <code className="px-1 py-0.5 rounded bg-muted">{r.entity_id}</code>, voter{" "}
-                              <code className="px-1 py-0.5 rounded bg-muted">{r.details?.voter_id ?? "—"}</code>
-                              {r.details?.admin_email ? ` (by ${r.details.admin_email})` : ""}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label htmlFor="reset-election-id">Election ID (UUID)</Label>
-                      <Input
-                        id="reset-election-id"
-                        value={resetElectionId}
-                        onChange={(e) => setResetElectionId(e.target.value)}
-                        placeholder="e.g. 2f2d7c7a-...."
-                        autoComplete="off"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="reset-voter-id">Voter ID (UUID)</Label>
-                      <Input
-                        id="reset-voter-id"
-                        value={resetVoterId}
-                        onChange={(e) => setResetVoterId(e.target.value)}
-                        placeholder="e.g. 9a61a3b1-...."
-                        autoComplete="off"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-end">
-                    <Button onClick={handleAdminResetVoter} disabled={resetBusy}>
-                      <RotateCcw className="h-4 w-4 mr-2" />
-                      {resetBusy ? "Resetting..." : "Reset Voter"}
-                    </Button>
-                  </div>
+                  <AdminLogs />
                 </CardContent>
               </Card>
             </div>
           </TabsContent>
 
-          <TabsContent value="elections">
+          <TabsContent value="elections" className="space-y-6">
+            <PageIntro
+              title="Elections"
+              description="Create, configure, and manage the active election and its candidates."
+            />
             <ElectionManagement />
           </TabsContent>
 
-          <TabsContent value="voters">
+          <TabsContent value="voters" className="space-y-6">
+            <PageIntro
+              title="Voters"
+              description="Manage the voter registry, eligibility, and voter records."
+            />
             <VoterManagement />
           </TabsContent>
 
-          <TabsContent value="requests">
-            <OrgMembershipRequests />
+          <TabsContent value="membership" className="space-y-6">
+            <PageIntro
+              title="Membership"
+              description="Review incoming membership requests and manage approved rosters in one workspace."
+            />
+            <Tabs defaultValue="requests" className="space-y-4">
+              <TabsList className="grid w-full grid-cols-2 md:w-[340px]">
+                <TabsTrigger value="requests" className="gap-2">
+                  <Inbox className="h-4 w-4" />
+                  Requests
+                </TabsTrigger>
+                <TabsTrigger value="roster" className="gap-2">
+                  <ClipboardList className="h-4 w-4" />
+                  Roster
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="requests">
+                <OrgMembershipRequests />
+              </TabsContent>
+
+              <TabsContent value="roster">
+                <RostersManagement />
+              </TabsContent>
+            </Tabs>
           </TabsContent>
 
-          <TabsContent value="rosters">
-            <RostersManagement />
-          </TabsContent>
-
-          <TabsContent value="kiosks">
+          <TabsContent value="kiosks" className="space-y-6">
+            <PageIntro
+              title="Kiosks"
+              description="Provision devices and monitor kiosk readiness for election operations."
+            />
             <KioskProvisioning />
           </TabsContent>
 
+          <TabsContent value="verification" className="space-y-6">
+            <PageIntro
+              title="Verification"
+              description="Generate zero-knowledge proof artifacts and verify tally integrity from one tab."
+            />
+            <Tabs defaultValue="proofs" className="space-y-4">
+              <TabsList className="grid w-full grid-cols-2 md:w-[360px]">
+                <TabsTrigger value="proofs" className="gap-2">
+                  <Shield className="h-4 w-4" />
+                  Proofs
+                </TabsTrigger>
+                <TabsTrigger value="tally" className="gap-2">
+                  <ScrollText className="h-4 w-4" />
+                  Tally Verification
+                </TabsTrigger>
+              </TabsList>
 
-          <TabsContent value="zk">
-            <ZKVerification />
-          </TabsContent>
-        
+              <TabsContent value="proofs">
+                <ZKVerification />
+              </TabsContent>
 
-          <TabsContent value="zk-tally">
-            <ZKTally />
+              <TabsContent value="tally">
+                <ZKTally />
+              </TabsContent>
+            </Tabs>
           </TabsContent>
-
-          <TabsContent value="logs">
-            <AdminLogs />
-          </TabsContent>
-</Tabs>
+        </Tabs>
       </main>
     </div>
   );
