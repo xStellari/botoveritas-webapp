@@ -78,17 +78,24 @@ async function computeResultsHashField(witness: any): Promise<string> {
   }
 
   const poseidon = await circomlibjs.buildPoseidon();
+  const F = poseidon.F;
+
+  const pose2 = (a: bigint, b: bigint): bigint => {
+    return BigInt(F.toObject(poseidon([a, b])));
+  };
+
   const domain = toBigIntDec(pub.resultsCommitDomainField);
   const electionIdHash = toBigIntDec(pub.electionIdHashField);
   const root = toBigIntDec(pub.electionVoteRootField);
   const manifestHash = toBigIntDec(pub.manifestHashField);
 
-  let h: bigint = BigInt(poseidon([domain, electionIdHash]));
-  h = BigInt(poseidon([h, root]));
-  h = BigInt(poseidon([h, manifestHash]));
+  let h = pose2(domain, electionIdHash);
+  h = pose2(h, root);
+  h = pose2(h, manifestHash);
   for (const v of cir.foldVector) {
-    h = BigInt(poseidon([h, toBigIntDec(v)]));
+    h = pose2(h, toBigIntDec(v));
   }
+
   return h.toString(10);
 }
 
