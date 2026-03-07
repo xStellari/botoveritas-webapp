@@ -24,13 +24,13 @@ async function post<T>(fnName: string, body: Json): Promise<T> {
 
   if (!kioskId) {
     throw new Error(
-      "Kiosk not configured (missing kiosk id). Visit /kiosk/setup?kiosk_id=...&kiosk_secret=... to provision this device."
+      "Kiosk not configured (missing kiosk id). Visit /kiosk/setup?kiosk_id=...&kiosk_secret=... to provision this device.",
     );
   }
 
   if (!kioskSecret) {
     throw new Error(
-      "Kiosk not configured (missing secret). Visit /kiosk/setup?kiosk_id=...&kiosk_secret=... to provision this device."
+      "Kiosk not configured (missing secret). Visit /kiosk/setup?kiosk_id=...&kiosk_secret=... to provision this device.",
     );
   }
 
@@ -38,6 +38,8 @@ async function post<T>(fnName: string, body: Json): Promise<T> {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "apikey": ((import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY as string | undefined) || "",
+      "Authorization": `Bearer ${(((import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY as string | undefined) || "")}`,
       "x-kiosk-id": kioskId,
       "x-kiosk-secret": kioskSecret,
     },
@@ -60,15 +62,11 @@ async function post<T>(fnName: string, body: Json): Promise<T> {
     throw err;
   }
 
-
-// Transparent weekly secret rotation: if server returns rotate_secret, persist it.
-const rotateSecret = parsed?.rotate_secret as string | undefined;
-if (rotateSecret && typeof rotateSecret === "string" && rotateSecret.trim()) {
-  // Persist to localStorage to survive refresh/crash as requested.
-  if (rotateSecret && typeof rotateSecret === "string") {
+  // Transparent weekly secret rotation: if server returns rotate_secret, persist it.
+  const rotateSecret = parsed?.rotate_secret as string | undefined;
+  if (rotateSecret && typeof rotateSecret === "string" && rotateSecret.trim()) {
     updateKioskSecret(rotateSecret, { persist: true });
   }
-}
 
   return parsed as T;
 }
@@ -103,12 +101,28 @@ export type KioskSelection = {
   is_abstain: boolean;
 };
 
+export type KioskVoterElectionStatus = {
+  election_id: string;
+  has_voted: boolean;
+};
+
 export async function kioskSubmitVotes(args: {
   voter_id: string;
   election_id: string;
   selections: KioskSelection[];
 }): Promise<{ ok: true }> {
   return await post<{ ok: true }>("kiosk-submit-votes", args as any);
+}
+
+export async function kioskGetVoterElectionStatus(args: {
+  voter_id: string;
+  election_ids: string[];
+}): Promise<KioskVoterElectionStatus[]> {
+  const out = await post<{
+    ok: true;
+    statuses: KioskVoterElectionStatus[];
+  }>("kiosk-get-voter-election-status", args as any);
+  return Array.isArray(out.statuses) ? out.statuses : [];
 }
 
 export async function kioskSession(action: string, payload: Json): Promise<any> {
