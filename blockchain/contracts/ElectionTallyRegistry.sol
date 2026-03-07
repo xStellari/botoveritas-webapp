@@ -10,7 +10,21 @@ interface ITallyGroth16Verifier {
   ) external view returns (bool);
 }
 
+interface IElectionRootAnchor {
+  function isElectionRootAnchored(bytes32 electionId) external view returns (bool);
+
+  function electionBallotsRoot(bytes32 electionId) external view returns (bytes32);
+  function electionManifestHash(bytes32 electionId) external view returns (bytes32);
+
+  function electionBallotsRootField(bytes32 electionId) external view returns (uint256);
+  function electionManifestHashField(bytes32 electionId) external view returns (uint256);
+}
+
 contract ElectionTallyRegistry {
+  // BN254 scalar field (r) for Groth16 public inputs.
+  uint256 public constant SNARK_SCALAR_FIELD =
+    21888242871839275222246405745257275088548364400416034343698204186575808495617;
+
   struct TallyRecord {
     bytes32 electionIdHash;
     bytes32 electionVoteRoot;
@@ -23,6 +37,7 @@ contract ElectionTallyRegistry {
 
   mapping(bytes32 => TallyRecord) private _tallies;
   ITallyGroth16Verifier public verifier;
+  IElectionRootAnchor public anchor;
   address public owner;
 
   event TallySubmitted(
@@ -41,15 +56,22 @@ contract ElectionTallyRegistry {
     _;
   }
 
-  constructor(address verifierAddress) {
+  constructor(address verifierAddress, address anchorAddress) {
     require(verifierAddress != address(0), "VERIFIER_ZERO");
+    require(anchorAddress != address(0), "ANCHOR_ZERO");
     verifier = ITallyGroth16Verifier(verifierAddress);
+    anchor = IElectionRootAnchor(anchorAddress);
     owner = msg.sender;
   }
 
   function setVerifier(address verifierAddress) external onlyOwner {
     require(verifierAddress != address(0), "VERIFIER_ZERO");
     verifier = ITallyGroth16Verifier(verifierAddress);
+  }
+
+  function setAnchor(address anchorAddress) external onlyOwner {
+    require(anchorAddress != address(0), "ANCHOR_ZERO");
+    anchor = IElectionRootAnchor(anchorAddress);
   }
 
   function tallyKey(bytes32 electionIdHash, bytes32 electionVoteRoot) public pure returns (bytes32) {
@@ -83,11 +105,27 @@ function submitTally(
     require(_tallies[key].submittedAt == 0, "TALLY_ALREADY_SUBMITTED");
     require(bytes(resultsUri).length != 0, "RESULTS_URI_EMPTY");
 
+    // Canonical binding to anchored election state (ZK v2)
+    require(anchor.isElectionRootAnchored(electionIdHash), "ELECTION_NOT_ANCHORED");
+    require(anchor.electionBallotsRoot(electionIdHash) == electionVoteRoot, "ROOT_MISMATCH");
+
+    bytes32 anchoredManifest = anchor.electionManifestHash(electionIdHash);
+    require(anchoredManifest != bytes32(0), "MANIFEST_NOT_ANCHORED");
+    require(anchoredManifest == manifestHash, "MANIFEST_MISMATCH");
+
+    // Ensure resultsHash is a valid BN254 field element.
+    uint256 resultsField = uint256(resultsHash);
+    require(resultsField < SNARK_SCALAR_FIELD, "RESULTS_HASH_NOT_FIELD");
+
+    // Defensive cross-check: stored field-reduced anchors match our conversion.
+    require(anchor.electionBallotsRootField(electionIdHash) == _toField(electionVoteRoot), "ROOT_FIELD_MISMATCH");
+    require(anchor.electionManifestHashField(electionIdHash) == _toField(manifestHash), "MANIFEST_FIELD_MISMATCH");
+
     uint256[4] memory input = [
-      uint256(electionIdHash),
-      uint256(electionVoteRoot),
-      uint256(manifestHash),
-      uint256(resultsHash)
+      _toField(electionIdHash),
+      _toField(electionVoteRoot),
+      _toField(manifestHash),
+      resultsField
     ];
 
     require(verifier.verifyProof(a, b, c, input), "INVALID_PROOF");
@@ -112,5 +150,9 @@ function submitTally(
       msg.sender,
       uint64(block.timestamp)
     );
+  }
+
+  function _toField(bytes32 x) internal pure returns (uint256) {
+    return uint256(x) % SNARK_SCALAR_FIELD;
   }
 }
