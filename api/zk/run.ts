@@ -1,7 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
-import { ethers } from "ethers";
-import * as snarkjs from "snarkjs";
+import { createHash } from "node:crypto";
+
+// snarkjs ships without reliable TS declarations in some serverless setups; runtime import is safe.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const snarkjs: any = require("snarkjs");
 
 // circomlibjs ships without TS types; runtime import is safe.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -16,6 +19,11 @@ type ZkRunResponse = {
   verifyMs: number;
   proofSha256?: string;
   publicSignalsSha256?: string;
+  proofJsonUrl?: string;
+  publicSignalsJsonUrl?: string;
+  manifestHash?: string;
+  electionVoteRoot?: string;
+  resultsHash?: string;
   positionsTotal?: number;
   positionsMatched?: number;
   mismatchCount?: number;
@@ -44,10 +52,8 @@ function isUuid(v: string) {
 }
 
 async function sha256Hex(input: string | Uint8Array): Promise<string> {
-  const data = typeof input === "string" ? new TextEncoder().encode(input) : input;
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  const bytes = new Uint8Array(digest);
-  return "0x" + Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const data = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
+  return "0x" + createHash("sha256").update(data).digest("hex");
 }
 
 function toBigIntDec(x: string | number): bigint {
@@ -93,31 +99,26 @@ function buildSnarkjsInputFromWitness(witness: any) {
   if (!pub?.electionIdHashField || !pub?.electionVoteRootField || !pub?.manifestHashField || !pub?.resultsHashField) {
     throw new Error("Missing witness.publicInputs fields for proving");
   }
-  if (!cir?.abstain || !cir?.countsByPosition) {
-    throw new Error("Missing witness.circuitInputs.{abstain,countsByPosition}");
+  if (typeof cir?.positionCount === "undefined" || !Array.isArray(cir?.candidateCounts) || !Array.isArray(cir?.abstain) || !Array.isArray(cir?.tallies)) {
+    throw new Error("Missing witness.circuitInputs.{positionCount,candidateCounts,abstain,tallies}");
   }
   if (!Array.isArray(tallyPositions) || tallyPositions.length === 0) {
     throw new Error("Missing witness.tally.positions[]");
   }
 
-  const input: Record<string, any> = {
+  const candidateCounts = (cir.candidateCounts as Array<string | number>).map((x) => String(x));
+  const tallies = (cir.tallies as Array<Array<string | number>>).map((row) => (row ?? []).map((x) => String(x)));
+
+  return {
     electionIdHash: String(pub.electionIdHashField),
     electionVoteRoot: String(pub.electionVoteRootField),
     manifestHash: String(pub.manifestHashField),
     resultsHash: String(pub.resultsHashField),
+    positionCount: String(cir.positionCount),
+    candidateCounts,
     abstain: (cir.abstain as Array<string | number>).map((x) => String(x)),
+    tallies,
   };
-
-  for (let i = 0; i < tallyPositions.length; i++) {
-    const candidateCount = Array.isArray(tallyPositions[i]?.candidates) ? tallyPositions[i].candidates.length : 0;
-    const row = (cir.countsByPosition?.[i] ?? []) as Array<string | number>;
-    if (row.length !== candidateCount) {
-      throw new Error(`countsByPosition[${i}] length mismatch: got ${row.length}, expected ${candidateCount}`);
-    }
-    input[`counts_${i}`] = row.map((x) => String(x));
-  }
-
-  return input;
 }
 
 async function recountDbTallies(service: any, electionId: string, witness: any) {
@@ -255,15 +256,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 5) Download proving artifacts from Supabase Storage
     const bucket = envAny("ZK_ARTIFACTS_BUCKET") ?? "zk-artifacts";
-    const wasmKey = envAny("ZK_TALLY_WASM_KEY") ?? "tally/tally.wasm";
-    const zkeyKey = envAny("ZK_TALLY_ZKEY_KEY") ?? "tally/tally_final.zkey";
-    const vkeyKey = envAny("ZK_TALLY_VKEY_KEY") ?? "tally/verification_key.json";
+    const wasmKey = envAny("ZK_TALLY_WASM_KEY") ?? "tally/BV_TALLY_UNIVERSAL_V1/tally_js/tally.wasm";
+    const zkeyKey = envAny("ZK_TALLY_ZKEY_KEY") ?? "tally/BV_TALLY_UNIVERSAL_V1/tally_final.zkey";
+    const vkeyKey = envAny("ZK_TALLY_VKEY_KEY") ?? "tally/BV_TALLY_UNIVERSAL_V1/verification_key.json";
 
     const download = async (key: string) => {
       const { data, error } = await service.storage.from(bucket).download(key);
       if (error) throw new Error(`Failed to download artifact ${bucket}/${key}: ${error.message}`);
       const ab = await data.arrayBuffer();
-      return new Uint8Array(ab);
+      return Buffer.from(ab);
     };
 
     const [wasmBytes, zkeyBytes, vkeyBytes] = await Promise.all([download(wasmKey), download(zkeyKey), download(vkeyKey)]);
@@ -283,16 +284,59 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 6) Prove + verify
     const genStart = Date.now();
-    const { proof, publicSignals } = await (snarkjs as any).groth16.fullProve(snarkInput, wasmPath, zkeyPath);
+    const { proof, publicSignals } = await snarkjs.groth16.fullProve(snarkInput, wasmPath, zkeyPath);
     const genMs = Date.now() - genStart;
 
     const vKey = JSON.parse(fs.readFileSync(vkeyPath, "utf8"));
     const verifyStart = Date.now();
-    const proofVerified = await (snarkjs as any).groth16.verify(vKey, publicSignals, proof);
+    const proofVerified = await snarkjs.groth16.verify(vKey, publicSignals, proof);
     const verifyMs = Date.now() - verifyStart;
 
     const proofSha256 = await sha256Hex(JSON.stringify(proof));
     const publicSignalsSha256 = await sha256Hex(JSON.stringify(publicSignals));
+
+    const manifestHash = String(witness.publicInputs.manifestHashField);
+    const electionVoteRoot = String(witness.publicInputs.electionVoteRootField);
+    const resultsHash = String(witness.publicInputs.resultsHashField);
+    const proofJsonUrl = `tally/BV_TALLY_UNIVERSAL_V1/${electionId}/proof.json`;
+    const publicSignalsJsonUrl = `tally/BV_TALLY_UNIVERSAL_V1/${electionId}/publicSignals.json`;
+
+    const proofUpload = await service.storage.from("zk-proofs").upload(
+      proofJsonUrl,
+      JSON.stringify(proof, null, 2),
+      { upsert: true, contentType: "application/json" },
+    );
+    if (proofUpload.error) {
+      throw new Error(`Failed to upload proof.json: ${proofUpload.error.message}`);
+    }
+
+    const publicSignalsUpload = await service.storage.from("zk-proofs").upload(
+      publicSignalsJsonUrl,
+      JSON.stringify(publicSignals, null, 2),
+      { upsert: true, contentType: "application/json" },
+    );
+    if (publicSignalsUpload.error) {
+      throw new Error(`Failed to upload publicSignals.json: ${publicSignalsUpload.error.message}`);
+    }
+
+    const now = new Date().toISOString();
+    const proofRow = {
+      election_id: electionId,
+      status: proofVerified ? "proved" : "prove_failed",
+      manifest_hash: manifestHash,
+      election_vote_root: electionVoteRoot,
+      results_hash: resultsHash,
+      proof_json_url: proofJsonUrl,
+      public_signals_json_url: publicSignalsJsonUrl,
+      error_message: proofVerified ? null : "Backend self-verification failed",
+      updated_at: now,
+    };
+    const { error: proofRowErr } = await service
+      .from("election_tally_proofs")
+      .upsert(proofRow as any, { onConflict: "election_id" });
+    if (proofRowErr) {
+      throw new Error(`Failed to upsert election_tally_proofs row: ${proofRowErr.message}`);
+    }
 
     // 7) Tally accuracy (DB recount vs witness tally)
     const { positionsTotal, positionsMatched, mismatchCount, accuracy } = await recountDbTallies(service, electionId, witness);
@@ -306,6 +350,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       verifyMs,
       proofSha256,
       publicSignalsSha256,
+      proofJsonUrl,
+      publicSignalsJsonUrl,
+      manifestHash,
+      electionVoteRoot,
+      resultsHash,
       positionsTotal,
       positionsMatched,
       mismatchCount,
