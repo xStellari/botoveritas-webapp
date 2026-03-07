@@ -223,16 +223,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const service = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-    // 2) Call witness generator (server-side, using kiosk secret)
-    const kioskSecret = requireEnvAny("KIOSK_SECRET", "KIOSK_RECEIPT_SECRET");
+    // 2) Call witness generator as the authenticated admin user
     const witnessUrl = `${supabaseUrl}/functions/v1/generate-zk-tally-witness`;
     const witnessRes = await fetch(witnessUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-kiosk-secret": kioskSecret,
+        Authorization: authHeader,
       },
-      body: JSON.stringify({ electionId, strict_chunks_match: true, check_onchain: true }),
+      body: JSON.stringify({
+        electionId,
+        strict_chunks_match: true,
+        check_onchain: true,
+      }),
     });
 
     const witnessJson = await witnessRes.json().catch(() => null);
