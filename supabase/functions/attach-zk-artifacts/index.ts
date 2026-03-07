@@ -1,13 +1,14 @@
-import { serve } from "std/http/server";
+// Use an explicit std URL so Supabase bundling/deploy doesn't depend on import maps.
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "@supabase/supabase-js";
 import { requireAdmin } from "../_shared/requireAdmin.ts";
 
 type Body = {
   electionId: string;
   // Storage keys (paths) to pinned artifacts
-  wasmKey: string; // e.g. tally/BV_TALLY_V1/<manifest_hash>/tally_js/tally.wasm
-  zkeyKey: string; // e.g. tally/BV_TALLY_V1/<manifest_hash>/tally_final.zkey
-  vkeyKey: string; // e.g. tally/BV_TALLY_V1/<manifest_hash>/verification_key.json
+  wasmKey: string; // e.g. tally/BV_TALLY_UNIVERSAL_V1/tally_js/tally.wasm
+  zkeyKey: string; // e.g. tally/BV_TALLY_UNIVERSAL_V1/tally_final.zkey
+  vkeyKey: string; // e.g. tally/BV_TALLY_UNIVERSAL_V1/verification_key.json
 };
 
 const corsHeaders: Record<string, string> = {
@@ -31,12 +32,18 @@ function requireEnv(name: string): string {
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  // TS in some environments treats Uint8Array.buffer as ArrayBuffer | SharedArrayBuffer.
+  // crypto.subtle.digest expects BufferSource backed by ArrayBuffer.
+  // Copy into a fresh ArrayBuffer to avoid SharedArrayBuffer typing issues.
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", copy.buffer);
   const arr = Array.from(new Uint8Array(digest));
   return arr.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function downloadBytes(supabase: ReturnType<typeof createClient>, bucket: string, key: string): Promise<Uint8Array> {
+// Keep this loosely typed to avoid SupabaseClient generic mismatches across different generated Database types.
+async function downloadBytes(supabase: any, bucket: string, key: string): Promise<Uint8Array> {
   const { data, error } = await supabase.storage.from(bucket).download(key);
   if (error || !data) throw new Error(`download failed ${bucket}/${key}: ${error?.message ?? "no data"}`);
   const ab = await data.arrayBuffer();
@@ -89,7 +96,7 @@ serve(async (req: Request) => {
     const nextManifest = {
       ...(mRow.manifest ?? {}),
       artifacts: {
-        circuit: { id: "tally", version: "BV_TALLY_V1" },
+        circuit: { id: "tally", version: "BV_TALLY_UNIVERSAL_V1" },
         wasm: { bucket, key: body.wasmKey, sha256: wasmSha },
         zkey: { bucket, key: body.zkeyKey, sha256: zkeySha },
         vkey: { bucket, key: body.vkeyKey, sha256: vkeySha },

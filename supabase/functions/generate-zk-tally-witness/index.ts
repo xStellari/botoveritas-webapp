@@ -114,6 +114,10 @@ function isUuid(v: string) {
 
 // ✅ Must match anchor-election-root
 const CHUNK_SIZE = 512;
+const MAX_POSITIONS = 20;
+const MAX_CANDIDATES_PER_POSITION = 5;
+const RESULTS_COMMIT_DOMAIN = "223344556";
+const CIRCUIT_VERSION = "BV_TALLY_UNIVERSAL_V1";
 
 // -------------------- Hashing + Merkle (MUST MATCH ANCHOR) --------------------
 
@@ -254,7 +258,13 @@ function normalizeWhitespace(s: string) {
 function bytes32ToFieldDec(hex: string): string {
   const h = String(hex || "").toLowerCase();
   const clean = h.startsWith("0x") ? h : `0x${h}`;
-  return BigInt(clean).toString(10);
+
+  // BN254 scalar field (r) for Groth16 public inputs.
+  // MUST match the constant used on-chain in ElectionRootAnchor / ElectionTallyRegistry.
+  const SNARK_SCALAR_FIELD =
+    21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+  return (BigInt(clean) % SNARK_SCALAR_FIELD).toString(10);
 }
 
 function ensure0x(hex: string): string {
@@ -285,6 +295,7 @@ function extractPositionsFromManifest(manifest: any): TallyPosition[] {
 const ELECTION_ROOT_ANCHOR_ABI = [
   "function isElectionRootAnchored(bytes32 electionId) external view returns (bool)",
   "function electionBallotsRoot(bytes32 electionId) external view returns (bytes32)",
+  "function electionManifestHash(bytes32 electionId) external view returns (bytes32)",
 ];
 
 // -------------------- Edge Function --------------------
@@ -562,7 +573,26 @@ serve(async (req: Request) => {
         } else {
           const onchainRoot: string = await contract.electionBallotsRoot(electionIdBytes32);
           const matches = String(onchainRoot).toLowerCase() === String(electionRoot).toLowerCase();
-          onchainCheck = { status: "anchored", anchored: true, anchorAddress, onchainRoot, matches };
+          let onchainManifestHash: string | null = null;
+          let manifestMatches: boolean | null = null;
+          try {
+            onchainManifestHash = await contract.electionManifestHash(electionIdBytes32);
+            manifestMatches = String(onchainManifestHash).toLowerCase() === String(manifestHash).toLowerCase();
+          } catch {
+            // Legacy anchor deployments may not store manifest hash.
+            onchainManifestHash = null;
+            manifestMatches = null;
+          }
+
+          onchainCheck = {
+            status: "anchored",
+            anchored: true,
+            anchorAddress,
+            onchainRoot,
+            matches,
+            onchainManifestHash,
+            manifestMatches,
+          };
         }
       } catch (e) {
         onchainCheck = {
@@ -579,14 +609,29 @@ serve(async (req: Request) => {
     }
 
     // 9) Compute tallies based on manifest ordering
-    // Output arrays: tallies[positionIndex][candidateIndex] = count, plus abstain per position
+    // Universal shape: positionCount + candidateCounts[20] + abstain[20] + tallies[20][5]
     const positionCount = manifestPositions.length;
+    if (positionCount > MAX_POSITIONS) {
+      return json(409, {
+        error: `Election exceeds universal tally bounds: positions=${positionCount}, max=${MAX_POSITIONS}`,
+        electionId,
+      });
+    }
+    for (const p of manifestPositions) {
+      if (p.candidates.length > MAX_CANDIDATES_PER_POSITION) {
+        return json(409, {
+          error: `Election exceeds universal tally bounds: position "${p.title}" has ${p.candidates.length} candidates, max=${MAX_CANDIDATES_PER_POSITION}`,
+          electionId,
+        });
+      }
+    }
 
-    // For each position, size = number of candidates
-    const candidateCounts: number[][] = manifestPositions.map((p) =>
-      new Array(p.candidates.length).fill(0)
-    );
-    const abstainCounts: number[] = new Array(positionCount).fill(0);
+    const talliesMatrix: number[][] = Array.from({ length: MAX_POSITIONS }, () => new Array(MAX_CANDIDATES_PER_POSITION).fill(0));
+    const candidateCounts: number[] = new Array(MAX_POSITIONS).fill(0);
+    const abstainCounts: number[] = new Array(MAX_POSITIONS).fill(0);
+    for (let i = 0; i < positionCount; i++) {
+      candidateCounts[i] = manifestPositions[i]?.candidates.length ?? 0;
+    }
 
     // Also track unknown votes (should be 0 if manifest matches ballots)
     const unknown: Array<{
@@ -643,23 +688,25 @@ serve(async (req: Request) => {
         continue;
       }
 
-      candidateCounts[pIdx][cIdx] = (candidateCounts[pIdx][cIdx] ?? 0) + 1;
+      talliesMatrix[pIdx][cIdx] = (talliesMatrix[pIdx][cIdx] ?? 0) + 1;
     }
 
     // 10) Build witness payload
     const foldVector = (() => {
-      const out: number[] = [];
-      for (let i = 0; i < abstainCounts.length; i++) {
-        out.push(abstainCounts[i] ?? 0);
-        const row = candidateCounts[i] ?? [];
-        for (const c of row) out.push(c ?? 0);
+      const out: string[] = [];
+      out.push(BigInt(positionCount).toString(10));
+      for (let i = 0; i < MAX_POSITIONS; i++) out.push(BigInt(candidateCounts[i] ?? 0).toString(10));
+      for (let i = 0; i < MAX_POSITIONS; i++) out.push(BigInt(abstainCounts[i] ?? 0).toString(10));
+      for (let i = 0; i < MAX_POSITIONS; i++) {
+        const row = talliesMatrix[i] ?? [];
+        for (let j = 0; j < MAX_CANDIDATES_PER_POSITION; j++) out.push(BigInt(row[j] ?? 0).toString(10));
       }
       return out;
     })();
 
     // 10.1) Compute resultsHashField in-edge (deployment-ready)
-    // Must match zk/scripts/compute-results-hash.ts + generated circuit.
-    const resultsCommitDomainField = "123456789";
+    // Must match zk/scripts/compute-results-hash.ts + universal tally.circom.
+    const resultsCommitDomainField = RESULTS_COMMIT_DOMAIN;
     const { computeResultsHashField } = await import("../_shared/poseidonFold.ts");
     const resultsHashField = await computeResultsHashField({
       domain: resultsCommitDomainField,
@@ -670,7 +717,7 @@ serve(async (req: Request) => {
     });
 
     const witness = {
-      specVersion: "BV_ZK_TALLY_WITNESS_V1",
+      specVersion: "BV_ZK_TALLY_WITNESS_UNIVERSAL_V1",
       election: {
         id: electionRow.id,
         title: electionRow.title,
@@ -687,11 +734,11 @@ serve(async (req: Request) => {
       },
       publicInputs: {
         // snarkjs publicSignals want field elements (decimal strings)
-        // Order (BV_TALLY_PROOF_V1):
+        // Order (BV_TALLY_UNIVERSAL_V1):
         // [0] electionIdHash
         // [1] electionVoteRoot
         // [2] manifestHash
-        // [3] resultsHash  (computed during proving; NOT computed in this edge function)
+        // [3] resultsHash
         electionIdHashField: bytes32ToFieldDec(electionIdBytes32),
         electionVoteRootField: bytes32ToFieldDec(ensure0x(electionRoot)),
         manifestHashField: bytes32ToFieldDec(ensure0x(manifestHash)),
@@ -700,10 +747,14 @@ serve(async (req: Request) => {
         resultsHashField,
       },
       circuitInputs: {
-        // Maps 1:1 with generated zk/circuits/tally.circom signals
+        // Maps 1:1 with the universal tally circuit.
+        positionCount,
+        candidateCounts,
         abstain: abstainCounts,
-        countsByPosition: candidateCounts,
-        // Flattened in fold order: (abstain0, counts0..., abstain1, counts1..., ...)
+        tallies: talliesMatrix,
+        // Legacy alias kept for non-circuit display/debug helpers.
+        countsByPosition: talliesMatrix,
+        // Flattened in fold order expected by results-hash helpers.
         foldVector,
       },
       integrity: {
@@ -726,15 +777,17 @@ serve(async (req: Request) => {
             id: c.id,
             name: c.name,
             slate: c.slate ?? null,
-            votes: candidateCounts[i]?.[c.index] ?? 0,
+            votes: talliesMatrix[i]?.[c.index] ?? 0,
           })),
           abstain: abstainCounts[i] ?? 0,
           totalBallotsForPosition:
-            (candidateCounts[i]?.reduce((a, b) => a + b, 0) ?? 0) + (abstainCounts[i] ?? 0),
+            (talliesMatrix[i]?.reduce((a, b) => a + b, 0) ?? 0) + (abstainCounts[i] ?? 0),
         })),
         // Circuit-friendly raw arrays (index-aligned)
         candidateCounts,
         abstainCounts,
+        talliesMatrix,
+        circuitVersion: CIRCUIT_VERSION,
       },
       generatedAt: new Date().toISOString(),
     };

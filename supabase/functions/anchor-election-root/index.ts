@@ -297,9 +297,12 @@ async function generateAndUpsertManifest(args: {
 // -------------------- On-chain anchor --------------------
 
 const ELECTION_ROOT_ANCHOR_ABI = [
+  // ZK v2 canonical anchor (root + manifest)
+  "function anchorElection(bytes32 electionId, bytes32 merkleRoot, bytes32 manifestHash) external",
   "function anchorElectionBallotsRoot(bytes32 electionId, bytes32 merkleRoot) external",
   "function isElectionRootAnchored(bytes32 electionId) external view returns (bool)",
   "function electionBallotsRoot(bytes32 electionId) external view returns (bytes32)",
+  "function electionManifestHash(bytes32 electionId) external view returns (bytes32)",
 ];
 
 serve(async (req: Request) => {
@@ -494,7 +497,17 @@ serve(async (req: Request) => {
 
     if (alreadyAnchored) {
       const onchainRoot: string = await contract.electionBallotsRoot(electionIdBytes32);
+      let onchainManifest: string | null = null;
+      try {
+        onchainManifest = await contract.electionManifestHash(electionIdBytes32);
+      } catch {
+        // Legacy deployments may not have manifest anchoring.
+        onchainManifest = null;
+      }
       const matches = onchainRoot.toLowerCase() === electionRoot.toLowerCase();
+      const manifestMatches = onchainManifest
+        ? onchainManifest.toLowerCase() === manifestHash.toLowerCase()
+        : null;
 
       return json(200, {
         status: "already_anchored",
@@ -508,14 +521,23 @@ serve(async (req: Request) => {
         chunkCount: chunkRoots.length,
         computedElectionRoot: electionRoot,
         onchainElectionRoot: onchainRoot,
+        onchainManifestHash: onchainManifest,
         matches,
+        manifestMatches,
         warning: matches
           ? null
           : "On-chain root differs from computed root. This indicates different anchoring rules were used previously.",
       });
     }
 
-    const tx = await contract.anchorElectionBallotsRoot(electionIdBytes32, electionRoot);
+    // Prefer ZK v2 canonical anchor (root + manifest). Fall back to legacy root-only anchor.
+    let tx: any;
+    try {
+      tx = await contract.anchorElection(electionIdBytes32, electionRoot, manifestHash);
+    } catch (e) {
+      console.warn("[anchor-election-root] anchorElection unavailable, falling back to anchorElectionBallotsRoot", e);
+      tx = await contract.anchorElectionBallotsRoot(electionIdBytes32, electionRoot);
+    }
     const receipt = await tx.wait();
 
     const explorerBase = envAny("AMOY_EXPLORER_BASE") || "https://amoy.polygonscan.com";

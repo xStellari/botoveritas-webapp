@@ -265,10 +265,13 @@ serve(async (req: Request) => {
       },
       zk: {
   circuitId: "tally",
-  circuitVersion: "BV_TALLY_V1",
+  circuitVersion: "BV_TALLY_UNIVERSAL_V1",
   chunkSize: CHUNK_SIZE,
-  // artifacts will be attached/pinned after admin uploads to Storage
-  artifacts: null,
+  artifacts: {
+    wasm: { bucket: "zk-artifacts", key: "tally/BV_TALLY_UNIVERSAL_V1/tally_js/tally.wasm" },
+    zkey: { bucket: "zk-artifacts", key: "tally/BV_TALLY_UNIVERSAL_V1/tally_final.zkey" },
+    vkey: { bucket: "zk-artifacts", key: "tally/BV_TALLY_UNIVERSAL_V1/verification_key.json" },
+  },
 },
 snapshot: {
   finalizedAt: election.finalized_at ?? null,

@@ -29,13 +29,13 @@ export async function requireAdmin(opts: {
 
   const { data: roleRow, error: roleErr } = await service
     .from("user_roles")
-    .select("role,active")
+    .select("role")
     .eq("user_id", user.id)
     .eq("role", "admin")
     .maybeSingle();
 
   if (roleErr) throw Object.assign(new Error(roleErr.message), { status: 500 });
-  if (!roleRow || roleRow.active !== true) {
+  if (!roleRow) {
     throw Object.assign(new Error("Forbidden: admin access required"), { status: 403 });
   }
 

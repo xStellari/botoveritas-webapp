@@ -1,5 +1,5 @@
 // supabase/functions/_shared/poseidonFold.ts
-// Poseidon folding helper for BV_ZK_TALLY_WITNESS_V1
+// Poseidon folding helper for BV_ZK_TALLY_WITNESS_UNIVERSAL_V1
 //
 // This MUST match zk/scripts/compute-results-hash.ts and the generated Circom
 // circuit from zk/scripts/generate-tally-circuit.ts.
@@ -78,7 +78,7 @@ function coerceToBigInt(v: unknown): bigint {
 }
 
 /**
- * Poseidon fold (BV_TALLY_RESULT_COMMIT_V1):
+ * Poseidon fold (BV_TALLY_UNIVERSAL_V1):
  *   h0 = Poseidon(domain, electionIdHash)
  *   h1 = Poseidon(h0, electionVoteRoot)
  *   h2 = Poseidon(h1, manifestHash)
