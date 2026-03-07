@@ -47,6 +47,10 @@
       "dest": "/api/verify/nft/[tokenId].ts?tokenId=$1"
     },
     {
+      "src": "^/api/zk/run/?$",
+      "dest": "/api/zk/run.ts"
+    },
+    {
       "handle": "filesystem"
     },
     {
