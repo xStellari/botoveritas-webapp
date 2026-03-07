@@ -51,3 +51,5 @@ zk/**/*.ptau
 
 # optional: local dumps
 schema.sql
+
+zk/manifests/*.json
