@@ -13,7 +13,7 @@
  *     - tally.r1cs
  *     - tally.wasm
  *     - tally.sym
- *     - pot12_final.ptau
+ *     - pot{power}_final.ptau (default power=14)
  *     - tally_0000.zkey (initial)
  *     - tally_final.zkey
  *     - verification_key.json
@@ -31,16 +31,21 @@
  *   CIRCOM_BIN=circom
  *   ZK_ENTROPY="your-entropy-string"   (recommended; otherwise auto-generated)
  */
-
+import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 
-const ROOT = process.cwd();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// Always resolve repo root regardless of where this script is invoked from (e.g., blockchain/)
+const ROOT = path.resolve(__dirname, "..", "..");
 const CIRCUIT_PATH = path.join(ROOT, "zk", "circuits", "tally.circom");
 const META_PATH = path.join(ROOT, "zk", "circuits", "tally.meta.json");
 const BUILD_DIR = path.join(ROOT, "zk", "build", "tally");
+const CIRCOM_INCLUDE_DIR = path.join(ROOT, "zk", "node_modules");
 
 function resolveCmd(cmd: string): string {
   // On Windows, "npx" is typically "npx.cmd". Using shell=true causes quoting issues
@@ -51,11 +56,76 @@ function resolveCmd(cmd: string): string {
 
 function run(cmd: string, args: string[], opts?: { cwd?: string }) {
   const resolved = resolveCmd(cmd);
-  const res = spawnSync(resolved, args, {
-    stdio: "inherit",
-    cwd: opts?.cwd ?? ROOT,
-    shell: false,
-  });
+
+  const useShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved);
+
+  // When executing .cmd/.bat on Windows we must go through a shell. In that mode,
+  // we also have to quote args ourselves (Node won't do it correctly and paths
+  // like "E:\\web app\\..." will get split).
+  const quote = (s: string) => {
+    if (!useShell) return s;
+    // Quote if it contains spaces or shell metacharacters
+    return /[\s"&()^<>|]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
+  };
+
+  // We use stdio: "inherit" for good UX (snarkjs progress bars, etc.).
+  // Note: when stdio is inherited, stdout/stderr are not captured in `res.*`.
+  const res = useShell
+    ? spawnSync(`${resolved} ${args.map(quote).join(" ")}`, {
+        stdio: "inherit",
+        cwd: opts?.cwd ?? ROOT,
+        shell: true,
+      })
+    : spawnSync(resolved, args, {
+        stdio: "inherit",
+        cwd: opts?.cwd ?? ROOT,
+        shell: false,
+      });
+
+  // If the process failed to spawn at all (common on Windows when resolving .cmd),
+  // surface the underlying spawn error clearly.
+  if (res.error) {
+    throw new Error(
+      `Command failed to start: ${resolved} ${args.join(" ")}
+` +
+        `Spawn error: ${res.error.message}`
+    );
+  }
+
+  if (res.status !== 0) {
+    throw new Error(
+      `Command failed: ${resolved} ${args.join(" ")}
+` +
+        `Exit code: ${res.status ?? "unknown"}${res.signal ? ` (signal: ${res.signal})` : ""}`
+    );
+  }
+}
+
+function runWithInput(cmd: string, args: string[], input: string, opts?: { cwd?: string }) {
+  const resolved = resolveCmd(cmd);
+
+  const useShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved);
+
+  const quote = (s: string) => {
+    if (!useShell) return s;
+    return /[\s"&()^<>|]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
+  };
+
+  const res = useShell
+    ? spawnSync(`${resolved} ${args.map(quote).join(" ")}`, {
+        input,
+        stdio: ["pipe", "pipe", "pipe"],
+        cwd: opts?.cwd ?? ROOT,
+        shell: true,
+        encoding: "utf-8",
+      })
+    : spawnSync(resolved, args, {
+        input,
+        stdio: ["pipe", "pipe", "pipe"],
+        cwd: opts?.cwd ?? ROOT,
+        shell: false,
+        encoding: "utf-8",
+      });
   if (res.status !== 0) {
     throw new Error(`Command failed: ${resolved} ${args.join(" ")}`);
   }
@@ -113,41 +183,73 @@ async function main() {
   safeWriteGuard(sym, force);
 
   console.log("\n[1/4] Compiling circuit with circom…");
-  run(circomBin, [CIRCUIT_PATH, "--r1cs", "--wasm", "--sym", "-o", BUILD_DIR]);
+  run(circomBin, [CIRCUIT_PATH, "--r1cs", "--wasm", "--sym", "-o", BUILD_DIR, "-l", CIRCOM_INCLUDE_DIR]);
 
   if (!exists(wasm)) {
     throw new Error(`Expected wasm not found: ${wasm}. Check circom output.`);
   }
 
-  // Powers of Tau (phase 1) — dev-local ceremony (bn128).
-  // Power 12 supports up to ~4096 constraints; increase if your circuit grows.
-  const ptau0 = path.join(BUILD_DIR, "pot12_0000.ptau");
-  const ptau1 = path.join(BUILD_DIR, "pot12_0001.ptau");
-  const ptauFinal = path.join(BUILD_DIR, "pot12_final.ptau");
+// Powers of Tau (phase 1 + phase 2).
+//
+// IMPORTANT:
+// - Power must be large enough for your circuit constraints.
+//   Your current tally circuit is ~13k constraints, so PTAU power 16 is the recommended default (14 may be too small as the circuit evolves).
+// - We avoid interactive prompts for CI-friendliness by using a beacon contribution.
+const PTAU_POWER = Number(process.env.BV_PTAU_POWER ?? "16");
+if (!Number.isFinite(PTAU_POWER) || PTAU_POWER < 10 || PTAU_POWER > 22) {
+  throw new Error(`Invalid BV_PTAU_POWER=${process.env.BV_PTAU_POWER}. Use a number between 10 and 22.`);
+}
 
-  if (!exists(ptauFinal)) {
-    console.log("\n[2/4] Preparing ptau… (generating locally via snarkjs)");
-    safeWriteGuard(ptau0, force);
-    safeWriteGuard(ptau1, force);
-    safeWriteGuard(ptauFinal, force);
+const ptau0 = path.join(BUILD_DIR, `pot${PTAU_POWER}_0000.ptau`);
+const ptau1 = path.join(BUILD_DIR, `pot${PTAU_POWER}_0001.ptau`);
+const ptauFinal = path.join(BUILD_DIR, `pot${PTAU_POWER}_final.ptau`);
 
-    run("npx", ["snarkjs", "powersoftau", "new", "bn128", "12", ptau0, "-v"]);
+if (!exists(ptauFinal)) {
+  console.log("\n[2/4] Preparing ptau…");
+
+  // Phase 1: generate initial ptau if missing
+  if (!exists(ptau0)) {
+    console.log(`  - Generating: ${ptau0}`);
+    // snarkjs 'powersoftau new' does not accept '-v' in some versions.
+    run("npx", ["snarkjs", "powersoftau", "new", "bn128", String(PTAU_POWER), ptau0]);
+  } else {
+    console.log(`  - Reusing existing: ${ptau0}`);
+  }
+
+  // Phase 1: non-interactive contribution (beacon) if missing
+  if (!exists(ptau1)) {
+    console.log(`  - Beacon contribution: ${ptau1}`);
+    // Beacon must be 32 bytes hex (64 chars). Provide via env var to keep it stable across machines.
+    let beacon = (process.env.BV_PTAU_BEACON ?? "").trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(beacon)) {
+      beacon = crypto.randomBytes(32).toString("hex");
+      console.log(`    * BV_PTAU_BEACON not set/invalid; generated beacon: ${beacon}`);
+    } else {
+      console.log(`    * Using BV_PTAU_BEACON: ${beacon}`);
+    }
+
+    // 10 iterations is snarkjs convention; name is informational.
     run("npx", [
       "snarkjs",
       "powersoftau",
-      "contribute",
+      "beacon",
       ptau0,
       ptau1,
-      "--name",
-      "BV dev contribution",
-      "-v",
-      "-e",
-      getEntropy(),
+      beacon,
+      "10",
+      "-n=BV_beacon",
     ]);
-    run("npx", ["snarkjs", "powersoftau", "prepare", "phase2", ptau1, ptauFinal, "-v"]);
   } else {
-    console.log(`\n[2/4] Using existing ptau: ${ptauFinal}`);
+    console.log(`  - Reusing existing: ${ptau1}`);
   }
+
+  // Phase 2: prepare phase2 if missing
+  console.log(`  - Preparing phase2: ${ptauFinal}`);
+  run("npx", ["snarkjs", "powersoftau", "prepare", "phase2", ptau1, ptauFinal, "-v"]);
+} else {
+  console.log(`
+[2/4] Using existing ptau: ${ptauFinal}`);
+}
 
   // Groth16 setup
   const zkey0 = path.join(BUILD_DIR, "tally_0000.zkey");
@@ -164,17 +266,25 @@ async function main() {
   run("npx", ["snarkjs", "groth16", "setup", r1cs, ptauFinal, zkey0]);
 
   console.log("\n[4/4] Contribute + export verifier…");
+  // Non-interactive finalization of zkey (CI-friendly) using a beacon.
+  // Provide BV_ZKEY_BEACON (64 hex chars) to make builds reproducible.
+  let zkeyBeacon = (process.env.BV_ZKEY_BEACON ?? "").trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(zkeyBeacon)) {
+    zkeyBeacon = crypto.randomBytes(32).toString("hex");
+    console.log(`  * BV_ZKEY_BEACON not set/invalid; generated beacon: ${zkeyBeacon}`);
+  } else {
+    console.log(`  * Using BV_ZKEY_BEACON: ${zkeyBeacon}`);
+  }
+
   run("npx", [
     "snarkjs",
     "zkey",
-    "contribute",
+    "beacon",
     zkey0,
     zkeyFinal,
-    "--name",
-    "BV dev contribution",
-    "-v",
-    "-e",
-    getEntropy(),
+    zkeyBeacon,
+    "10",
+    "-n=BV_zkey_beacon",
   ]);
   run("npx", ["snarkjs", "zkey", "export", "verificationkey", zkeyFinal, vkey]);
   run("npx", ["snarkjs", "zkey", "export", "solidityverifier", zkeyFinal, verifierSol]);

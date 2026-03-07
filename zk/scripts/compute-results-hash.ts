@@ -1,152 +1,115 @@
 #!/usr/bin/env node
 /**
- * zk/scripts/compute-results-hash.ts
- *
- * Computes the Poseidon-fold `resultsHashField` that must match the constraint in
- * zk/circuits/tally.circom (BV_TALLY_RESULT_COMMIT_V1).
- *
- * Input: a witness JSON produced by the Edge Function `generate-zk-tally-witness`
- * (Step 2.7), containing:
- *   witness.publicInputs.{electionIdHashField,electionVoteRootField,manifestHashField,resultsCommitDomainField}
- *   witness.circuitInputs.foldVector[]
- *
- * Output:
- *  - prints:
- *      resultsHashField (decimal string)
- *      resultsHashBytes32 (0x.. 32-byte hex; uint256 padded)
- *  - writes an updated witness json with witness.publicInputs.resultsHashField filled in
- *    (unless --dryRun)
- *
- * Usage:
- *   node zk/scripts/compute-results-hash.ts <witness.json> [--out <out.json>] [--dryRun]
- *
- * Notes:
- * - Requires dependency: circomlibjs (Poseidon implementation)
- *   Install (once): npm i -D circomlibjs
+ * Production-safe results hash computation matching the universal tally circuit.
  */
-
+import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
+// @ts-ignore
+import { buildPoseidon } from "circomlibjs";
 
 type WitnessJson = {
   witness?: {
-    publicInputs?: {
-      electionIdHashField?: string;
-      electionVoteRootField?: string;
-      manifestHashField?: string;
-      resultsCommitDomainField?: string;
-      resultsHashField?: string | null;
-    };
+    publicInputs?: Record<string, any>;
     circuitInputs?: {
-      foldVector?: Array<string | number>;
+      foldVector?: any[];
+      positionCount?: any;
+      candidateCounts?: any[];
+      abstain?: any[];
+      tallies?: any[][];
+      countsByPosition?: any[][];
     };
   };
 };
 
+const RESULTS_COMMIT_DOMAIN = 223344556n;
+const MAX_POSITIONS = 20;
+const MAX_CANDIDATES = 5;
+
 function parseArgs(argv: string[]) {
-  const args: { file?: string; out?: string; dryRun?: boolean } = {};
+  const args: { file?: string; out?: string } = {};
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (!args.file && !a.startsWith("--")) args.file = a;
     else if (a === "--out") args.out = argv[++i];
-    else if (a === "--dryRun") args.dryRun = true;
   }
   return args;
 }
 
-function readJson<T>(filePath: string): T {
-  return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
-}
+function readJson<T>(p: string): T { return JSON.parse(fs.readFileSync(p, "utf8")) as T; }
+function writeJson(p: string, v: unknown) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(v, null, 2), "utf8"); }
+function bytesToBigIntBE(bytes: Uint8Array): bigint { const hex = Buffer.from(bytes).toString("hex"); return BigInt("0x" + (hex.length ? hex : "00")); }
+function toBigIntAny(x: any): bigint { if (typeof x === "bigint") return x; if (typeof x === "number") return BigInt(x); if (typeof x === "string") { const s = x.trim(); return BigInt(s.startsWith("0x") || s.startsWith("0X") ? s : s); } if (x instanceof Uint8Array) return bytesToBigIntBE(x); if (Array.isArray(x)) return bytesToBigIntBE(Uint8Array.from(x.map(Number))); return BigInt(String(x)); }
+function toBytes32Hex(n: bigint): string { let hex = n.toString(16); if (hex.length > 64) hex = hex.slice(-64); return "0x" + hex.padStart(64, "0"); }
 
-function writeJson(filePath: string, data: unknown) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
-}
-
-function toBigIntDec(x: string | number): bigint {
-  if (typeof x === "number") return BigInt(x);
-  const s = String(x).trim();
-  if (s.startsWith("0x")) return BigInt(s);
-  return BigInt(s);
-}
-
-function toBytes32Hex(n: bigint): string {
-  if (n < 0n) throw new Error("Cannot encode negative bigint as bytes32");
-  let hex = n.toString(16);
-  if (hex.length > 64) throw new Error(`Value too large for bytes32 (hex len=${hex.length})`);
-  hex = hex.padStart(64, "0");
-  return `0x${hex}`;
+function buildUniversalFoldVector(cir: NonNullable<WitnessJson['witness']>['circuitInputs']) {
+  const positionCount = toBigIntAny(cir?.positionCount ?? 0).toString(10);
+  const candidateCounts = Array.isArray(cir?.candidateCounts) ? cir!.candidateCounts : [];
+  const abstain = Array.isArray(cir?.abstain) ? cir!.abstain : [];
+  const tallies = Array.isArray(cir?.tallies) ? cir!.tallies : [];
+  const out: bigint[] = [toBigIntAny(positionCount)];
+  for (let i = 0; i < MAX_POSITIONS; i++) out.push(toBigIntAny(candidateCounts[i] ?? 0));
+  for (let i = 0; i < MAX_POSITIONS; i++) out.push(toBigIntAny(abstain[i] ?? 0));
+  for (let i = 0; i < MAX_POSITIONS; i++) {
+    const row = Array.isArray(tallies[i]) ? tallies[i] : [];
+    for (let j = 0; j < MAX_CANDIDATES; j++) out.push(toBigIntAny(row[j] ?? 0));
+  }
+  return out;
 }
 
 async function main() {
   const args = parseArgs(process.argv);
   if (!args.file) {
-    console.error("Usage: compute-results-hash <witness.json> [--out <out.json>] [--dryRun]");
-    process.exit(1);
+    console.error("Usage: npx tsx zk/scripts/compute-results-hash.ts <witness.json> --out <out.json>");
+    process.exit(2);
   }
 
-  const data = readJson<WitnessJson>(args.file);
+  const inputPath = path.resolve(args.file);
+  const outPath = path.resolve(args.out ?? inputPath);
+  const w = readJson<WitnessJson>(inputPath);
+  const pub = w.witness?.publicInputs ?? {};
+  const cir = w.witness?.circuitInputs ?? {};
 
-  const pub = data.witness?.publicInputs;
-  const cir = data.witness?.circuitInputs;
+  const electionIdHash = toBigIntAny(pub.electionIdHashField);
+  const root = toBigIntAny(pub.electionVoteRootField);
+  const manifestHash = toBigIntAny(pub.manifestHashField);
 
-  if (!pub?.electionIdHashField || !pub.electionVoteRootField || !pub.manifestHashField) {
-    throw new Error("Missing witness.publicInputs.{electionIdHashField,electionVoteRootField,manifestHashField}");
-  }
-  if (!pub.resultsCommitDomainField) {
-    throw new Error("Missing witness.publicInputs.resultsCommitDomainField");
-  }
-  if (!cir?.foldVector || !Array.isArray(cir.foldVector)) {
-    throw new Error("Missing witness.circuitInputs.foldVector[]");
-  }
-
-  // Lazy import so the script can show a helpful error if dependency is missing.
-  let poseidon: any;
-  try {
-    // @ts-ignore - circomlibjs has no bundled TS types; runtime import is valid once installed.
-    const circomlibjs: any = await import("circomlibjs");
-    const poseidonFactory = circomlibjs.buildPoseidon;
-    if (typeof poseidonFactory !== "function") throw new Error("circomlibjs.buildPoseidon not found");
-    poseidon = await poseidonFactory();
-  } catch (e) {
-    console.error("Missing dependency: circomlibjs");
-    console.error("Install: npm i -D circomlibjs");
-    throw e;
+  let foldVector: bigint[] = [];
+  if (Array.isArray(cir.foldVector) && cir.foldVector.length) {
+    foldVector = cir.foldVector.map(toBigIntAny);
+  } else if (typeof cir.positionCount !== "undefined" && Array.isArray(cir.candidateCounts) && Array.isArray(cir.abstain) && Array.isArray(cir.tallies)) {
+    foldVector = buildUniversalFoldVector(cir);
+  } else if (Array.isArray(cir.abstain) && Array.isArray(cir.countsByPosition)) {
+    for (let i = 0; i < cir.abstain.length; i++) {
+      foldVector.push(toBigIntAny(cir.abstain[i]));
+      for (const c of cir.countsByPosition[i] ?? []) foldVector.push(toBigIntAny(c));
+    }
+  } else {
+    throw new Error("Missing foldVector or universal tally vectors in witness JSON");
   }
 
-  const domain = toBigIntDec(pub.resultsCommitDomainField);
-  const electionIdHash = toBigIntDec(pub.electionIdHashField);
-  const root = toBigIntDec(pub.electionVoteRootField);
-  const manifestHash = toBigIntDec(pub.manifestHashField);
+  const poseidon = await buildPoseidon();
+  const F = poseidon.F;
+  const pose2 = (a: bigint, b: bigint): bigint => F.toObject(poseidon([a, b])) as bigint;
 
-  // Poseidon fold: h = Poseidon(domain, electionIdHash) -> Poseidon(h, root) -> Poseidon(h, manifestHash)
-  let h: bigint = BigInt(poseidon([domain, electionIdHash]));
-  h = BigInt(poseidon([h, root]));
-  h = BigInt(poseidon([h, manifestHash]));
+  let h = pose2(RESULTS_COMMIT_DOMAIN, electionIdHash);
+  h = pose2(h, root);
+  h = pose2(h, manifestHash);
+  for (const x of foldVector) h = pose2(h, x);
 
-  for (const v of cir.foldVector) {
-    const x = toBigIntDec(v);
-    h = BigInt(poseidon([h, x]));
+  w.witness = w.witness ?? {};
+  w.witness.publicInputs = w.witness.publicInputs ?? {};
+  w.witness.publicInputs.resultsCommitDomainField = RESULTS_COMMIT_DOMAIN.toString(10);
+  w.witness.publicInputs.resultsHashField = h.toString(10);
+  if (!Array.isArray(w.witness.circuitInputs?.foldVector)) {
+    w.witness.circuitInputs = w.witness.circuitInputs ?? {};
+    w.witness.circuitInputs.foldVector = foldVector.map((x) => x.toString(10));
   }
 
-  const resultsHashField = h.toString(10);
-  const resultsHashBytes32 = toBytes32Hex(h);
-
-  console.log(`resultsHashField:   ${resultsHashField}`);
-  console.log(`resultsHashBytes32: ${resultsHashBytes32}`);
-
-  // Patch output unless dry-run
-  if (!args.dryRun) {
-    const outPath = args.out ?? args.file;
-    data.witness = data.witness ?? {};
-    data.witness.publicInputs = data.witness.publicInputs ?? {};
-    data.witness.publicInputs.resultsHashField = resultsHashField;
-    writeJson(outPath, data);
-    console.log(`Patched witness written: ${outPath}`);
-  }
+  console.log("resultsHashField:", h.toString(10));
+  console.log("resultsHashBytes32:", toBytes32Hex(h));
+  writeJson(outPath, w);
+  console.log("Wrote:", outPath);
 }
 
-main().catch((e) => {
-  console.error(String(e));
-  process.exit(1);
-});
+main().catch((e) => { console.error(e); process.exit(1); });

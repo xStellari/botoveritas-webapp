@@ -9,7 +9,7 @@
  * Usage:
  *   node zk/scripts/check-zk-env.ts
  */
-
+import "dotenv/config";
 import { spawnSync } from "node:child_process";
 
 function cmdOk(cmd: string, args: string[]) {

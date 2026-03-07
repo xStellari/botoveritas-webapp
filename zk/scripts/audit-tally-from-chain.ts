@@ -16,7 +16,7 @@
  *
  * Dependency: circomlibjs (Poseidon). Install once: npm i -D circomlibjs
  */
-
+import "dotenv/config";
 import fs from "node:fs";
 
 type ResultsJson = {
@@ -77,10 +77,10 @@ async function loadPoseidon() {
 }
 
 async function verifyResultsBinding(r: ResultsJson) {
-  if (r.schema !== "BV_RESULTS_JSON_V1") throw new Error("Unsupported results schema");
+  if (r.schema !== "BV_RESULTS_JSON_V2") throw new Error("Unsupported results schema");
 
   const poseidon = await loadPoseidon();
-  const domain = toBigIntDec(r.resultsCommitDomainField ?? "123456789");
+  const domain = toBigIntDec(r.resultsCommitDomainField ?? "223344556");
   const [electionIdHashField, rootField, manifestHashField, resultsHashField] = r.publicSignalsFieldDecimals;
 
   let h: bigint = BigInt(poseidon([domain, toBigIntDec(electionIdHashField)]));

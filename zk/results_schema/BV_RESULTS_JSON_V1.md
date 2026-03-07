@@ -1,4 +1,4 @@
-# BV_RESULTS_JSON_V1 (canonical results URI payload)
+# BV_RESULTS_JSON_V2 (canonical results URI payload)
 
 This document defines the JSON that `ElectionTallyRegistry.resultsUri` MUST point to.
 
@@ -8,7 +8,7 @@ This document defines the JSON that `ElectionTallyRegistry.resultsUri` MUST poin
 - Deterministic reconstruction of the exact `resultsHash` used in proof verification
 
 ## Required fields
-- `schema`: `"BV_RESULTS_JSON_V1"`
+- `schema`: `"BV_RESULTS_JSON_V2"`
 - `createdAt`: ISO timestamp string
 - `anchors`:
   - `electionIdHashBytes32`: `0x`-prefixed 32-byte hex

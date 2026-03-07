@@ -7,7 +7,7 @@
  * Inputs:
  * - witness.json (from Edge)  -> must contain circuitInputs + publicInputs (resultsHashField optional)
  * - proof.json + public.json (from snarkjs prove)
- * - results.json (canonical BV_RESULTS_JSON_V1)  -> optional; if missing, we can build it if meta exists
+ * - results.json (canonical BV_RESULTS_JSON_V2)  -> optional; if missing, we can build it if meta exists
  *
  * What it does:
  * 1) Ensures witness has resultsHashField (runs compute-results-hash.ts logic internally)
@@ -31,7 +31,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-
+import "dotenv/config";
 type SnarkProof = {
   pi_a: [string, string, string];
   pi_b: [[string, string, string], [string, string, string]];
@@ -172,10 +172,10 @@ async function computeTallyKey(electionIdHashBytes32: string, electionVoteRootBy
 }
 
 async function verifyResultsBinding(r: ResultsJson) {
-  if (r.schema !== "BV_RESULTS_JSON_V1") throw new Error("Unsupported results schema");
+  if (r.schema !== "BV_RESULTS_JSON_V2") throw new Error("Unsupported results schema");
   const poseidon = await loadPoseidon();
 
-  const domain = toBigIntDec(r.resultsCommitDomainField ?? "123456789");
+  const domain = toBigIntDec(r.resultsCommitDomainField ?? "223344556");
   const [electionIdHashField, rootField, manifestHashField, resultsHashField] = r.publicSignalsFieldDecimals;
 
   let h: bigint = BigInt(poseidon([domain, toBigIntDec(electionIdHashField)]));

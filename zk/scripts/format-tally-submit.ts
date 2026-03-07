@@ -23,8 +23,9 @@
  *     b = [[pi_b[0][1], pi_b[0][0]], [pi_b[1][1], pi_b[1][0]]]
  *     c = [pi_c[0], pi_c[1]]
  */
-
+import "dotenv/config";
 import fs from "node:fs";
+import "dotenv/config";
 
 type SnarkProof = {
   pi_a: [string, string, string];

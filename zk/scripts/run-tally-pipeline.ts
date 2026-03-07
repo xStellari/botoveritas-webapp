@@ -19,7 +19,7 @@
  * - This script calls other scripts you already have (Steps 2.6 → 2.16).
  * - It is intentionally conservative and will stop if a command fails.
  */
-
+import "dotenv/config";
 import { spawnSync } from "node:child_process";
 
 function parseArgs(argv: string[]) {

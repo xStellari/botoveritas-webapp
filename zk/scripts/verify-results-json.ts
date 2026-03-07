@@ -66,7 +66,7 @@ async function main() {
   }
 
   const r = readJson<ResultsJson>(results);
-  if (r.schema !== "BV_RESULTS_JSON_V1") throw new Error("Unsupported schema");
+  if (r.schema !== "BV_RESULTS_JSON_V2") throw new Error("Unsupported schema");
 
   const [electionIdHashField, rootField, manifestHashField, resultsHashField] = r.publicSignalsFieldDecimals;
   const foldVector = r.foldVector;
@@ -86,7 +86,7 @@ async function main() {
   }
 
   // Must match the circuit generator constant (BV_TALLY_RESULT_COMMIT_V1)
-  const domain = toBigIntDec(r.resultsCommitDomainField ?? "123456789");
+  const domain = toBigIntDec(r.resultsCommitDomainField ?? "223344556");
 
   let h: bigint = BigInt(poseidon([domain, toBigIntDec(electionIdHashField)]));
   h = BigInt(poseidon([h, toBigIntDec(rootField)]));

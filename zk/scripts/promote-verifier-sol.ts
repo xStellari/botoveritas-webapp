@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import "dotenv/config";
 
 const inPath = path.join("zk", "build", "tally", "verifier.sol");
 const outPath = path.join("blockchain", "contracts", "TallyGroth16Verifier.sol");
