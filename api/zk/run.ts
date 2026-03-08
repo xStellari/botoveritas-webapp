@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
-import { buildPublicSignalsFromWitnessPublicInputs } from "../../src/lib/zkCanonical";
 
 // snarkjs ships without reliable TS declarations in some serverless setups; runtime import is safe.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -51,6 +50,20 @@ function isUuid(v: string) {
 async function sha256Hex(input: string | Uint8Array): Promise<string> {
   const data = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
   return "0x" + createHash("sha256").update(data).digest("hex");
+}
+
+
+function buildExpectedPublicSignalsFromWitness(witness: any): string[] {
+  const pub = witness?.publicInputs;
+  if (!pub?.electionIdHashField || !pub?.electionVoteRootField || !pub?.manifestHashField || !pub?.resultsHashField) {
+    throw new Error("Missing witness.publicInputs fields for public signal validation");
+  }
+  return [
+    String(pub.electionIdHashField),
+    String(pub.electionVoteRootField),
+    String(pub.manifestHashField),
+    String(pub.resultsHashField),
+  ];
 }
 
 function buildSnarkjsInputFromWitness(witness: any) {
@@ -252,12 +265,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { proof, publicSignals } = await snarkjs.groth16.fullProve(snarkInput, wasmPath, zkeyPath);
     const genMs = Date.now() - genStart;
 
-    const expectedPublicSignals = buildPublicSignalsFromWitnessPublicInputs({
-      electionIdHashField: witness.publicInputs.electionIdHashField,
-      electionVoteRootField: witness.publicInputs.electionVoteRootField,
-      manifestHashField: witness.publicInputs.manifestHashField,
-      resultsHashField: witness.publicInputs.resultsHashField,
-    });
+    const expectedPublicSignals = buildExpectedPublicSignalsFromWitness(witness);
 
     if (!Array.isArray(publicSignals) || publicSignals.length !== expectedPublicSignals.length) {
       throw new Error(`Unexpected publicSignals length: got ${Array.isArray(publicSignals) ? publicSignals.length : 'non-array'}, expected ${expectedPublicSignals.length}`);
