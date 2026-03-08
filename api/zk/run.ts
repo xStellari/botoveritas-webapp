@@ -1,14 +1,11 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
+import { buildPublicSignalsFromWitnessPublicInputs } from "../../src/lib/zkCanonical";
 
 // snarkjs ships without reliable TS declarations in some serverless setups; runtime import is safe.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const snarkjs: any = require("snarkjs");
-
-// circomlibjs ships without TS types; runtime import is safe.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const circomlibjs: any = require("circomlibjs");
 
 type ZkRunResponse = {
   ok: boolean;
@@ -54,49 +51,6 @@ function isUuid(v: string) {
 async function sha256Hex(input: string | Uint8Array): Promise<string> {
   const data = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
   return "0x" + createHash("sha256").update(data).digest("hex");
-}
-
-function toBigIntDec(x: string | number): bigint {
-  if (typeof x === "number") return BigInt(x);
-  const s = String(x).trim();
-  if (s.startsWith("0x")) return BigInt(s);
-  return BigInt(s);
-}
-
-async function computeResultsHashField(witness: any): Promise<string> {
-  const pub = witness?.publicInputs;
-  const cir = witness?.circuitInputs;
-
-  if (!pub?.electionIdHashField || !pub?.electionVoteRootField || !pub?.manifestHashField) {
-    throw new Error("Missing witness.publicInputs.{electionIdHashField,electionVoteRootField,manifestHashField}");
-  }
-  if (!pub?.resultsCommitDomainField) {
-    throw new Error("Missing witness.publicInputs.resultsCommitDomainField");
-  }
-  if (!cir?.foldVector || !Array.isArray(cir.foldVector)) {
-    throw new Error("Missing witness.circuitInputs.foldVector[]");
-  }
-
-  const poseidon = await circomlibjs.buildPoseidon();
-  const F = poseidon.F;
-
-  const pose2 = (a: bigint, b: bigint): bigint => {
-    return BigInt(F.toObject(poseidon([a, b])));
-  };
-
-  const domain = toBigIntDec(pub.resultsCommitDomainField);
-  const electionIdHash = toBigIntDec(pub.electionIdHashField);
-  const root = toBigIntDec(pub.electionVoteRootField);
-  const manifestHash = toBigIntDec(pub.manifestHashField);
-
-  let h = pose2(domain, electionIdHash);
-  h = pose2(h, root);
-  h = pose2(h, manifestHash);
-  for (const v of cir.foldVector) {
-    h = pose2(h, toBigIntDec(v));
-  }
-
-  return h.toString(10);
 }
 
 function buildSnarkjsInputFromWitness(witness: any) {
@@ -257,9 +211,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const witness = witnessJson.witness;
 
-    // 3) Compute resultsHashField (Poseidon fold) and patch witness in-memory
-    witness.publicInputs = witness.publicInputs ?? {};
-    witness.publicInputs.resultsHashField = await computeResultsHashField(witness);
+    // 3) Trust the Edge witness generator as the sole canonical producer of resultsHashField.
+    if (!witness?.publicInputs?.resultsHashField) {
+      throw new Error("Witness is missing publicInputs.resultsHashField");
+    }
 
     // 4) Build snarkjs circuit input
     const snarkInput = buildSnarkjsInputFromWitness(witness);
@@ -296,6 +251,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const genStart = Date.now();
     const { proof, publicSignals } = await snarkjs.groth16.fullProve(snarkInput, wasmPath, zkeyPath);
     const genMs = Date.now() - genStart;
+
+    const expectedPublicSignals = buildPublicSignalsFromWitnessPublicInputs({
+      electionIdHashField: witness.publicInputs.electionIdHashField,
+      electionVoteRootField: witness.publicInputs.electionVoteRootField,
+      manifestHashField: witness.publicInputs.manifestHashField,
+      resultsHashField: witness.publicInputs.resultsHashField,
+    });
+
+    if (!Array.isArray(publicSignals) || publicSignals.length !== expectedPublicSignals.length) {
+      throw new Error(`Unexpected publicSignals length: got ${Array.isArray(publicSignals) ? publicSignals.length : 'non-array'}, expected ${expectedPublicSignals.length}`);
+    }
+
+    for (let i = 0; i < expectedPublicSignals.length; i++) {
+      if (String(publicSignals[i]) !== expectedPublicSignals[i]) {
+        throw new Error(`publicSignals[${i}] mismatch: got ${String(publicSignals[i])}, expected ${expectedPublicSignals[i]}`);
+      }
+    }
 
     const vKey = JSON.parse(fs.readFileSync(vkeyPath, "utf8"));
     const verifyStart = Date.now();

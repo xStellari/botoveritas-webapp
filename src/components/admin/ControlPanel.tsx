@@ -913,19 +913,6 @@ const scoped = electionRows;
           </div>
         </DialogContent>
       </Dialog>
-
-{/* Note about interventions */}
-      <div className="flex flex-col gap-1 rounded-lg border border-dashed bg-muted/10 px-4 py-3 text-sm md:flex-row md:items-center md:justify-between">
-        <div>
-          <span className="font-semibold">Manual interventions</span>
-          <span className="ml-2 text-muted-foreground">
-            Emergency recovery actions are intentionally kept outside Overview.
-          </span>
-        </div>
-        <div className="text-xs text-muted-foreground">
-          Use the separate danger zone or maintenance view when needed.
-        </div>
-      </div>
     </div>
   );
 }

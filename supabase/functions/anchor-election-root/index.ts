@@ -11,6 +11,7 @@ import {
   bytes32Zero,
   computeVoteLeaf,
   merkleRootSortedPairs,
+  applyCanonicalVoteOrder,
 } from "../_shared/bvCrypto.ts";
 
 type Body = {
@@ -393,14 +394,12 @@ serve(async (req: Request) => {
     }
 
     // 3) Load votes in deterministic order
-    const { data: votesRaw, error: votesErr } = await (supabase as any)
-      .from("votes")
-      .select("id, voter_id, position, candidate_id, is_abstain, election_id")
-      .eq("election_id", electionId)
-      .order("voter_id", { ascending: true })
-      .order("position", { ascending: true })
-      .order("candidate_id", { ascending: true, nullsFirst: true })
-      .order("id", { ascending: true });
+    const { data: votesRaw, error: votesErr } = await applyCanonicalVoteOrder(
+      (supabase as any)
+        .from("votes")
+        .select("id, voter_id, position, candidate_id, is_abstain, election_id")
+        .eq("election_id", electionId)
+    );
 
     if (votesErr) return json(500, { error: "Failed to load votes", details: votesErr.message });
 

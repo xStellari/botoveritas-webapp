@@ -34,6 +34,7 @@ import {
   merkleProofForIndex,
   chunkIndexOf,
   indexInChunkOf,
+  applyCanonicalVoteOrder,
 } from "../_shared/bvCrypto.ts";
 
 type Body = {
@@ -216,15 +217,12 @@ serve(async (req) => {
     const receiptMeta = await readReceiptMeta(supabase, electionId, String(targetVote.voter_id));
 
     // 2) Load ALL votes for election in the exact deterministic order (same as anchor-election-root)
-    const { data: votesRaw, error: votesErr } = await supabase
-      .from("votes")
-      .select("id, voter_id, position, candidate_id, is_abstain, election_id")
-      .eq("election_id", electionId)
-      .order("voter_id", { ascending: true })
-      .order("position", { ascending: true })
-      .order("candidate_id", { ascending: true, nullsFirst: true })
-      .order("id", { ascending: true })
-      .returns<VoteRow[]>();
+    const { data: votesRaw, error: votesErr } = await applyCanonicalVoteOrder(
+      supabase
+        .from("votes")
+        .select("id, voter_id, position, candidate_id, is_abstain, election_id")
+        .eq("election_id", electionId)
+    ).returns<VoteRow[]>();
 
     if (votesErr) throw new Error(`Failed to load votes: ${votesErr.message}`);
 

@@ -53,6 +53,9 @@ type ProofRow = {
   election_id: string;
   status: string | null;
   tx_hash: string | null;
+  registry_address?: string | null;
+  verifier_address?: string | null;
+  chain?: string | null;
   proof_json_url?: string | null;
   public_signals_json_url?: string | null;
   error_message?: string | null;
@@ -349,7 +352,7 @@ export default function ZKTally() {
 
 const { data: pData, error: pErr } = await supabase
   .from("election_tally_proofs" as any)
-  .select("election_id,status,tx_hash,proof_json_url,public_signals_json_url,error_message,updated_at");
+  .select("election_id,status,tx_hash,registry_address,verifier_address,chain,proof_json_url,public_signals_json_url,error_message,updated_at");
 
 if (pErr) throw pErr;
 
@@ -445,7 +448,7 @@ setProofs(pMap);
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ electionId }),
+        body: JSON.stringify({ electionId, mode }),
       });
 
       if (!res.ok) {
@@ -522,7 +525,7 @@ const handleGenerateProof = async (electionId: string) => {
       return;
     }
 
-    const response = await fetch("/api/zk/run", {
+    const response = await fetch("/api/zk/run.ts", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -550,6 +553,44 @@ const handleGenerateProof = async (electionId: string) => {
     console.error("[ZKTally] generate proof failed", e);
     const apiMsg = e?.message || String(e);
     toast.error(`Generate proof failed: ${apiMsg}`);
+  } finally {
+    setWorking(null);
+    await load();
+  }
+};
+
+const handleSubmitProof = async (electionId: string) => {
+  setWorking(`submit-tally-proof:${electionId}`);
+  try {
+    const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+    if (sessionErr) throw sessionErr;
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) {
+      toast.error("Please sign in again before submitting the proof on-chain.");
+      return;
+    }
+
+    toast.message("Submitting tally proof on-chain…");
+    const response = await fetch("/api/zk/submit.ts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ electionId }),
+    });
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      const message = payload?.details || payload?.error || `HTTP ${response.status}`;
+      throw new Error(message);
+    }
+
+    toast.success(`Proof submitted on-chain. Tx: ${payload?.txHash ?? "(pending)"}`);
+  } catch (e: any) {
+    console.error("[ZKTally] submit proof failed", e);
+    const apiMsg = e?.message || String(e);
+    toast.error(`Submit proof failed: ${apiMsg}`);
   } finally {
     setWorking(null);
     await load();
@@ -797,6 +838,7 @@ const handleVerifyProof = async (electionId: string) => {
                     const proofOk = !!proof && ["proved", "submitted", "confirmed", "verified"].includes(proofStatus);
                     const proofVerified = proofStatus === "verified";
                     const txOk = !!proof?.tx_hash;
+                    const submitReady = !!proof && proofVerified && !txOk;
 
                     const hasArtifacts = artifactsReady;
 
@@ -942,6 +984,17 @@ const handleVerifyProof = async (electionId: string) => {
                                   >
                                     <ShieldCheck className="h-4 w-4 mr-2" />
                                     Verify proof
+                                  </DropdownMenuItem>
+
+                                  <DropdownMenuItem
+                                    disabled={busy || !submitReady}
+                                    onSelect={(eSelect) => {
+                                      eSelect.preventDefault();
+                                      void handleSubmitProof(e.id);
+                                    }}
+                                  >
+                                    <Play className="h-4 w-4 mr-2" />
+                                    Submit proof
                                   </DropdownMenuItem>
 
                                 </DropdownMenuGroup>

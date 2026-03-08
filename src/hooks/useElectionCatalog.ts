@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
-
+import { kioskGetVoterElectionStatus } from "@/utils/kioskApi";
 
 type Election = {
   id: string;
@@ -50,7 +50,7 @@ export function useElectionCatalog() {
       elections.map(async (e) => {
         const { data, error } = await supabase.rpc(
           "is_voter_eligible_for_election" as any,
-          { p_voter_id: voterId, p_election_id: e.id } as any
+          { p_voter_id: voterId, p_election_id: e.id } as any,
         );
 
         if (error) {
@@ -59,7 +59,7 @@ export function useElectionCatalog() {
         }
 
         return data ? e : null;
-      })
+      }),
     );
 
     if (failedElectionIds.length > 0) {
@@ -104,7 +104,6 @@ export function useElectionCatalog() {
       return isOperationalElection(e) && start > now;
     });
 
-
     // Authoritative eligibility (server-side)
     const active = await filterElectionsByEligibilityRpc(activeTimeWindow, voterId);
     const upcoming = await filterElectionsByEligibilityRpc(upcomingTimeWindow, voterId);
@@ -125,13 +124,14 @@ export function useElectionCatalog() {
       };
     }
 
-    const { data: statusRows, error: statusErr } = await supabase
-      .from("voter_election_status")
-      .select("election_id, has_voted")
-      .eq("voter_id", voterId)
-      .in("election_id", activeIds);
-
-    if (statusErr) {
+    let statusRows: Array<{ election_id: string; has_voted: boolean }> = [];
+    try {
+      statusRows = await kioskGetVoterElectionStatus({
+        voter_id: voterId,
+        election_ids: activeIds,
+      });
+    } catch (statusErr) {
+      console.error("Failed to check voting status via kiosk function:", statusErr);
       toast.error("Failed to check voting status.");
       return null;
     }
@@ -148,19 +148,19 @@ export function useElectionCatalog() {
       completedElections: completed,
       hasVotedAllActive,
     };
-      }, [filterElectionsByEligibilityRpc, isOperationalElection]);
+  }, [filterElectionsByEligibilityRpc, isOperationalElection]);
 
-      const resetElectionCatalog = useCallback(() => {
+  const resetElectionCatalog = useCallback(() => {
     setActiveElections([]);
     setExpiredElections([]);
     setCompletedElections([]);
-      }, []);
+  }, []);
 
-      return {
+  return {
     activeElections,
     expiredElections,
     completedElections,
     refreshElectionsAndStatus,
     resetElectionCatalog,
-      };
-    }
+  };
+}

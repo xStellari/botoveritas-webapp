@@ -21,6 +21,21 @@ export function toLowerHex32(x: string) {
   return "0x" + x.slice(2).toLowerCase();
 }
 
+
+export const BV_CANONICAL_VOTE_ORDER = [
+  ["voter_id", { ascending: true }],
+  ["position", { ascending: true }],
+  ["candidate_id", { ascending: true, nullsFirst: true }],
+  ["id", { ascending: true }],
+] as const;
+
+export function applyCanonicalVoteOrder<T extends { order: (column: string, options?: Record<string, unknown>) => T }>(query: T): T {
+  let q = query;
+  for (const [column, options] of BV_CANONICAL_VOTE_ORDER) {
+    q = q.order(column, options);
+  }
+  return q;
+}
 export function bytes32Zero(): string {
   return "0x" + "00".repeat(32);
 }

@@ -27,6 +27,17 @@ type Body = {
   selections?: Selection[];
 };
 
+function hasDuplicatePositions(selections: Selection[]): boolean {
+  const seen = new Set<string>();
+  for (const s of selections) {
+    const key = String(s.position ?? "").trim().toLowerCase();
+    if (!key) continue;
+    if (seen.has(key)) return true;
+    seen.add(key);
+  }
+  return false;
+}
+
 async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: kioskCorsHeaders });
@@ -65,95 +76,61 @@ async function handler(req: Request): Promise<Response> {
     return json(400, { ok: false, error: "selections is required" });
   }
 
-  // 1) Election must be operational.
-  const { data: election, error: electionErr } = await service
-    .from("elections")
-    .select("id, is_final, is_archived, start_date, end_date")
-    .eq("id", electionId)
-    .maybeSingle();
-
-  if (electionErr || !election) {
-    return json(400, { ok: false, error: "Election not found" });
+  if (hasDuplicatePositions(selections)) {
+    return json(400, { ok: false, error: "Duplicate positions are not allowed" });
   }
 
-  if ((election as any).is_final || (election as any).is_archived) {
-    return json(409, { ok: false, error: "Election is finalized/archived" });
-  }
-
-  const now = new Date();
-  const start = new Date((election as any).start_date);
-  const end = new Date((election as any).end_date);
-  if (start > now || end <= now) {
-    return json(409, { ok: false, error: "Election is outside voting period" });
-  }
-
-  // 2) Eligibility check (authoritative)
-  const { data: eligible, error: eligErr } = await service.rpc(
-    "is_voter_eligible_for_election" as any,
-    { p_voter_id: voterId, p_election_id: electionId } as any
-  );
-
-  if (eligErr) {
-    return json(500, { ok: false, error: "Eligibility check failed" });
-  }
-  if (!eligible) {
-    return json(403, { ok: false, error: "Voter not eligible" });
-  }
-
-  // 3) Upsert votes (idempotent)
-  let rows: any[] = [];
+  const normalizedSelections: Selection[] = [];
   try {
-    rows = selections.map((s) => {
-      const position = (s.position ?? "").toString().trim();
+    for (const s of selections) {
+      const position = String(s.position ?? "").trim();
       if (!position) throw new Error("Invalid position");
 
       const isAbstain = Boolean(s.is_abstain);
       const candidateId = isAbstain ? null : (s.candidate_id ?? null);
 
-      if (!isAbstain && candidateId && !isUuid(candidateId)) {
+      if (!isAbstain && (!candidateId || !isUuid(String(candidateId)))) {
         throw new Error("Invalid candidate_id");
       }
 
-      return {
-        voter_id: voterId,
-        election_id: electionId,
+      normalizedSelections.push({
         position,
         candidate_id: candidateId,
         is_abstain: isAbstain,
-      };
-    });
+      });
+    }
   } catch {
     return json(400, { ok: false, error: "Invalid selections" });
   }
 
-  const { error: votesErr } = await service
-    .from("votes")
-    .upsert(rows as any, { onConflict: "voter_id,election_id,position" });
+  const { data: submitResult, error: submitErr } = await service.rpc(
+    "kiosk_submit_ballot" as any,
+    {
+      p_voter_id: voterId,
+      p_election_id: electionId,
+      p_selections: normalizedSelections as any,
+    } as any
+  );
 
-  if (votesErr) {
-    return json(500, { ok: false, error: "Failed to persist votes" });
+  if (submitErr) {
+    const message = submitErr.message || "Failed to submit ballot";
+    if (/not found/i.test(message) || /invalid position/i.test(message) || /duplicate positions/i.test(message) || /candidate not in election position/i.test(message) || /missing candidate/i.test(message)) {
+      return json(400, { ok: false, error: message });
+    }
+    if (/not eligible/i.test(message)) {
+      return json(403, { ok: false, error: message });
+    }
+    if (/outside voting period|paused|finalized|archived/i.test(message)) {
+      return json(409, { ok: false, error: message });
+    }
+    return json(500, { ok: false, error: message });
   }
 
-  // 4) Mark voter as having voted (authoritative gating for ElectionSelection + eligibility RPCs)
-  // NOTE: voter_election_status.voter_id is a FK to public.voters(id), so we MUST use the voters UUID.
-  const votedAt = new Date().toISOString();
-  const { error: statusErr } = await service
-    .from("voter_election_status")
-    .upsert(
-      {
-        voter_id: voterId,
-        election_id: electionId,
-        has_voted: true,
-        voted_at: votedAt,
-      } as any,
-      { onConflict: "voter_id,election_id" }
-    );
-
-  if (statusErr) {
-    return json(500, { ok: false, error: "Failed to mark voter as voted" });
-  }
-
-  return json(200, { ok: true, rotate_secret: rotateSecret ?? null });
+  return json(200, {
+    ok: true,
+    rotate_secret: rotateSecret ?? null,
+    result: submitResult ?? null,
+  });
 }
 
 Deno.serve(handler);

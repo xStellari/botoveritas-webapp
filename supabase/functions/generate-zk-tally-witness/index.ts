@@ -3,6 +3,19 @@ import { createClient } from "@supabase/supabase-js";
 import { ethers } from "ethers";
 
 import { requireAdmin } from "../_shared/requireAdmin.ts";
+import {
+  CHUNK_SIZE,
+  computeVoteLeaf,
+  merkleRootSortedPairs,
+  applyCanonicalVoteOrder,
+} from "../_shared/bvCrypto.ts";
+import { computeResultsHashField } from "../_shared/poseidonFold.ts";
+import {
+  ZK_TALLY_MAX_POSITIONS as MAX_POSITIONS,
+  ZK_TALLY_MAX_CANDIDATES_PER_POSITION as MAX_CANDIDATES_PER_POSITION,
+  ZK_TALLY_RESULTS_COMMIT_DOMAIN as RESULTS_COMMIT_DOMAIN,
+  buildUniversalFoldVector,
+} from "../../../src/lib/zkCanonical.ts";
 
 type Body = {
   electionId: string; // UUID
@@ -113,10 +126,6 @@ function isUuid(v: string) {
 }
 
 // ✅ Must match anchor-election-root
-const CHUNK_SIZE = 512;
-const MAX_POSITIONS = 20;
-const MAX_CANDIDATES_PER_POSITION = 5;
-const RESULTS_COMMIT_DOMAIN = "223344556";
 const CIRCUIT_VERSION = "BV_TALLY_UNIVERSAL_V1";
 
 // -------------------- Hashing + Merkle (MUST MATCH ANCHOR) --------------------
@@ -127,77 +136,6 @@ function hashUtf8ToBytes32(s: string): string {
 
 function bytes32Zero(): string {
   return "0x" + "00".repeat(32);
-}
-
-/**
- * Leaf hash spec (V1):
- * leaf = keccak256( concat(
- *   "BotoVeritasVoteV1",
- *   keccak(electionId),
- *   keccak(voterId),
- *   keccak(position),
- *   keccak(candidateId) OR 0x00..00,
- *   abstainByte
- *  ))
- */
-function computeVoteLeaf(args: {
-  electionId: string;
-  voterId: string;
-  position: string;
-  candidateId: string | null;
-  isAbstain: boolean;
-}): string {
-  const domain = ethers.toUtf8Bytes("BotoVeritasVoteV1");
-  const electionHash = hashUtf8ToBytes32(args.electionId);
-  const voterHash = hashUtf8ToBytes32(args.voterId);
-  const positionHash = hashUtf8ToBytes32(args.position);
-  const candidateHash = args.candidateId
-    ? hashUtf8ToBytes32(args.candidateId)
-    : bytes32Zero();
-  const abstainByte = args.isAbstain ? "0x01" : "0x00";
-
-  const packed = ethers.concat([
-    domain,
-    electionHash,
-    voterHash,
-    positionHash,
-    candidateHash,
-    abstainByte,
-  ]);
-
-  return ethers.keccak256(packed);
-}
-
-/**
- * Merkle root with:
- * - sorted pairs (min, max) before hashing
- * - duplicate last if odd count at a level
- */
-function merkleRootSortedPairs(leaves: string[]): string {
-  if (leaves.length === 0) return bytes32Zero();
-  if (leaves.length === 1) return leaves[0];
-
-  let level = [...leaves];
-
-  while (level.length > 1) {
-    const next: string[] = [];
-
-    for (let i = 0; i < level.length; i += 2) {
-      const left = level[i];
-      const right = i + 1 < level.length ? level[i + 1] : level[i];
-
-      const a = left.toLowerCase();
-      const b = right.toLowerCase();
-      const [min, max] = a <= b ? [left, right] : [right, left];
-
-      const parent = ethers.keccak256(ethers.concat([min, max]));
-      next.push(parent);
-    }
-
-    level = next;
-  }
-
-  return level[0];
 }
 
 // -------------------- Types --------------------
@@ -692,22 +630,16 @@ serve(async (req: Request) => {
     }
 
     // 10) Build witness payload
-    const foldVector = (() => {
-      const out: string[] = [];
-      out.push(BigInt(positionCount).toString(10));
-      for (let i = 0; i < MAX_POSITIONS; i++) out.push(BigInt(candidateCounts[i] ?? 0).toString(10));
-      for (let i = 0; i < MAX_POSITIONS; i++) out.push(BigInt(abstainCounts[i] ?? 0).toString(10));
-      for (let i = 0; i < MAX_POSITIONS; i++) {
-        const row = talliesMatrix[i] ?? [];
-        for (let j = 0; j < MAX_CANDIDATES_PER_POSITION; j++) out.push(BigInt(row[j] ?? 0).toString(10));
-      }
-      return out;
-    })();
+    const foldVector = buildUniversalFoldVector({
+      positionCount,
+      candidateCounts,
+      abstain: abstainCounts,
+      tallies: talliesMatrix,
+    });
 
     // 10.1) Compute resultsHashField in-edge (deployment-ready)
-    // Must match zk/scripts/compute-results-hash.ts + universal tally.circom.
+    // This is the sole canonical producer for resultsHashField in the active flow.
     const resultsCommitDomainField = RESULTS_COMMIT_DOMAIN;
-    const { computeResultsHashField } = await import("../_shared/poseidonFold.ts");
     const resultsHashField = await computeResultsHashField({
       domain: resultsCommitDomainField,
       electionIdHashField: bytes32ToFieldDec(electionIdBytes32),

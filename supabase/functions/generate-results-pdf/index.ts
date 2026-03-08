@@ -879,13 +879,26 @@ serve(async (req: Request) => {
   if (!adminOk) return json(403, { ok: false, error: 'Forbidden: admin access required' });
 
   try {
-    const body: Body = await req.json().catch(() => ({} as Body));
+    const body: Body & Record<string, unknown> = await req.json().catch(() => ({} as Body & Record<string, unknown>));
 
-    const election_id = body?.election_id;
+    // Accept both snake_case and camelCase payloads so older/newer callers do not break.
+    const election_id =
+      typeof body?.election_id === "string"
+        ? body.election_id
+        : typeof body?.electionId === "string"
+          ? body.electionId
+          : undefined;
     const mode = (body?.mode === 'final' ? 'final' : 'draft') as 'draft' | 'final';
     // Default to showing charts unless the caller explicitly disables them.
-    const includeCharts = body?.include_charts ?? true;
-    const chart_images = body?.chart_images;
+    const includeCharts =
+      typeof body?.include_charts === "boolean"
+        ? body.include_charts
+        : typeof body?.includeCharts === "boolean"
+          ? body.includeCharts
+          : true;
+    const chart_images =
+      body?.chart_images ??
+      (body?.chartImages as Body["chart_images"] | undefined);
 
     // Deployment decision: require election_id (no "all elections" export)
     if (!election_id) {
