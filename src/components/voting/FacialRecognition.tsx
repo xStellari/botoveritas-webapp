@@ -56,7 +56,6 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
   const countdownRef = useRef<number | null>(null);
   const cameraStartedRef = useRef(false);
 
-
   // Keep refs in sync with state (state drives UI; refs drive the loop)
   useEffect(() => {
     faceDetectedRef.current = faceDetected;

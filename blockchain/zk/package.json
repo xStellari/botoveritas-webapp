@@ -1,17 +1,26 @@
 {
   "name": "zk",
   "version": "1.0.0",
-  "description": "",
+  "type": "module",
+  "description": "- `zk/circuits/` : Circom sources (generated + committed) - `zk/scripts/`  : Offline tooling (codegen, snarkjs workflows) - `zk/manifests/`: Reproducible manifest snapshots used for circuit/proof generation",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "check:env": "ts-node-esm scripts/check-zk-env.ts",
+    "setup": "ts-node-esm scripts/snarkjs-setup.ts",
+    "pipeline": "ts-node-esm scripts/run-tally-pipeline.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
-  "devDependencies": {
+  "dependencies": {
     "circomlib": "^2.0.5",
-    "snarkjs": "^0.7.6"
+    "@supabase/supabase-js": "^2.57.4",
+    "circomlibjs": "^0.1.7",
+    "dotenv": "^17.2.3",
+    "snarkjs": "^0.7.5"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
   }
 }

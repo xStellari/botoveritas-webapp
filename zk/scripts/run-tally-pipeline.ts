@@ -2,104 +2,137 @@
 /**
  * zk/scripts/run-tally-pipeline.ts
  *
- * Step 2.17: Dry-run (default) orchestrator for the full pipeline.
- *
- * Why:
- * - During demo/defense, you want a *single* place that shows the exact commands in order.
- * - This script does NOT force execution unless you pass --run.
- *
- * Usage (dry-run):
- *   node zk/scripts/run-tally-pipeline.ts --electionId <uuid> --witness <witness.json> --resultsOut results.json
- *
- * Usage (execute):
- *   PUBLIC_BASE_URL="https://<domain>" REGISTRY_ADDRESS=0x... VERIFIER_ADDRESS=0x... \
- *     node zk/scripts/run-tally-pipeline.ts --electionId <uuid> --witness <witness.json> --resultsOut results.json --run
- *
- * Notes:
- * - This script calls other scripts you already have (Steps 2.6 → 2.16).
- * - It is intentionally conservative and will stop if a command fails.
+ * End-to-end orchestrator for the zk tally pipeline.
+ * Default mode is dry-run; pass --run to execute.
  */
 import "dotenv/config";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-function parseArgs(argv: string[]) {
-  const args: any = {};
-  for (let i = 2; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const k = a.slice(2);
-      const v = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : true;
-      args[k] = v;
+type ParsedArgs = {
+  electionId?: string;
+  witness?: string;
+  manifestSnapshot?: string;
+  resultsOut?: string;
+  run?: boolean;
+  setupForce?: boolean;
+  publish?: boolean;
+  publicBaseUrl?: string;
+};
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, "..", "..");
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const args: Record<string, string | boolean> = {};
+  for (let i = 2; i < argv.length; i += 1) {
+    const current = argv[i];
+    if (!current.startsWith("--")) continue;
+    const key = current.slice(2);
+    const next = argv[i + 1];
+    if (next && !next.startsWith("--")) {
+      args[key] = next;
+      i += 1;
+    } else {
+      args[key] = true;
     }
   }
-  return args as {
-    electionId?: string;
-    witness?: string;
-    manifestSnapshot?: string;
-    resultsOut?: string;
-    run?: boolean;
-  };
+  return args as ParsedArgs;
 }
 
-function run(cmd: string, args: string[], doRun: boolean) {
-  const pretty = [cmd, ...args].join(" ");
+function resolveTsNodeEsm(): string {
+  const binName = process.platform === "win32" ? "ts-node-esm.cmd" : "ts-node-esm";
+  const candidates = [
+    path.join(ROOT, "blockchain", "node_modules", ".bin", binName),
+    path.join(ROOT, "zk", "node_modules", ".bin", binName),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  throw new Error(`Missing ${binName}. Install dependencies in blockchain or zk first.`);
+}
+
+function runTsScript(scriptRelativePath: string, args: string[], doRun: boolean): void {
+  const runner = resolveTsNodeEsm();
+  const scriptPath = path.join(ROOT, scriptRelativePath);
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error(`Missing script: ${scriptPath}`);
+  }
+
+  const pretty = [path.relative(ROOT, runner), path.relative(ROOT, scriptPath), ...args].join(" ");
+
   if (!doRun) {
     console.log("DRY:", pretty);
     return;
   }
+
   console.log("RUN:", pretty);
-  const r = spawnSync(cmd, args, { stdio: "inherit", shell: process.platform === "win32" });
-  if (r.status !== 0) throw new Error(`Command failed: ${pretty}`);
+  const result = spawnSync(runner, [scriptPath, ...args], {
+    cwd: ROOT,
+    stdio: "inherit",
+    shell: false,
+    env: process.env,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`Command failed: ${pretty}`);
+  }
 }
 
 function main() {
-  const a = parseArgs(process.argv);
-  if (!a.electionId) throw new Error("Missing --electionId <uuid>");
-  if (!a.witness) throw new Error("Missing --witness <witness.json>");
-  if (!a.resultsOut) throw new Error("Missing --resultsOut <results.json>");
+  const args = parseArgs(process.argv);
+  if (!args.electionId) throw new Error("Missing --electionId <uuid>");
+  if (!args.witness) throw new Error("Missing --witness <witness.json>");
+  if (!args.resultsOut) throw new Error("Missing --resultsOut <results.json>");
 
-  const doRun = !!a.run;
+  const doRun = Boolean(args.run);
 
   console.log("=== BotoVeritas ZK Tally Pipeline ===");
   console.log(doRun ? "(EXECUTE MODE)" : "(DRY-RUN MODE)");
 
-  // 1) Generate circuit from manifest
-  run("node", ["zk/scripts/generate-tally-circuit.ts", "--electionId", a.electionId], doRun);
+  runTsScript(path.join("zk", "scripts", "generate-tally-circuit.ts"), ["--electionId", args.electionId], doRun);
 
-  // 2) Setup (compile + zkey + verifier.sol)
-  run("node", ["zk/scripts/snarkjs-setup.ts"], doRun);
+  const setupArgs = args.setupForce ? ["--force"] : [];
+  runTsScript(path.join("zk", "scripts", "snarkjs-setup.ts"), setupArgs, doRun);
 
-  // 3) Ensure resultsHashField exists in witness
-  run("node", ["zk/scripts/compute-results-hash.ts", a.witness], doRun);
+  runTsScript(path.join("zk", "scripts", "compute-results-hash.ts"), [args.witness], doRun);
 
-  // 4) Build canonical results.json
-  const buildArgs = ["zk/scripts/build-results-json.ts", "--witness", a.witness, "--out", a.resultsOut];
-  if (a.manifestSnapshot) buildArgs.push("--manifest", a.manifestSnapshot);
-  run("node", buildArgs, doRun);
+  const buildArgs = ["--witness", args.witness, "--out", args.resultsOut];
+  if (args.manifestSnapshot) buildArgs.push("--manifest", args.manifestSnapshot);
+  runTsScript(path.join("zk", "scripts", "build-results-json.ts"), buildArgs, doRun);
 
-  // 5) Prove (proof.json + public.json)
-  run("node", ["zk/scripts/prove-tally.ts", a.witness], doRun);
+  runTsScript(path.join("zk", "scripts", "prove-tally.ts"), [args.witness], doRun);
 
-  // 6) Publish results.json to Vercel public folder (prints resultsUri)
-  run("node", ["zk/scripts/publish-results-to-public.ts", "--in", a.resultsOut], doRun);
+  if (args.publish) {
+    runTsScript(path.join("zk", "scripts", "publish-results-to-public.ts"), ["--in", args.resultsOut], doRun);
+  }
 
-  // 7) Prepare submitArgs.json (publish + verify binding + format proof)
-  run("node", [
-    "zk/scripts/prepare-tally-submit.ts",
-    "--witness", a.witness,
-    "--proof", "zk/build/tally/proof.json",
-    "--public", "zk/build/tally/public.json",
-    "--results", a.resultsOut,
-    "--publish",
-    "--out", "submitArgs.json"
-  ], doRun);
+  const prepareArgs = [
+    "--witness", args.witness,
+    "--proof", path.join("zk", "build", "tally", "proof.json"),
+    "--public", path.join("zk", "build", "tally", "publicSignals.json"),
+    "--results", args.resultsOut,
+    "--out", "submitArgs.json",
+  ];
+  if (args.publish) prepareArgs.push("--publish");
+  if (args.publicBaseUrl) {
+    process.env.PUBLIC_BASE_URL = args.publicBaseUrl;
+  }
+  runTsScript(path.join("zk", "scripts", "prepare-tally-submit.ts"), prepareArgs, doRun);
 
   console.log("\nNext manual actions (once per deployment):");
-  console.log("- Promote verifier: node zk/scripts/promote-verifier-sol.ts");
-  console.log("- Deploy verifier/registry: hardhat deploy scripts (Step 2.11)");
-  console.log("- Submit tally: Step 2.15 submit-tally.ts");
-  console.log("- Read & audit: Step 2.16 read-tally.ts + audit-tally-from-chain.ts");
-
+  console.log("- Promote verifier: ts-node-esm zk/scripts/promote-verifier-sol.ts");
+  console.log("- Deploy verifier/registry: blockchain/scripts/deploy-zk-stack.ts");
+  console.log("- Submit tally: blockchain/scripts/submit-tally.ts");
+  console.log("- Read & audit: blockchain/scripts/read-tally.ts + zk/scripts/audit-tally-from-chain.ts");
   console.log("\nDone.");
 }
 

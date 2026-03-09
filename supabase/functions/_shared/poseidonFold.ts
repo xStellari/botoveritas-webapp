@@ -4,8 +4,11 @@
 // This MUST match zk/scripts/compute-results-hash.ts and the generated Circom
 // circuit from zk/scripts/generate-tally-circuit.ts.
 
-// circomlibjs has no bundled TS types. We keep typing strict by narrowing at runtime.
 import * as circomlibjs from "circomlibjs";
+
+type PoseidonFactory = ((inputs: bigint[]) => unknown) & {
+  F?: { toObject?: (value: unknown) => bigint | string | number };
+};
 
 type PoseidonFn = (inputs: bigint[]) => bigint;
 
@@ -21,18 +24,24 @@ async function getPoseidon(): Promise<PoseidonFn> {
         throw new Error("circomlibjs.buildPoseidon not available");
       }
 
-      const p = await buildPoseidon();
-
-      // circomlibjs returns a function-like object; coerce safely.
+      const p = (await buildPoseidon()) as PoseidonFactory;
       const fn = p as unknown as (inputs: unknown[]) => unknown;
+      const field = p?.F;
 
       return (inputs: bigint[]) => {
         const out = fn(inputs) as unknown;
 
-        // circomlibjs Poseidon output differs across runtimes:
-        // - bigint (node)
-        // - string/number
-        // - Uint8Array (deno npm interop) -> comma-separated byte string if coerced
+        // This must match the Node-side script path used by zk/scripts/compute-results-hash.ts:
+        //   const poseidon = await buildPoseidon();
+        //   const F = poseidon.F;
+        //   const x = F.toObject(poseidon([a, b]));
+        //
+        // Using raw byte coercion here can drift from circomlibjs field semantics and cause
+        // the circuit assertion on resultsHash to fail during fullProve.
+        if (field && typeof field.toObject === "function") {
+          return toBigIntDec(field.toObject(out) as bigint | string | number);
+        }
+
         return coerceToBigInt(out);
       };
     })();
@@ -45,15 +54,14 @@ export function toBigIntDec(x: string | number | bigint | boolean): bigint {
   if (typeof x === "number") return BigInt(x);
   if (typeof x === "boolean") return x ? 1n : 0n;
   const s = String(x).trim();
-  if (s.startsWith("0x")) return BigInt(s);
+  if (s.startsWith("0x") || s.startsWith("0X")) return BigInt(s);
   return BigInt(s);
 }
 
-
-function bytesToBigIntLE(bytes: Uint8Array): bigint {
+function bytesToBigIntBE(bytes: Uint8Array): bigint {
   let x = 0n;
-  for (let i = 0; i < bytes.length; i++) {
-    x |= BigInt(bytes[i]!) << (8n * BigInt(i));
+  for (const b of bytes) {
+    x = (x << 8n) | BigInt(b);
   }
   return x;
 }
@@ -64,11 +72,13 @@ function coerceToBigInt(v: unknown): bigint {
   if (typeof v === "string") return toBigIntDec(v);
   if (typeof v === "boolean") return v ? 1n : 0n;
 
-  // Deno/npm often returns field elements as bytes
-  if (v instanceof Uint8Array) return bytesToBigIntLE(v);
-  if (v instanceof ArrayBuffer) return bytesToBigIntLE(new Uint8Array(v));
+  if (v instanceof Uint8Array) return bytesToBigIntBE(v);
+  if (v instanceof ArrayBuffer) return bytesToBigIntBE(new Uint8Array(v));
 
-  // Some libs return objects that stringify to decimal or hex
+  if (Array.isArray(v) && v.every((x) => typeof x === "number")) {
+    return bytesToBigIntBE(Uint8Array.from(v as number[]));
+  }
+
   if (v && typeof v === "object" && "toString" in (v as any)) {
     const s = String((v as any).toString()).trim();
     if (s) return toBigIntDec(s);

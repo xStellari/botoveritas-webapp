@@ -17,7 +17,6 @@ import { BarChart, Users, Vote, Shield, LogOut, Inbox, ListPlus, RotateCcw, User
 import ControlPanel from "@/components/admin/ControlPanel";
 import VoterManagement from "@/components/admin/VoterManagement";
 import ElectionManagement from "@/components/admin/ElectionManagement";
-import ZKVerification from "@/components/admin/ZKVerification";
 import ZKTally from "@/components/admin/ZKTally";
 import OrgMembershipRequests from "@/components/admin/OrgMembershipRequests";
 import RostersManagement from "@/components/admin/RostersManagement";
@@ -595,28 +594,9 @@ export default function Admin() {
           <TabsContent value="verification" className="space-y-6">
             <PageIntro
               title="Verification"
-              description="Generate zero-knowledge proof artifacts and verify tally integrity from one tab."
+              description="Generate zero-knowledge proof artifacts, inspect tally diagnostics, and prepare testing-table data from one tab."
             />
-            <Tabs defaultValue="proofs" className="space-y-4">
-              <TabsList className="grid w-full grid-cols-2 md:w-[360px]">
-                <TabsTrigger value="proofs" className="gap-2">
-                  <Shield className="h-4 w-4" />
-                  Proofs
-                </TabsTrigger>
-                <TabsTrigger value="tally" className="gap-2">
-                  <ScrollText className="h-4 w-4" />
-                  Tally Verification
-                </TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="proofs">
-                <ZKVerification />
-              </TabsContent>
-
-              <TabsContent value="tally">
-                <ZKTally />
-              </TabsContent>
-            </Tabs>
+            <ZKTally />
           </TabsContent>
         </Tabs>
       </main>

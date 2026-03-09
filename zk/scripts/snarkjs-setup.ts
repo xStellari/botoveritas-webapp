@@ -193,9 +193,9 @@ async function main() {
 //
 // IMPORTANT:
 // - Power must be large enough for your circuit constraints.
-//   Your current tally circuit is ~13k constraints, so PTAU power 16 is the recommended default (14 may be too small as the circuit evolves).
+//   Your current tally circuit is substantially larger than earlier revisions, so the default PTAU power is 18. Use a larger value if the circuit grows again.
 // - We avoid interactive prompts for CI-friendliness by using a beacon contribution.
-const PTAU_POWER = Number(process.env.BV_PTAU_POWER ?? "16");
+const PTAU_POWER = Number(process.env.BV_PTAU_POWER ?? "18");
 if (!Number.isFinite(PTAU_POWER) || PTAU_POWER < 10 || PTAU_POWER > 22) {
   throw new Error(`Invalid BV_PTAU_POWER=${process.env.BV_PTAU_POWER}. Use a number between 10 and 22.`);
 }

@@ -16,7 +16,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { RefreshCw, FileText, Layers, ShieldCheck, Download, CheckCircle2, Circle, Play, FileJson, MoreHorizontal } from "lucide-react";
+import { RefreshCw, FileText, Layers, ShieldCheck, Download, CheckCircle2, Circle, Play, FileJson, MoreHorizontal, ScrollText } from "lucide-react";
 
 type ElectionRow = {
   id: string;
@@ -83,6 +83,65 @@ type VerifyTallyProofResponse = {
   error?: string;
 };
 
+
+type TallyPreviewPosition = {
+  title: string;
+  abstain: number;
+  totalBallots: number;
+  candidates: Array<{
+    id: string;
+    name: string;
+    votes: number;
+  }>;
+};
+
+type ZkRunResult = {
+  ok: boolean;
+  electionId: string;
+  proofGenerated: boolean;
+  proofVerified: boolean;
+  genMs: number;
+  verifyMs: number;
+  proofSha256?: string;
+  publicSignalsSha256?: string;
+  proofJsonUrl?: string;
+  publicSignalsJsonUrl?: string;
+  manifestHash?: string;
+  electionVoteRoot?: string;
+  resultsHash?: string;
+  positionsTotal?: number;
+  positionsMatched?: number;
+  mismatchCount?: number;
+  accuracy?: number;
+  notes?: string;
+  error?: string;
+  details?: string;
+  tallyPreview?: TallyPreviewPosition[];
+};
+
+type VoteTallyRow = {
+  election_id: string;
+  position: string;
+  candidate_id?: string | null;
+  candidate_name: string;
+  vote_count: number;
+  abstain_count?: number | null;
+  total_ballots_for_position?: number | null;
+};
+
+type TestingRow = {
+  electionId: string;
+  electionTitle: string;
+  position: string;
+  votesCount: number;
+  expectedTally: string;
+  generatedTally: string;
+  proofVerification: string;
+  privacyPreserved: string;
+  finalizationStatus: string;
+  remarks: string;
+};
+
 type VerifyProofRow = {
   election_id: string;
   status: string | null;
@@ -98,6 +157,25 @@ function shortHex(hex: string, keep = 10) {
   if (!h) return "—";
   if (h.length <= keep * 2) return h;
   return `${h.slice(0, keep)}…${h.slice(-keep)}`;
+}
+
+
+function fmtTiming(ms?: number) {
+  if (typeof ms !== "number" || Number.isNaN(ms)) return "—";
+  return `${ms.toLocaleString()} ms`;
+}
+
+function formatTallySummary(params: { abstain?: number | null; candidates: Array<{ name: string; votes: number }> }) {
+  const parts = [...params.candidates]
+    .sort((a, b) => b.votes - a.votes || a.name.localeCompare(b.name))
+    .map((candidate) => `${candidate.name} (${candidate.votes})`);
+
+  if ((params.abstain ?? 0) > 0) parts.push(`Abstain (${params.abstain ?? 0})`);
+  return parts.length ? parts.join(", ") : "—";
+}
+
+function toTestingRowKey(electionId: string, position: string) {
+  return `${electionId}::${position}`;
 }
 
 function downloadBlob(filename: string, blob: Blob) {
@@ -277,6 +355,8 @@ export default function ZKTally() {
   >({});
   const [roots, setRoots] = useState<Record<string, RootRow>>({});
   const [proofs, setProofs] = useState<Record<string, ProofRow>>({});
+  const [voteTallies, setVoteTallies] = useState<Record<string, VoteTallyRow[]>>({});
+  const [zkRuns, setZkRuns] = useState<Record<string, ZkRunResult>>({});
 
   const [artifactChecking, setArtifactChecking] = useState(false);
   const [artifactExisting, setArtifactExisting] = useState({
@@ -285,16 +365,87 @@ export default function ZKTally() {
     vkey: { exists: false, size: null as number | null },
   });
 
+  const artifactsReady = useMemo(
+    () => artifactExisting.wasm.exists && artifactExisting.zkey.exists && artifactExisting.vkey.exists,
+    [artifactExisting],
+  );
 
   const finalized = useMemo(
     () => elections.filter((e) => Boolean(e.is_final) && !Boolean(e.is_archived)),
     [elections],
   );
 
-  const artifactsReady = useMemo(
-    () => Boolean(artifactExisting.wasm.exists && artifactExisting.zkey.exists && artifactExisting.vkey.exists),
-    [artifactExisting],
-  );
+  const testingRows = useMemo<TestingRow[]>(() => {
+    const rows: TestingRow[] = [];
+
+    for (const election of finalized) {
+      const dbRows = voteTallies[election.id] ?? [];
+      const dbByPosition = new Map<string, VoteTallyRow[]>();
+      for (const row of dbRows) {
+        const key = String(row.position ?? "");
+        if (!dbByPosition.has(key)) dbByPosition.set(key, []);
+        dbByPosition.get(key)?.push(row);
+      }
+
+      const run = zkRuns[election.id];
+      const witnessByPosition = new Map((run?.tallyPreview ?? []).map((position) => [position.title, position]));
+      const allPositions = Array.from(new Set([...dbByPosition.keys(), ...witnessByPosition.keys()])).sort((a, b) => a.localeCompare(b));
+
+      for (const position of allPositions) {
+        const expectedRows = dbByPosition.get(position) ?? [];
+        const expectedVotes = expectedRows[0]?.total_ballots_for_position ?? expectedRows.reduce((sum, row) => sum + Number(row.vote_count ?? 0), 0) + Number(expectedRows[0]?.abstain_count ?? 0);
+        const expectedTally = formatTallySummary({
+          abstain: expectedRows[0]?.abstain_count ?? 0,
+          candidates: expectedRows.map((row) => ({ name: row.candidate_name, votes: Number(row.vote_count ?? 0) })),
+        });
+
+        const generated = witnessByPosition.get(position);
+        const generatedTally = generated
+          ? formatTallySummary({
+              abstain: generated.abstain,
+              candidates: generated.candidates.map((candidate) => ({ name: candidate.name, votes: candidate.votes })),
+            })
+          : proofs[election.id]
+            ? "Stored proof only"
+            : "—";
+
+        const proofVerification = run
+          ? run.proofVerified
+            ? "Valid"
+            : run.proofGenerated
+              ? "Generated / verify failed"
+              : "Failed"
+          : ["verified", "submitted", "confirmed"].includes(String(proofs[election.id]?.status ?? "").toLowerCase())
+            ? "Valid"
+            : proofs[election.id]
+              ? String(proofs[election.id]?.status ?? "Stored")
+              : "Pending";
+
+        const remarks = run
+          ? run.proofVerified && generatedTally === expectedTally
+            ? "PASS"
+            : "CHECK"
+          : ["verified", "submitted", "confirmed"].includes(String(proofs[election.id]?.status ?? "").toLowerCase())
+            ? "PASS"
+            : "PENDING";
+
+        rows.push({
+          electionId: election.id,
+          electionTitle: election.title,
+          position,
+          votesCount: Number(expectedVotes ?? 0),
+          expectedTally,
+          generatedTally,
+          proofVerification,
+          privacyPreserved: generated || proofs[election.id] ? "Yes" : "—",
+          finalizationStatus: election.is_final ? "Success" : "Pending",
+          remarks,
+        });
+      }
+    }
+
+    return rows;
+  }, [finalized, proofs, voteTallies, zkRuns]);
 
   useEffect(() => {
     void refreshArtifactPresence();
@@ -359,6 +510,19 @@ if (pErr) throw pErr;
 const pMap: Record<string, ProofRow> = {};
 for (const p of (pData ?? []) as unknown as ProofRow[]) pMap[p.election_id] = p;
 setProofs(pMap);
+
+      const { data: tallyData, error: tallyErr } = await supabase
+        .from("vote_tally_view" as any)
+        .select("election_id,position,candidate_id,candidate_name,vote_count,abstain_count,total_ballots_for_position");
+
+      if (tallyErr) throw tallyErr;
+
+      const tallyMap: Record<string, VoteTallyRow[]> = {};
+      for (const row of (tallyData ?? []) as unknown as VoteTallyRow[]) {
+        if (!tallyMap[row.election_id]) tallyMap[row.election_id] = [];
+        tallyMap[row.election_id].push(row);
+      }
+      setVoteTallies(tallyMap);
 
     } catch (e: any) {
       console.error("[ZKTally] load failed", e);
@@ -543,6 +707,8 @@ const handleGenerateProof = async (electionId: string) => {
     if (!payload?.proofGenerated) {
       throw new Error(payload?.details || payload?.error || "Backend prover did not generate a proof.");
     }
+
+    setZkRuns((current) => ({ ...current, [electionId]: payload as ZkRunResult }));
 
     if (payload?.proofVerified) {
       toast.success(`Proof generated and self-verified on the backend in ${payload?.genMs ?? 0} ms.`);
@@ -808,6 +974,8 @@ const handleVerifyProof = async (electionId: string) => {
                   <TableHead>Manifest</TableHead>
                   <TableHead>Chunks</TableHead>
                   <TableHead>Root</TableHead>
+                  <TableHead>Proof</TableHead>
+                  <TableHead>Diagnostics</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -815,13 +983,13 @@ const handleVerifyProof = async (electionId: string) => {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center text-sm text-muted-foreground">
                       Loading…
                     </TableCell>
                   </TableRow>
                 ) : finalized.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center text-sm text-muted-foreground">
                       No finalized elections found.
                     </TableCell>
                   </TableRow>
@@ -833,6 +1001,7 @@ const handleVerifyProof = async (electionId: string) => {
                     const hasManifest = !!manifest;
                     const hasRoot = !!root;
                     const proof = proofs[e.id];
+                    const run = zkRuns[e.id];
                     const proofStatus = String(proof?.status ?? "").toLowerCase();
                     const proofExists = !!proof;
                     const proofOk = !!proof && ["proved", "submitted", "confirmed", "verified"].includes(proofStatus);
@@ -904,6 +1073,39 @@ const handleVerifyProof = async (electionId: string) => {
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
+                        </TableCell>
+
+                        <TableCell>
+                          <div className="space-y-1 text-xs">
+                            <div>
+                              {run ? (
+                                <Badge variant={run.proofVerified ? "default" : "secondary"}>
+                                  {run.proofVerified ? "Verified" : run.proofGenerated ? "Generated" : "Failed"}
+                                </Badge>
+                              ) : proofExists ? (
+                                <Badge variant={proofVerified ? "default" : "secondary"}>
+                                  {proofVerified ? "Verified" : proof.status ?? "Stored"}
+                                </Badge>
+                              ) : (
+                                <span className="text-muted-foreground">No local run yet</span>
+                              )}
+                            </div>
+                            <div className="text-muted-foreground">
+                              {run?.positionsMatched != null && run?.positionsTotal != null
+                                ? `${run.positionsMatched}/${run.positionsTotal} positions matched`
+                                : proofExists
+                                  ? `DB status: ${proof.status ?? "stored"}`
+                                  : "Generate a proof to capture diagnostics."}
+                            </div>
+                          </div>
+                        </TableCell>
+
+                        <TableCell>
+                          <div className="space-y-1 text-xs">
+                            <div>Accuracy: {run?.accuracy != null ? `${run.accuracy.toFixed(2)}%` : "—"}</div>
+                            <div>Timing: {run ? `${fmtTiming(run.genMs)} / ${fmtTiming(run.verifyMs)}` : "—"}</div>
+                            <div className="text-muted-foreground">Mismatches: {run?.mismatchCount ?? "—"}</div>
+                          </div>
                         </TableCell>
 
                         <TableCell className="text-right">
@@ -1071,6 +1273,75 @@ const handleVerifyProof = async (electionId: string) => {
                       </TableRow>
                     );
                   })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ScrollText className="h-5 w-5" />
+            ZK testing table data
+          </CardTitle>
+          <CardDescription>
+            This mirrors the fields typically needed for thesis, QA, or acceptance-test result tables. The “ZKP Generated Tally” column is filled after running a proof from this page.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Test Case</TableHead>
+                  <TableHead>Election / Position</TableHead>
+                  <TableHead>No. of Votes</TableHead>
+                  <TableHead>Expected Tally</TableHead>
+                  <TableHead>ZKP Generated Tally</TableHead>
+                  <TableHead>Proof Verification</TableHead>
+                  <TableHead>Privacy Preserved</TableHead>
+                  <TableHead>Finalization Status</TableHead>
+                  <TableHead>Remarks</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loading ? (
+                  <TableRow>
+                    <TableCell colSpan={9} className="text-center text-sm text-muted-foreground">
+                      Loading…
+                    </TableCell>
+                  </TableRow>
+                ) : testingRows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={9} className="text-center text-sm text-muted-foreground">
+                      No finalized tally rows yet. Finalize an election and refresh to populate this table.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  testingRows.map((row, index) => (
+                    <TableRow key={toTestingRowKey(row.electionId, row.position)}>
+                      <TableCell className="text-xs">{index + 1}</TableCell>
+                      <TableCell>
+                        <div className="text-xs">
+                          <div className="font-medium">{row.position}</div>
+                          <div className="text-muted-foreground">{row.electionTitle}</div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-xs">{row.votesCount}</TableCell>
+                      <TableCell className="text-xs">{row.expectedTally}</TableCell>
+                      <TableCell className="text-xs">{row.generatedTally}</TableCell>
+                      <TableCell className="text-xs">{row.proofVerification}</TableCell>
+                      <TableCell className="text-xs">{row.privacyPreserved}</TableCell>
+                      <TableCell className="text-xs">{row.finalizationStatus}</TableCell>
+                      <TableCell>
+                        <Badge variant={row.remarks === "PASS" ? "default" : row.remarks === "PENDING" ? "secondary" : "outline"}>
+                          {row.remarks}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))
                 )}
               </TableBody>
             </Table>

@@ -24,6 +24,16 @@ type ZkRunResponse = {
   positionsMatched?: number;
   mismatchCount?: number;
   accuracy?: number;
+  tallyPreview?: Array<{
+    title: string;
+    abstain: number;
+    totalBallots: number;
+    candidates: Array<{
+      id: string;
+      name: string;
+      votes: number;
+    }>;
+  }>;
   notes?: string;
   error?: string;
   details?: string;
@@ -147,6 +157,27 @@ async function recountDbTallies(service: any, electionId: string, witness: any) 
   const positionsTotal = posList.length;
   const accuracy = positionsTotal > 0 ? (positionsMatched / positionsTotal) * 100 : 0;
   return { positionsTotal, positionsMatched, mismatchCount, accuracy };
+}
+
+
+function buildTallyPreview(witness: any) {
+  const positions: any[] = witness?.tally?.positions ?? [];
+  return positions.map((position) => {
+    const candidates: any[] = position?.candidates ?? [];
+    const abstain = Number(position?.abstain ?? 0);
+    const candidateTallies = candidates.map((candidate) => ({
+      id: String(candidate?.id ?? ""),
+      name: String(candidate?.name ?? candidate?.title ?? candidate?.id ?? "Candidate"),
+      votes: Number(candidate?.votes ?? 0),
+    }));
+
+    return {
+      title: String(position?.title ?? "Untitled position"),
+      abstain,
+      totalBallots: candidateTallies.reduce((sum, candidate) => sum + candidate.votes, 0) + abstain,
+      candidates: candidateTallies,
+    };
+  });
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -349,6 +380,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       positionsMatched,
       mismatchCount,
       accuracy,
+      tallyPreview: buildTallyPreview(witness),
       notes: proofVerified ? "Verifier accepted proof." : "Verifier rejected proof.",
     };
 

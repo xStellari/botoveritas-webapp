@@ -4,7 +4,14 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "compile": "hardhat compile",
+    "deploy:anchor": "hardhat run scripts/deploy-election-root-anchor.ts --network amoy",
+    "deploy:verifier": "hardhat run scripts/deploy-tally-verifier.ts --network amoy",
+    "deploy:registry": "hardhat run scripts/deploy-tally-registry.ts --network amoy",
+    "deploy:zk-stack": "hardhat run scripts/deploy-zk-stack.ts --network amoy",
+    "submit:tally": "hardhat run scripts/submit-tally.ts --network amoy",
+    "confirm:tally": "hardhat run scripts/submit-and-confirm-tally.ts --network amoy",
+    "read:tally": "hardhat run scripts/read-tally.ts --network amoy"
   },
   "keywords": [],
   "author": "",
@@ -12,7 +19,9 @@
   "type": "commonjs",
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^6.1.0",
-    "hardhat": "^2.28.6"
+    "hardhat": "^2.28.6",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.4.0",
