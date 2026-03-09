@@ -1,6 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 import { ethers } from "ethers";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const snarkjs: any = require("snarkjs");
 
 type SubmitProofResponse = {
   ok: boolean;
@@ -13,6 +15,17 @@ type SubmitProofResponse = {
   resultsUri?: string;
   error?: string;
   details?: string;
+};
+
+type ManifestRow = {
+  manifest_hash: string;
+  manifest?: {
+    artifacts?: {
+      vkey?: { bucket?: string; key?: string; sha256?: string };
+      zkey?: { bucket?: string; key?: string; sha256?: string };
+      wasm?: { bucket?: string; key?: string; sha256?: string };
+    };
+  } | null;
 };
 
 function envAny(...names: string[]) {
@@ -46,6 +59,14 @@ function normalizeForUint(v: unknown): bigint {
   return BigInt(s);
 }
 
+function normalizeField(v: unknown): string {
+  if (typeof v === "bigint") return v.toString(10);
+  if (typeof v === "number") return BigInt(v).toString(10);
+  const s = String(v ?? "").trim();
+  if (!s) throw new Error("Encountered empty field while normalizing public signal");
+  return BigInt(s).toString(10);
+}
+
 function extractGroth16Calldata(proof: any) {
   if (!proof?.pi_a || !proof?.pi_b || !proof?.pi_c) {
     throw new Error("proof.json is missing pi_a / pi_b / pi_c");
@@ -58,6 +79,21 @@ function extractGroth16Calldata(proof: any) {
   ];
   const c: [bigint, bigint] = [normalizeForUint(proof.pi_c[0]), normalizeForUint(proof.pi_c[1])];
   return { a, b, c };
+}
+
+async function downloadJsonFromStorage(service: any, bucket: string, key: string) {
+  const { data, error } = await service.storage.from(bucket).download(key);
+  if (error) throw new Error(`Failed to download ${bucket}/${key}: ${error.message}`);
+  return JSON.parse(await data.text());
+}
+
+function expectedPublicSignalsFromWitness(witness: any): string[] {
+  return [
+    normalizeField(witness?.publicInputs?.electionIdHashField),
+    normalizeField(witness?.publicInputs?.electionVoteRootField),
+    normalizeField(witness?.publicInputs?.manifestHashField),
+    normalizeField(witness?.publicInputs?.resultsHashField),
+  ];
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -119,6 +155,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       throw new Error("Proof row is missing proof_json_url or public_signals_json_url");
     }
 
+    const { data: manifestRowData, error: manifestErr } = await service
+      .from("election_manifests")
+      .select("manifest_hash,manifest")
+      .eq("election_id", electionId)
+      .maybeSingle();
+    if (manifestErr) throw new Error(`Failed to load manifest row: ${manifestErr.message}`);
+    const manifestRow = manifestRowData as ManifestRow | null;
+    if (!manifestRow) throw new Error("No manifest row found for this election");
+
     const witnessUrl = `${supabaseUrl}/functions/v1/generate-zk-tally-witness`;
     const witnessRes = await fetch(witnessUrl, {
       method: "POST",
@@ -156,13 +201,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       throw new Error("Stored results_hash does not match regenerated witness");
     }
 
-    const downloadJsonFromStorage = async (bucket: string, key: string) => {
-      const { data, error } = await service.storage.from(bucket).download(key);
-      if (error) throw new Error(`Failed to download ${bucket}/${key}: ${error.message}`);
-      return JSON.parse(await data.text());
-    };
+    const proof = await downloadJsonFromStorage(service, "zk-proofs", proofRowData.proof_json_url);
+    const publicSignalsRaw = await downloadJsonFromStorage(service, "zk-proofs", proofRowData.public_signals_json_url);
+    if (!Array.isArray(publicSignalsRaw) || publicSignalsRaw.length < 4) {
+      throw new Error("Stored publicSignals.json must contain at least 4 entries");
+    }
 
-    const proof = await downloadJsonFromStorage("zk-proofs", proofRowData.proof_json_url);
+    const expectedSignals = expectedPublicSignalsFromWitness(witness);
+    const actualSignals = publicSignalsRaw.map((value: unknown) => normalizeField(value));
+    for (let i = 0; i < expectedSignals.length; i += 1) {
+      if (actualSignals[i] !== expectedSignals[i]) {
+        throw new Error(`publicSignals[${i}] does not match the regenerated witness; regenerate proof with the current artifacts and witness`);
+      }
+    }
+
+    const vkeyBucket = String(manifestRow.manifest?.artifacts?.vkey?.bucket ?? envAny("ZK_ARTIFACTS_BUCKET") ?? "zk-artifacts");
+    const vkeyKey = String(manifestRow.manifest?.artifacts?.vkey?.key ?? envAny("ZK_TALLY_VKEY_KEY") ?? "tally/BV_TALLY_UNIVERSAL_V1/verification_key.json");
+    const verificationKey = await downloadJsonFromStorage(service, vkeyBucket, vkeyKey);
+    const locallyVerified = await snarkjs.groth16.verify(verificationKey, actualSignals, proof);
+    if (!locallyVerified) {
+      throw new Error("Proof does not verify against the current verification_key.json; redeploy/publish matching artifacts and regenerate proof");
+    }
+
     const { a, b, c } = extractGroth16Calldata(proof);
 
     const registryAddress = requireEnvAny(

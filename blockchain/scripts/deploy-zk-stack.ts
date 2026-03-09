@@ -2,9 +2,11 @@ import { ethers, run } from "hardhat";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { publishCurrentZkArtifacts } from "./publish-zk-artifacts";
 
 type CliArgs = {
   fresh: boolean;
+  noPublishArtifacts: boolean;
   anchorAddress?: string;
   anchorOwner?: string;
 };
@@ -14,11 +16,15 @@ function repoRootFromHere(): string {
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { fresh: false };
+  const args: CliArgs = { fresh: false, noPublishArtifacts: false };
   for (let i = 2; i < argv.length; i += 1) {
     const current = argv[i];
     if (current === "--fresh") {
       args.fresh = true;
+      continue;
+    }
+    if (current === "--no-publish-artifacts") {
+      args.noPublishArtifacts = true;
       continue;
     }
     if (current === "--anchor" && argv[i + 1]) {
@@ -101,9 +107,6 @@ function ensureVerifierSource(repoRoot: string, fresh: boolean): void {
   console.log("Generating verifier artifacts from the current circuit...");
   runRepoTsScript(repoRoot, path.join("zk", "scripts", "snarkjs-setup.ts"), ["--force"]);
 
-  console.log("Promoting verifier Solidity into blockchain/contracts...");
-  runRepoTsScript(repoRoot, path.join("zk", "scripts", "promote-verifier-sol.ts"));
-
   mustExist(verifierBuildPath, "generated verifier.sol");
   mustExist(verificationKeyPath, "verification key");
   mustExist(promotedSourcePath, "promoted verifier contract");
@@ -133,6 +136,24 @@ async function ensureAnchor(anchorAddressFromCli?: string, anchorOwnerFromCli?: 
   return deployedAddress;
 }
 
+async function maybePublishArtifacts(repoRoot: string, noPublishArtifacts: boolean): Promise<void> {
+  if (noPublishArtifacts) {
+    console.log("Artifact publish skipped by --no-publish-artifacts.");
+    return;
+  }
+  const hasSupabase = Boolean(process.env.SUPABASE_URL?.trim() && process.env.SUPABASE_SERVICE_ROLE_KEY?.trim());
+  if (!hasSupabase) {
+    console.warn("Skipping zk-artifacts publish because SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing.");
+    return;
+  }
+
+  const published = await publishCurrentZkArtifacts(repoRoot);
+  console.log("Published zk-artifacts that match the deployed verifier:");
+  console.log(`- ${published.bucket}/${published.wasm.key} (${published.wasm.size} bytes, sha256=${published.wasm.sha256})`);
+  console.log(`- ${published.bucket}/${published.zkey.key} (${published.zkey.size} bytes, sha256=${published.zkey.sha256})`);
+  console.log(`- ${published.bucket}/${published.vkey.key} (${published.vkey.size} bytes, sha256=${published.vkey.sha256})`);
+}
+
 async function main() {
   const cli = parseArgs(process.argv);
   const repoRoot = repoRootFromHere();
@@ -145,6 +166,7 @@ async function main() {
   console.log("Fresh verifier regeneration:", cli.fresh ? "enabled" : "auto");
 
   ensureVerifierSource(repoRoot, cli.fresh);
+  await maybePublishArtifacts(repoRoot, cli.noPublishArtifacts);
 
   await run("compile");
 
