@@ -246,6 +246,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       [
         "function submitTally(bytes32 electionIdHash, bytes32 electionVoteRoot, bytes32 manifestHash, bytes32 resultsHash, string resultsUri, uint256[2] a, uint256[2][2] b, uint256[2] c) external",
         "function verifier() external view returns (address)",
+        "function anchor() external view returns (address)",
       ],
       wallet,
     );
@@ -256,6 +257,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? preferredUri
       : service.storage.from("zk-proofs").getPublicUrl(fallbackKey).data.publicUrl;
     if (!resultsUri) throw new Error("Could not determine resultsUri for on-chain submitTally");
+
+    const anchorAddress = String(await registry.anchor());
+    const anchor = new ethers.Contract(
+      anchorAddress,
+      [
+        "function isElectionRootAnchored(bytes32 electionIdHash) external view returns (bool)",
+        "function electionBallotsRoot(bytes32 electionIdHash) external view returns (bytes32)",
+        "function electionManifestHash(bytes32 electionIdHash) external view returns (bytes32)",
+        "function anchorElection(bytes32 electionIdHash, bytes32 merkleRoot, bytes32 manifestHash) external",
+      ],
+      wallet,
+    );
+
+    const anchored = Boolean(await anchor.isElectionRootAnchored(electionIdBytes32));
+    if (!anchored) {
+      const anchorTx = await anchor.anchorElection(
+        electionIdBytes32,
+        electionVoteRootBytes32,
+        manifestHashBytes32,
+      );
+      await anchorTx.wait();
+    } else {
+      const anchoredRoot = String(await anchor.electionBallotsRoot(electionIdBytes32));
+      const anchoredManifest = String(await anchor.electionManifestHash(electionIdBytes32));
+      if (anchoredRoot.toLowerCase() !== electionVoteRootBytes32.toLowerCase()) {
+        throw new Error(`Anchored root does not match regenerated witness root for this election. anchored=${anchoredRoot} current=${electionVoteRootBytes32}`);
+      }
+      if (anchoredManifest.toLowerCase() !== manifestHashBytes32.toLowerCase()) {
+        throw new Error(`Anchored manifest does not match regenerated witness manifest for this election. anchored=${anchoredManifest} current=${manifestHashBytes32}`);
+      }
+    }
 
     const tx = await registry.submitTally(
       electionIdBytes32,
