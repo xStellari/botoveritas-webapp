@@ -561,26 +561,30 @@ export default function Admin() {
               title="Membership"
               description="Review incoming membership requests and manage approved rosters in one workspace."
             />
-            <Tabs defaultValue="requests" className="space-y-4">
-              <TabsList className="grid w-full grid-cols-2 md:w-[340px]">
-                <TabsTrigger value="requests" className="gap-2">
-                  <Inbox className="h-4 w-4" />
-                  Requests
-                </TabsTrigger>
-                <TabsTrigger value="roster" className="gap-2">
-                  <ClipboardList className="h-4 w-4" />
-                  Roster
-                </TabsTrigger>
-              </TabsList>
 
-              <TabsContent value="requests">
+            {/* Membership Requests Section */}
+            <div className="rounded-xl border bg-card/60">
+              <div className="flex items-center gap-3 border-b px-5 py-4">
+                <Inbox className="h-4 w-4 text-muted-foreground" />
+                <h3 className="font-semibold text-sm tracking-tight">Membership Requests</h3>
+                <p className="text-xs text-muted-foreground ml-1">Review and act on incoming eligibility requests</p>
+              </div>
+              <div className="p-5">
                 <OrgMembershipRequests />
-              </TabsContent>
+              </div>
+            </div>
 
-              <TabsContent value="roster">
+            {/* Roster Section */}
+            <div className="rounded-xl border bg-card/60">
+              <div className="flex items-center gap-3 border-b px-5 py-4">
+                <ClipboardList className="h-4 w-4 text-muted-foreground" />
+                <h3 className="font-semibold text-sm tracking-tight">Rosters</h3>
+                <p className="text-xs text-muted-foreground ml-1">Manage approved org member rosters</p>
+              </div>
+              <div className="p-5">
                 <RostersManagement />
-              </TabsContent>
-            </Tabs>
+              </div>
+            </div>
           </TabsContent>
 
           <TabsContent value="kiosks" className="space-y-6">

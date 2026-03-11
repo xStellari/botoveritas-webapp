@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import {
   DropdownMenu,
@@ -19,7 +20,8 @@ import {
 import {
   RefreshCw, FileText, Layers, ShieldCheck, Download,
   CheckCircle2, Circle, Play, FileJson, MoreHorizontal,
-  Cpu, AlertCircle, Activity, Zap, ChevronRight,
+  Cpu, AlertCircle, Activity, Zap, ChevronDown, ChevronUp,
+  Search, X,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -115,11 +117,11 @@ const UNIVERSAL_ARTIFACT_BASE = `tally/${UNIVERSAL_CIRCUIT_VERSION}`;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
-function shortHex(hex: string, keep = 10) {
+function shortHex(hex: string, keep = 8) {
   const h = String(hex || "");
   if (!h) return "—";
   if (h.length <= keep * 2) return h;
-  return `${h.slice(0, keep)}…${h.slice(-keep)}`;
+  return `${h.slice(0, keep)}…${h.slice(-6)}`;
 }
 
 function fmtMs(ms?: number) {
@@ -200,42 +202,321 @@ async function downloadPublicSignalsJson(electionId: string) {
   } catch (e: any) { toast.error(`Failed to download publicSignals.json: ${e?.message}`); }
 }
 
-// ─── Pipeline Step ────────────────────────────────────────────────────────────
+// ─── Pipeline Step indicator ──────────────────────────────────────────────────
 
-function PipelineStep({ label, done, active }: { label: string; done: boolean; active: boolean }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      {done
-        ? <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />
-        : <Circle className={`h-3.5 w-3.5 shrink-0 ${active ? "text-muted-foreground animate-pulse" : "text-muted-foreground/30"}`} />}
-      <span className={`text-xs ${done ? "text-foreground font-medium" : active ? "text-muted-foreground" : "text-muted-foreground/40"}`}>
-        {label}
-      </span>
-    </div>
-  );
-}
+const PIPELINE_STEPS = ["Finalized", "Manifest", "Chunks", "Root", "Proof", "Verified", "On-chain"] as const;
 
 function PipelineRail(props: {
   isFinal: boolean; hasManifest: boolean; hasChunks: boolean; hasRoot: boolean;
   artifactsReady: boolean; proofOk: boolean; proofVerified: boolean; txOk: boolean;
 }) {
-  const steps = [
-    { label: "Finalized",  done: props.isFinal,       active: !props.isFinal },
-    { label: "Manifest",   done: props.hasManifest,   active: props.isFinal && !props.hasManifest },
-    { label: "Chunks",     done: props.hasChunks,     active: props.hasManifest && !props.hasChunks },
-    { label: "Root",       done: props.hasRoot,       active: props.hasChunks && !props.hasRoot },
-    { label: "Proof",      done: props.proofOk,       active: props.hasRoot && props.artifactsReady && !props.proofOk },
-    { label: "Verified",   done: props.proofVerified, active: props.proofOk && !props.proofVerified },
-    { label: "On-chain",   done: props.txOk,          active: props.proofVerified && !props.txOk },
+  const states = [
+    props.isFinal,
+    props.hasManifest,
+    props.hasChunks,
+    props.hasRoot,
+    props.proofOk,
+    props.proofVerified,
+    props.txOk,
   ];
+
+  // Find the first incomplete step — that's "active"
+  const activeIndex = states.findIndex((s) => !s);
+
   return (
-    <div className="flex items-center gap-1 flex-wrap">
-      {steps.map((step, i) => (
-        <div key={step.label} className="flex items-center gap-1">
-          <PipelineStep {...step} />
-          {i < steps.length - 1 && <ChevronRight className="h-3 w-3 text-muted-foreground/20 shrink-0" />}
+    <div className="flex items-center gap-0">
+      {PIPELINE_STEPS.map((label, i) => {
+        const done = states[i];
+        const active = i === activeIndex;
+        const isLast = i === PIPELINE_STEPS.length - 1;
+
+        return (
+          <div key={label} className="flex items-center">
+            {/* Node */}
+            <div className="flex items-center gap-1.5">
+              {done ? (
+                <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />
+              ) : (
+                <Circle className={`h-3.5 w-3.5 shrink-0 ${active ? "text-muted-foreground" : "text-muted-foreground/25"}`} />
+              )}
+              <span className={`text-xs whitespace-nowrap ${
+                done ? "text-foreground font-medium"
+                : active ? "text-muted-foreground"
+                : "text-muted-foreground/40"
+              }`}>
+                {label}
+              </span>
+            </div>
+            {/* Connector */}
+            {!isLast && (
+              <div className={`w-5 h-px mx-1.5 ${done ? "bg-border" : "bg-border/40"}`} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Election Card ────────────────────────────────────────────────────────────
+
+type ElectionCardProps = {
+  e: ElectionRow;
+  manifest: ManifestRow | undefined;
+  chunks: { chunkCount: number; totalLeaves: number; lastChunkAt: string | null } | undefined;
+  root: RootRow | undefined;
+  proof: ProofRow | undefined;
+  run: ZkRunResult | undefined;
+  artifactsReady: boolean;
+  busy: boolean;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onAction: (fn: string) => void;
+  onGenerateProof: () => void;
+  onVerifyProof: () => void;
+  onSubmitProof: () => void;
+  onDownloadManifest: () => void;
+  onDownloadProof: () => void;
+  onDownloadSignals: () => void;
+  onDraftPdf: () => void;
+  onFinalPdf: () => void;
+};
+
+function ElectionCard({
+  e, manifest, chunks, root, proof, run,
+  artifactsReady, busy, expanded, onToggleExpand,
+  onAction, onGenerateProof, onVerifyProof, onSubmitProof,
+  onDownloadManifest, onDownloadProof, onDownloadSignals,
+  onDraftPdf, onFinalPdf,
+}: ElectionCardProps) {
+  const hasManifest = !!manifest;
+  const hasRoot = !!root;
+  const proofExists = !!proof;
+  const proofStatus = String(proof?.status ?? "").toLowerCase();
+  const proofOk = !!proof && ["proved", "submitted", "confirmed", "verified"].includes(proofStatus);
+  const proofVerified = proofStatus === "verified";
+  const txOk = !!proof?.tx_hash;
+  const submitReady = proofExists && proofVerified && !txOk;
+
+  // Overall health for left accent
+  const health = txOk ? "complete" : proofVerified ? "verified" : proofOk ? "partial" : proofExists && !proofOk ? "error" : "pending";
+  const accentClass = {
+    complete: "border-l-primary",
+    verified: "border-l-primary/60",
+    partial: "border-l-yellow-500/60",
+    error: "border-l-destructive/60",
+    pending: "border-l-border",
+  }[health];
+
+  return (
+    <div className={`rounded-lg border border-l-4 bg-card overflow-hidden transition-all ${accentClass}`}>
+
+      {/* ── Header (always visible) ── */}
+      <div
+        className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/30 transition-colors select-none"
+        onClick={onToggleExpand}
+      >
+        {/* Expand toggle */}
+        <div className="text-muted-foreground/50 shrink-0">
+          {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
         </div>
-      ))}
+
+        {/* Title + ID */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-sm">{e.title}</span>
+            {busy && <Activity className="h-3.5 w-3.5 text-muted-foreground animate-pulse shrink-0" />}
+            {proofExists && (
+              <Badge
+                variant={proofVerified ? "default" : proofStatus === "verify_failed" ? "destructive" : "secondary"}
+                className="text-xs"
+              >
+                {txOk ? "On-chain" : proofVerified ? "Verified" : proof.status ?? "Stored"}
+              </Badge>
+            )}
+          </div>
+          {/* Pipeline rail inline in collapsed state */}
+          {!expanded && (
+            <div className="mt-1.5 overflow-x-auto">
+              <PipelineRail
+                isFinal={Boolean(e.is_final)}
+                hasManifest={hasManifest}
+                hasChunks={Boolean(chunks?.chunkCount)}
+                hasRoot={hasRoot}
+                artifactsReady={artifactsReady}
+                proofOk={proofOk}
+                proofVerified={proofVerified}
+                txOk={txOk}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Actions — stop propagation so clicking buttons doesn't toggle card */}
+        <div className="flex items-center gap-2 shrink-0" onClick={(ev) => ev.stopPropagation()}>
+          {txOk && (
+            <Button size="sm" disabled={busy} onClick={onFinalPdf}>
+              <Download className="h-4 w-4 mr-2" />
+              Final PDF
+            </Button>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="outline" disabled={busy}>
+                <MoreHorizontal className="h-4 w-4 mr-1.5" />
+                Actions
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuLabel>Generate</DropdownMenuLabel>
+              <DropdownMenuGroup>
+                <DropdownMenuItem disabled={busy || hasManifest} onSelect={(ev) => { ev.preventDefault(); onAction("generate-election-manifest"); }}>
+                  <FileText className="h-4 w-4 mr-2" /> Manifest
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy || !hasManifest || hasRoot} onSelect={(ev) => { ev.preventDefault(); onAction("anchor-election-root"); }}>
+                  <Layers className="h-4 w-4 mr-2" /> Anchor Root
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy || !hasManifest || !hasRoot} onSelect={(ev) => { ev.preventDefault(); onAction("generate-zk-tally-witness"); }}>
+                  <ShieldCheck className="h-4 w-4 mr-2" /> Witness
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy || !hasManifest || !hasRoot || !artifactsReady || proofExists} onSelect={(ev) => { ev.preventDefault(); onGenerateProof(); }}>
+                  <Zap className="h-4 w-4 mr-2" /> Generate Proof
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy || !proofExists} onSelect={(ev) => { ev.preventDefault(); onVerifyProof(); }}>
+                  <ShieldCheck className="h-4 w-4 mr-2" /> Verify Proof
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy || !submitReady} onSelect={(ev) => { ev.preventDefault(); onSubmitProof(); }}>
+                  <Play className="h-4 w-4 mr-2" /> Submit On-chain
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Inspect</DropdownMenuLabel>
+              <DropdownMenuGroup>
+                <DropdownMenuItem disabled={busy || !hasManifest} onSelect={(ev) => { ev.preventDefault(); onDownloadManifest(); }}>
+                  <FileJson className="h-4 w-4 mr-2" /> Manifest JSON
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy || !proofExists} onSelect={(ev) => { ev.preventDefault(); onDownloadProof(); }}>
+                  <FileJson className="h-4 w-4 mr-2" /> Proof JSON
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy || !proof?.public_signals_json_url} onSelect={(ev) => { ev.preventDefault(); onDownloadSignals(); }}>
+                  <FileJson className="h-4 w-4 mr-2" /> Public Signals JSON
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Export</DropdownMenuLabel>
+              <DropdownMenuGroup>
+                <DropdownMenuItem disabled={busy || !proofOk} onSelect={(ev) => { ev.preventDefault(); onDraftPdf(); }}>
+                  <Download className="h-4 w-4 mr-2" /> Draft PDF
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy || !txOk} onSelect={(ev) => { ev.preventDefault(); onFinalPdf(); }}>
+                  <Download className="h-4 w-4 mr-2" /> Final PDF
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+
+      {/* ── Expanded content ── */}
+      {expanded && (
+        <>
+          {/* Pipeline rail (larger, full width) */}
+          <div className="px-4 py-3 bg-muted/20 border-t overflow-x-auto">
+            <PipelineRail
+              isFinal={Boolean(e.is_final)}
+              hasManifest={hasManifest}
+              hasChunks={Boolean(chunks?.chunkCount)}
+              hasRoot={hasRoot}
+              artifactsReady={artifactsReady}
+              proofOk={proofOk}
+              proofVerified={proofVerified}
+              txOk={txOk}
+            />
+          </div>
+
+          {/* Election ID */}
+          <div className="px-4 py-2 border-t bg-muted/10">
+            <span className="text-xs text-muted-foreground font-mono">{e.id}</span>
+            {e.finalized_at && (
+              <span className="text-xs text-muted-foreground ml-3">
+                Finalized {new Date(e.finalized_at).toLocaleDateString()}
+              </span>
+            )}
+          </div>
+
+          {/* Data columns */}
+          <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-y md:divide-y-0 border-t">
+            <div className="px-4 py-3 space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">Manifest hash</p>
+              {manifest ? (
+                <>
+                  <p className="font-mono text-xs font-medium">{shortHex(manifest.manifest_hash)}</p>
+                  <p className="text-xs text-muted-foreground">{new Date(manifest.updated_at).toLocaleDateString()}</p>
+                </>
+              ) : <p className="text-xs text-muted-foreground">Not generated</p>}
+            </div>
+
+            <div className="px-4 py-3 space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">Chunks / Leaves</p>
+              {chunks?.chunkCount ? (
+                <>
+                  <p className="text-xs font-medium">{chunks.chunkCount} chunk{chunks.chunkCount !== 1 ? "s" : ""}</p>
+                  <p className="text-xs text-muted-foreground">{chunks.totalLeaves} leaves</p>
+                </>
+              ) : <p className="text-xs text-muted-foreground">No chunks yet</p>}
+            </div>
+
+            <div className="px-4 py-3 space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">Vote root</p>
+              {root ? (
+                <>
+                  <p className="font-mono text-xs font-medium">{shortHex(root.election_vote_root)}</p>
+                  <p className="text-xs text-muted-foreground">{root.chunk_count} chunk{root.chunk_count !== 1 ? "s" : ""} anchored</p>
+                </>
+              ) : <p className="text-xs text-muted-foreground">Not anchored</p>}
+            </div>
+
+            <div className="px-4 py-3 space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">On-chain tx</p>
+              {txOk ? (
+                <>
+                  <p className="font-mono text-xs font-medium">{shortHex(proof!.tx_hash!)}</p>
+                  <p className="text-xs text-muted-foreground">{proof?.chain ?? "—"}</p>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">{proof ? "Not submitted yet" : "No proof yet"}</p>
+              )}
+            </div>
+          </div>
+
+          {/* Run diagnostics */}
+          {run && (
+            <div className="flex items-center flex-wrap gap-x-5 gap-y-1 px-4 py-2.5 border-t bg-muted/10 text-xs text-muted-foreground">
+              <span>Gen <span className="text-foreground font-medium">{fmtMs(run.genMs)}</span></span>
+              <span>Verify <span className="text-foreground font-medium">{fmtMs(run.verifyMs)}</span></span>
+              {run.accuracy != null && (
+                <span>Accuracy <span className="text-foreground font-medium">{run.accuracy.toFixed(1)}%</span></span>
+              )}
+              {run.positionsTotal != null && (
+                <span>Positions <span className="text-foreground font-medium">{run.positionsMatched}/{run.positionsTotal}</span></span>
+              )}
+              {(run.mismatchCount ?? 0) > 0 && (
+                <Badge variant="destructive" className="text-xs py-0 h-5">
+                  {run.mismatchCount} mismatch{(run.mismatchCount ?? 0) !== 1 ? "es" : ""}
+                </Badge>
+              )}
+            </div>
+          )}
+
+          {/* Error */}
+          {proof?.error_message && (
+            <div className="flex items-center gap-2 px-4 py-2 border-t bg-destructive/5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              {proof.error_message}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -246,6 +527,8 @@ export default function ZKTally() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const [elections, setElections] = useState<ElectionRow[]>([]);
   const [manifests, setManifests] = useState<Record<string, ManifestRow>>({});
@@ -270,6 +553,26 @@ export default function ZKTally() {
     () => elections.filter((e) => Boolean(e.is_final) && !Boolean(e.is_archived)),
     [elections],
   );
+
+  const filteredElections = useMemo(() => {
+    if (!search.trim()) return finalized;
+    const q = search.toLowerCase();
+    return finalized.filter((e) =>
+      e.title.toLowerCase().includes(q) || e.id.toLowerCase().includes(q)
+    );
+  }, [finalized, search]);
+
+  const toggleExpand = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const expandAll = () => setExpandedIds(new Set(filteredElections.map((e) => e.id)));
+  const collapseAll = () => setExpandedIds(new Set());
 
   const refreshArtifactPresence = async () => {
     setArtifactChecking(true);
@@ -509,10 +812,14 @@ export default function ZKTally() {
   // ─── Render ───────────────────────────────────────────────────────────────
 
   const artifactFiles = [
-    { label: "Circuit WASM",     filename: "tally.wasm",           path: `${UNIVERSAL_ARTIFACT_BASE}/tally_js/tally.wasm`,      meta: artifactExisting.wasm },
-    { label: "Proving Key",      filename: "tally_final.zkey",     path: `${UNIVERSAL_ARTIFACT_BASE}/tally_final.zkey`,         meta: artifactExisting.zkey },
-    { label: "Verification Key", filename: "verification_key.json",path: `${UNIVERSAL_ARTIFACT_BASE}/verification_key.json`,    meta: artifactExisting.vkey },
+    { label: "Circuit WASM",     filename: "tally.wasm",            path: `${UNIVERSAL_ARTIFACT_BASE}/tally_js/tally.wasm`,   meta: artifactExisting.wasm },
+    { label: "Proving Key",      filename: "tally_final.zkey",      path: `${UNIVERSAL_ARTIFACT_BASE}/tally_final.zkey`,      meta: artifactExisting.zkey },
+    { label: "Verification Key", filename: "verification_key.json", path: `${UNIVERSAL_ARTIFACT_BASE}/verification_key.json`, meta: artifactExisting.vkey },
   ];
+
+  const verifiedCount = Object.values(proofs).filter(p =>
+    ["verified","submitted","confirmed"].includes(String(p.status ?? "").toLowerCase())
+  ).length;
 
   return (
     <div className="space-y-6">
@@ -546,9 +853,7 @@ export default function ZKTally() {
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium">{a.label}</span>
                   <Badge variant={a.meta.exists ? "secondary" : "outline"}>
-                    {a.meta.exists
-                      ? (a.meta.size ? `${(a.meta.size / (1024 * 1024)).toFixed(1)} MB` : "Present")
-                      : "Missing"}
+                    {a.meta.exists ? (a.meta.size ? `${(a.meta.size / (1024 * 1024)).toFixed(1)} MB` : "Present") : "Missing"}
                   </Badge>
                 </div>
                 <p className="text-xs text-muted-foreground font-mono truncate">{a.path}</p>
@@ -561,7 +866,7 @@ export default function ZKTally() {
       {/* ── Pipeline Card ── */}
       <Card>
         <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
               <ShieldCheck className="h-4 w-4 text-muted-foreground" />
               <div>
@@ -571,12 +876,10 @@ export default function ZKTally() {
                 </CardDescription>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Badge variant="secondary">{finalized.length} finalized</Badge>
               <Badge variant="secondary">{Object.keys(manifests).length} manifests</Badge>
-              <Badge variant="secondary">
-                {Object.values(proofs).filter(p => ["verified","submitted","confirmed"].includes(String(p.status ?? "").toLowerCase())).length} verified
-              </Badge>
+              <Badge variant="secondary">{verifiedCount} verified</Badge>
               <Button variant="outline" size="sm" onClick={load} disabled={loading}>
                 <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
                 Refresh
@@ -593,202 +896,89 @@ export default function ZKTally() {
             </div>
           )}
 
+          {/* Search + expand controls */}
+          {!loading && finalized.length > 0 && (
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1 max-w-sm">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  placeholder="Search elections…"
+                  value={search}
+                  onChange={(ev) => setSearch(ev.target.value)}
+                  className="pl-8 h-8 text-sm"
+                />
+                {search && (
+                  <button onClick={() => setSearch("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+              <Button variant="ghost" size="sm" className="text-xs h-8" onClick={expandAll}>
+                Expand all
+              </Button>
+              <Button variant="ghost" size="sm" className="text-xs h-8" onClick={collapseAll}>
+                Collapse all
+              </Button>
+            </div>
+          )}
+
           {loading ? (
             <div className="space-y-2">
-              {[...Array(2)].map((_, i) => (
-                <div key={i} className="h-32 rounded-lg border bg-muted/20 animate-pulse" />
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="h-14 rounded-lg border bg-muted/20 animate-pulse" />
               ))}
             </div>
-          ) : finalized.length === 0 ? (
+          ) : filteredElections.length === 0 ? (
             <div className="rounded-lg border border-dashed px-6 py-10 text-center">
-              <p className="text-sm text-muted-foreground">No finalized elections found.</p>
-              <p className="text-xs text-muted-foreground/60 mt-1">Finalize an election to begin the ZK proof pipeline.</p>
+              {search ? (
+                <>
+                  <p className="text-sm text-muted-foreground">No elections match "{search}"</p>
+                  <Button variant="ghost" size="sm" className="mt-2 text-xs" onClick={() => setSearch("")}>Clear search</Button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground">No finalized elections found.</p>
+                  <p className="text-xs text-muted-foreground/60 mt-1">Finalize an election to begin the ZK proof pipeline.</p>
+                </>
+              )}
             </div>
           ) : (
-            finalized.map((e) => {
-              const manifest = manifests[e.id];
-              const chunks = chunkStats[e.id];
-              const root = roots[e.id];
-              const proof = proofs[e.id];
-              const run = zkRuns[e.id];
+            <div className="space-y-2">
+              {filteredElections.map((e) => {
+                const busy = working?.endsWith(`:${e.id}`) || working === `pdf:${e.id}`;
+                return (
+                  <ElectionCard
+                    key={e.id}
+                    e={e}
+                    manifest={manifests[e.id]}
+                    chunks={chunkStats[e.id]}
+                    root={roots[e.id]}
+                    proof={proofs[e.id]}
+                    run={zkRuns[e.id]}
+                    artifactsReady={artifactsReady}
+                    busy={busy}
+                    expanded={expandedIds.has(e.id)}
+                    onToggleExpand={() => toggleExpand(e.id)}
+                    onAction={(fn) => runFn(e.id, fn)}
+                    onGenerateProof={() => handleGenerateProof(e.id)}
+                    onVerifyProof={() => handleVerifyProof(e.id)}
+                    onSubmitProof={() => handleSubmitProof(e.id)}
+                    onDownloadManifest={() => downloadManifestJson(e.id)}
+                    onDownloadProof={() => downloadProofJson(e.id)}
+                    onDownloadSignals={() => downloadPublicSignalsJson(e.id)}
+                    onDraftPdf={() => downloadResultsPdf(e.id, "draft")}
+                    onFinalPdf={() => downloadResultsPdf(e.id, "final")}
+                  />
+                );
+              })}
+            </div>
+          )}
 
-              const hasManifest = !!manifest;
-              const hasRoot = !!root;
-              const proofExists = !!proof;
-              const proofStatus = String(proof?.status ?? "").toLowerCase();
-              const proofOk = !!proof && ["proved", "submitted", "confirmed", "verified"].includes(proofStatus);
-              const proofVerified = proofStatus === "verified";
-              const txOk = !!proof?.tx_hash;
-              const submitReady = proofExists && proofVerified && !txOk;
-              const busy = working?.endsWith(`:${e.id}`) || working === `pdf:${e.id}`;
-
-              return (
-                <div key={e.id} className="rounded-lg border bg-card overflow-hidden">
-
-                  {/* Header row */}
-                  <div className="flex items-center justify-between gap-4 px-4 py-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-sm">{e.title}</span>
-                          {busy && <Activity className="h-3.5 w-3.5 text-muted-foreground animate-pulse shrink-0" />}
-                        </div>
-                        <p className="text-xs text-muted-foreground font-mono mt-0.5 truncate">{e.id}</p>
-                      </div>
-                      {proofExists && (
-                        <Badge variant={proofVerified ? "default" : proofStatus === "verify_failed" ? "destructive" : "secondary"}>
-                          {proofVerified ? "Verified" : proof.status ?? "Stored"}
-                        </Badge>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      {txOk && (
-                        <Button size="sm" disabled={busy} onClick={() => downloadResultsPdf(e.id, "final")}>
-                          <Download className="h-4 w-4 mr-2" />
-                          Final PDF
-                        </Button>
-                      )}
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button size="sm" variant="outline" disabled={busy}>
-                            <MoreHorizontal className="h-4 w-4 mr-1.5" />
-                            Actions
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-52">
-                          <DropdownMenuLabel>Generate</DropdownMenuLabel>
-                          <DropdownMenuGroup>
-                            <DropdownMenuItem disabled={busy || hasManifest} onSelect={(ev) => { ev.preventDefault(); runFn(e.id, "generate-election-manifest"); }}>
-                              <FileText className="h-4 w-4 mr-2" /> Manifest
-                            </DropdownMenuItem>
-                            <DropdownMenuItem disabled={busy || !hasManifest || hasRoot} onSelect={(ev) => { ev.preventDefault(); runFn(e.id, "anchor-election-root"); }}>
-                              <Layers className="h-4 w-4 mr-2" /> Anchor Root
-                            </DropdownMenuItem>
-                            <DropdownMenuItem disabled={busy || !hasManifest || !hasRoot} onSelect={(ev) => { ev.preventDefault(); runFn(e.id, "generate-zk-tally-witness"); }}>
-                              <ShieldCheck className="h-4 w-4 mr-2" /> Witness
-                            </DropdownMenuItem>
-                            <DropdownMenuItem disabled={busy || !hasManifest || !hasRoot || !artifactsReady || proofExists} onSelect={(ev) => { ev.preventDefault(); void handleGenerateProof(e.id); }}>
-                              <Zap className="h-4 w-4 mr-2" /> Generate Proof
-                            </DropdownMenuItem>
-                            <DropdownMenuItem disabled={busy || !proofExists} onSelect={(ev) => { ev.preventDefault(); void handleVerifyProof(e.id); }}>
-                              <ShieldCheck className="h-4 w-4 mr-2" /> Verify Proof
-                            </DropdownMenuItem>
-                            <DropdownMenuItem disabled={busy || !submitReady} onSelect={(ev) => { ev.preventDefault(); void handleSubmitProof(e.id); }}>
-                              <Play className="h-4 w-4 mr-2" /> Submit On-chain
-                            </DropdownMenuItem>
-                          </DropdownMenuGroup>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuLabel>Inspect</DropdownMenuLabel>
-                          <DropdownMenuGroup>
-                            <DropdownMenuItem disabled={busy || !hasManifest} onSelect={(ev) => { ev.preventDefault(); void downloadManifestJson(e.id); }}>
-                              <FileJson className="h-4 w-4 mr-2" /> Manifest JSON
-                            </DropdownMenuItem>
-                            <DropdownMenuItem disabled={busy || !proofExists} onSelect={(ev) => { ev.preventDefault(); void downloadProofJson(e.id); }}>
-                              <FileJson className="h-4 w-4 mr-2" /> Proof JSON
-                            </DropdownMenuItem>
-                            <DropdownMenuItem disabled={busy || !proof?.public_signals_json_url} onSelect={(ev) => { ev.preventDefault(); void downloadPublicSignalsJson(e.id); }}>
-                              <FileJson className="h-4 w-4 mr-2" /> Public Signals JSON
-                            </DropdownMenuItem>
-                          </DropdownMenuGroup>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuLabel>Export</DropdownMenuLabel>
-                          <DropdownMenuGroup>
-                            <DropdownMenuItem disabled={busy || !proofOk} onSelect={(ev) => { ev.preventDefault(); downloadResultsPdf(e.id, "draft"); }}>
-                              <Download className="h-4 w-4 mr-2" /> Draft PDF
-                            </DropdownMenuItem>
-                            <DropdownMenuItem disabled={busy || !txOk} onSelect={(ev) => { ev.preventDefault(); downloadResultsPdf(e.id, "final"); }}>
-                              <Download className="h-4 w-4 mr-2" /> Final PDF
-                            </DropdownMenuItem>
-                          </DropdownMenuGroup>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </div>
-
-                  {/* Pipeline progress rail */}
-                  <div className="px-4 py-2.5 bg-muted/30 border-t border-b">
-                    <PipelineRail
-                      isFinal={Boolean(e.is_final)}
-                      hasManifest={hasManifest}
-                      hasChunks={Boolean(chunks?.chunkCount)}
-                      hasRoot={hasRoot}
-                      artifactsReady={artifactsReady}
-                      proofOk={proofOk}
-                      proofVerified={proofVerified}
-                      txOk={txOk}
-                    />
-                  </div>
-
-                  {/* Data row */}
-                  <div className="grid grid-cols-4 divide-x text-sm">
-                    <div className="px-4 py-3 space-y-0.5">
-                      <p className="text-xs text-muted-foreground font-medium">Manifest hash</p>
-                      {manifest ? (
-                        <>
-                          <p className="font-mono text-xs">{shortHex(manifest.manifest_hash)}</p>
-                          <p className="text-xs text-muted-foreground">{new Date(manifest.updated_at).toLocaleDateString()}</p>
-                        </>
-                      ) : <p className="text-xs text-muted-foreground">—</p>}
-                    </div>
-                    <div className="px-4 py-3 space-y-0.5">
-                      <p className="text-xs text-muted-foreground font-medium">Chunks / Leaves</p>
-                      {chunks?.chunkCount ? (
-                        <>
-                          <p className="text-xs">{chunks.chunkCount} chunks</p>
-                          <p className="text-xs text-muted-foreground">{chunks.totalLeaves} leaves</p>
-                        </>
-                      ) : <p className="text-xs text-muted-foreground">—</p>}
-                    </div>
-                    <div className="px-4 py-3 space-y-0.5">
-                      <p className="text-xs text-muted-foreground font-medium">Vote root</p>
-                      {root ? (
-                        <>
-                          <p className="font-mono text-xs">{shortHex(root.election_vote_root)}</p>
-                          <p className="text-xs text-muted-foreground">{root.chunk_count} chunks anchored</p>
-                        </>
-                      ) : <p className="text-xs text-muted-foreground">—</p>}
-                    </div>
-                    <div className="px-4 py-3 space-y-0.5">
-                      <p className="text-xs text-muted-foreground font-medium">On-chain tx</p>
-                      {txOk ? (
-                        <>
-                          <p className="font-mono text-xs">{shortHex(proof!.tx_hash!)}</p>
-                          <p className="text-xs text-muted-foreground">{proof?.chain ?? "—"}</p>
-                        </>
-                      ) : <p className="text-xs text-muted-foreground">{proof ? "Not submitted" : "—"}</p>}
-                    </div>
-                  </div>
-
-                  {/* Run diagnostics */}
-                  {run && (
-                    <div className="flex items-center gap-5 px-4 py-2.5 border-t bg-muted/10 text-xs text-muted-foreground">
-                      <span>Gen <span className="text-foreground font-medium">{fmtMs(run.genMs)}</span></span>
-                      <span>Verify <span className="text-foreground font-medium">{fmtMs(run.verifyMs)}</span></span>
-                      {run.accuracy != null && (
-                        <span>Accuracy <span className="text-foreground font-medium">{run.accuracy.toFixed(1)}%</span></span>
-                      )}
-                      {run.positionsTotal != null && (
-                        <span>Positions <span className="text-foreground font-medium">{run.positionsMatched}/{run.positionsTotal}</span></span>
-                      )}
-                      {(run.mismatchCount ?? 0) > 0 && (
-                        <Badge variant="destructive" className="text-xs py-0 h-5">
-                          {run.mismatchCount} mismatch{(run.mismatchCount ?? 0) !== 1 ? "es" : ""}
-                        </Badge>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Error */}
-                  {proof?.error_message && (
-                    <div className="flex items-center gap-2 px-4 py-2 border-t bg-destructive/5 text-xs text-destructive">
-                      <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                      {proof.error_message}
-                    </div>
-                  )}
-                </div>
-              );
-            })
+          {/* Result count when filtering */}
+          {search && filteredElections.length > 0 && (
+            <p className="text-xs text-muted-foreground text-center">
+              Showing {filteredElections.length} of {finalized.length} elections
+            </p>
           )}
         </CardContent>
       </Card>
