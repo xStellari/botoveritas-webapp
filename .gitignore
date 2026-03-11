@@ -53,3 +53,8 @@ zk/**/*.ptau
 schema.sql
 
 zk/manifests/*.json
+*.zkey
+*.wasm
+*.r1cs
+*.ptau
+*.zip
