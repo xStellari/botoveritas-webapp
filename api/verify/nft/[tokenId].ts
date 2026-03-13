@@ -522,17 +522,7 @@ function htmlPage(p: {
     .alert-desc { font-size: 13px; color: var(--ink-80); line-height: 1.55; }
     .alert-errors { margin-top: 12px; padding: 12px 14px; background: rgba(17,24,32,.04); border-radius: var(--r-sm); border: 1px solid var(--border); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; color: var(--ink-60); line-height: 1.7; word-break: break-all; white-space: pre-wrap; }
 
-    .kiosk-bar { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-xl); padding: 20px 22px; box-shadow: var(--shadow-md); margin-bottom: 16px; animation: fadeUp .5s cubic-bezier(.22,1,.36,1) .38s both; }
-    .kiosk-inner { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
-    .kiosk-text { flex: 1; min-width: 180px; }
-    .kiosk-title { font-weight: 800; font-size: 14px; color: var(--green); letter-spacing: -.01em; margin-bottom: 3px; }
-    .kiosk-sub { font-size: 12px; color: var(--ink-60); }
-    .kiosk-timer-wrap { display: flex; align-items: baseline; gap: 4px; }
-    .kiosk-timer { font-family: 'DM Serif Display', Georgia, serif; font-size: 42px; line-height: 1; color: var(--green); letter-spacing: -.03em; }
-    .kiosk-timer-unit { font-size: 14px; font-weight: 700; color: var(--ink-40); }
-    .kiosk-progress-wrap { width: 100%; margin-top: 16px; }
-    .kiosk-progress-track { height: 6px; border-radius: 999px; background: var(--ink-10); overflow: hidden; }
-    .kiosk-progress-fill { height: 100%; width: 100%; border-radius: 999px; background: linear-gradient(to right, var(--green), var(--gold)); transition: width .9s linear; }
+
 
     @keyframes fadeUp    { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
     @keyframes slideDown { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
@@ -647,44 +637,11 @@ function htmlPage(p: {
         </div>
       </div>` : ""}
 
-      <div class="section-label">Kiosk Auto-Return</div>
-      <div class="kiosk-bar">
-        <div class="kiosk-inner">
-          <div class="kiosk-text">
-            <div class="kiosk-title">Returning to Home</div>
-            <div class="kiosk-sub">This screen will auto-redirect for the next voter.</div>
-          </div>
-          <div class="kiosk-timer-wrap">
-            <div class="kiosk-timer" id="bvTimer">40</div>
-            <div class="kiosk-timer-unit">s</div>
-          </div>
-          <a class="btn btn-gold-green" href="/">${ic.check("ic")}<span>Go Home Now</span></a>
-        </div>
-        <div class="kiosk-progress-wrap">
-          <div class="kiosk-progress-track">
-            <div class="kiosk-progress-fill" id="bvBar"></div>
-          </div>
-        </div>
-      </div>
+
 
     </div>
   </div>
-  <script>
-    (function () {
-      var TOTAL = 40, s = TOTAL;
-      var timerEl = document.getElementById('bvTimer');
-      var barEl   = document.getElementById('bvBar');
-      function render() {
-        if (timerEl) timerEl.textContent = String(s);
-        if (barEl)   barEl.style.width   = Math.max(0, (s / TOTAL) * 100) + '%';
-      }
-      render();
-      var t = setInterval(function () {
-        s -= 1; render();
-        if (s <= 0) { clearInterval(t); window.location.href = '/'; }
-      }, 1000);
-    })();
-  </script>
+
 </body>
 </html>`;
 }
