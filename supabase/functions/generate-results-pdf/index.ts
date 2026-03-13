@@ -2117,7 +2117,7 @@ const tally_submitted_at = body?.tally_submitted_at || "";
           h: 64,
           title: "Explorer Base",
           value: explorer_base ? "Available" : "-",
-          footnote: explorer_base || "No Verifier Reference On-Chain Anchor Recorded",
+          footnote: explorer_base || "No explorer configured",
         });
 
         drawInfoBoxCompact({
@@ -2129,8 +2129,8 @@ const tally_submitted_at = body?.tally_submitted_at || "";
           w: boxW,
           h: 64,
           title: "Anchor Tx",
-          value: onchain_anchor_tx ? "On-Chain Anchor Recorded" : "-",
-          footnote: onchain_anchor_tx ? "Explorer link" : "Not Applicable / Not On-Chain Anchor Recorded",
+          value: onchain_anchor_tx ? "Anchor Recorded" : "Not Anchored",
+          footnote: onchain_anchor_tx ? "Tx hash on record" : "Not yet anchored",
         });
 
         y -= 74;
@@ -2460,8 +2460,8 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
           w: boxW,
           h: 64,
           title: "Verifier",
-          value: zk_verifier_contract ? "Explorer Endpoint Available" : "-",
-          footnote: zk_verifier_contract ? "Contract / verifier ref" : "No Verifier Reference On-Chain Anchor Recorded",
+          value: zk_verifier_contract ? "Available" : "-",
+          footnote: zk_verifier_contract ? "Contract / verifier ref" : "No verifier set",
         });
 
         drawInfoBoxCompact({
@@ -2473,8 +2473,8 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
           w: boxW,
           h: 64,
           title: "On-chain Proof Tx",
-          value: zk_verification_tx ? "On-Chain Anchor Recorded" : "-",
-          footnote: zk_verification_tx ? "Explorer verification" : "Not Applicable / Not On-Chain Anchor Recorded",
+          value: zk_verification_tx ? "Anchor Recorded" : "Not Anchored",
+          footnote: zk_verification_tx ? "Tx hash on record" : "Not yet anchored",
         });
 
         y -= 74;
@@ -2592,16 +2592,16 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
         const list: Signatory[] = signatories.length > 0
           ? signatories
           : [
-            {
-              label: "Prepared by",
-              name: "__________________________",
-              role: "Group Member",
-            },
-            {
-              label: "Noted by",
-              name: "__________________________",
-              role: "Thesis Adviser",
-            },
+            // Group Members
+            { label: "Prepared by", name: "Caubat, Isaac A.", role: "Group Member" },
+            { label: "Prepared by", name: "Creencia, Jego Angelo M.", role: "Group Member" },
+            { label: "Prepared by", name: "Cervantes, Lance Owen Miguel", role: "Group Member" },
+            { label: "Prepared by", name: "Gomez, Jonas T.", role: "Group Member" },
+            { label: "Prepared by", name: "Leopando, Deric Lei A.", role: "Group Member" },
+            // Officials
+            { label: "Noted by", name: "Engr. Honeylet D. Grimaldo", role: "Thesis Adviser" },
+            { label: "Noted by", name: "Juan Dela Cruz", role: "COMELEC Chairman" },
+            { label: "Noted by", name: "Maria Clara", role: "SADU Director" },
           ];
 
         const isGroupMember = (s: Signatory) => {

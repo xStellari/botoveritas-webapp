@@ -188,6 +188,8 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
   const handleRFID = async (uid: string) => {
     const normalized = uid?.trim();
     if (!normalized) return;
+    // Belt-and-suspenders: ignore RFID input if we are past the rfid step
+    if (step !== "rfid") return;
 
     setWarningMessage(null);
 
@@ -431,7 +433,7 @@ const AuthenticationScreen = ({ onAuthSuccess }: AuthenticationScreenProps) => {
     <div className="min-h-screen flex items-center justify-center p-6 bg-gradient-to-br from-feu-green/10 via-background to-feu-gold/10">
       <Card className="w-full max-w-5xl border border-primary/15 bg-white/90 backdrop-blur-sm shadow-2xl">
         <div className="p-8 sm:p-10">
-          <RFIDScanner onScan={handleRFID} />
+          <RFIDScanner onScan={handleRFID} disabled={step !== "rfid"} />
 
           {/* Header */}
           <div className="relative flex flex-col items-center">

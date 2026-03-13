@@ -1,5 +1,5 @@
 // src/hooks/useKioskHeartbeat.ts
-import { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { getConfiguredKioskId, getKioskSecret } from "@/utils/kioskIdentity";
 
 type Options = {
@@ -19,6 +19,11 @@ export function useKioskHeartbeat(opts: Options) {
   const { enabled, intervalMs = 30_000 } = opts;
   const timerRef = useRef<number | null>(null);
 
+  // credentialVersion bumps whenever localStorage changes — this lets the effect
+  // re-run automatically right after KioskProvision writes the new credentials,
+  // without requiring a manual page refresh.
+  const [credentialVersion, setCredentialVersion] = useStorageVersion();
+
   useEffect(() => {
     // cleanup existing timer
     if (timerRef.current) {
@@ -31,6 +36,7 @@ export function useKioskHeartbeat(opts: Options) {
     const base = getFunctionsBaseUrl();
     if (!base) return;
 
+    // Read credentials fresh every time this effect runs
     const kioskId = (getConfiguredKioskId() || "").trim();
     const kioskSecret = (getKioskSecret() || "").trim();
     if (!kioskId || !kioskSecret) return;
@@ -50,11 +56,11 @@ export function useKioskHeartbeat(opts: Options) {
           body: "{}",
         });
       } catch {
-        // silent (offline is expected to show up via last_seen_at not updating)
+        // silent — offline shows up via last_seen_at not updating
       }
     };
 
-    // fire immediately then interval
+    // Fire immediately then on interval
     void send();
     timerRef.current = window.setInterval(() => void send(), intervalMs);
 
@@ -64,5 +70,24 @@ export function useKioskHeartbeat(opts: Options) {
         timerRef.current = null;
       }
     };
-  }, [enabled, intervalMs]);
+  }, [enabled, intervalMs, credentialVersion]); // credentialVersion re-fires after provision
+}
+
+/**
+ * Returns a counter that increments whenever setKioskConfig writes new credentials.
+ * Listens for the custom "kiosk-credentials-updated" event dispatched by
+ * kioskIdentity.ts — this works in the same tab, unlike the native "storage" event
+ * which only fires across tabs. This makes the heartbeat start automatically
+ * right after KioskProvision finishes, with no page refresh.
+ */
+function useStorageVersion(): [number, React.Dispatch<React.SetStateAction<number>>] {
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    const onCredentials = () => setVersion((v) => v + 1);
+    window.addEventListener("kiosk-credentials-updated", onCredentials);
+    return () => window.removeEventListener("kiosk-credentials-updated", onCredentials);
+  }, []);
+
+  return [version, setVersion];
 }

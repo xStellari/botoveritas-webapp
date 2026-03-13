@@ -53,6 +53,10 @@ export function setKioskConfig(args: { kioskId: string; kioskSecret: string; per
     safeSet(window.localStorage, KEY_ID, kioskId);
     safeSet(window.localStorage, KEY_SECRET, kioskSecret);
   }
+
+  // Notify same-tab listeners (e.g. useKioskHeartbeat) that credentials are ready.
+  // The native "storage" event only fires in OTHER tabs, so we dispatch our own.
+  window.dispatchEvent(new CustomEvent("kiosk-credentials-updated"));
 }
 
 export async function getKioskId(): Promise<string> {
