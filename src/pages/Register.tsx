@@ -607,71 +607,90 @@ export default function Register() {
 
       {/* ── Review & Confirm Modal ───────────────────────────────────────── */}
       <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-lg font-bold text-emerald-900">
-              Review Your Information
-            </DialogTitle>
-            <p className="text-sm text-muted-foreground pt-1">
-              Please check everything carefully — especially your email.
-              A verification link will be sent there. If it's wrong, you
-              won't be able to complete registration.
-            </p>
-          </DialogHeader>
-
-          <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 divide-y divide-emerald-100 text-sm my-2">
-            <div className="flex justify-between px-4 py-3">
-              <span className="text-muted-foreground font-medium">Given Name</span>
-              <span className="font-semibold text-emerald-900">{firstName}</span>
-            </div>
-            {middleName && (
-              <div className="flex justify-between px-4 py-3">
-                <span className="text-muted-foreground font-medium">M.I.</span>
-                <span className="font-semibold text-emerald-900">{middleName}.</span>
-              </div>
-            )}
-            <div className="flex justify-between px-4 py-3">
-              <span className="text-muted-foreground font-medium">Last Name</span>
-              <span className="font-semibold text-emerald-900">{lastName}</span>
-            </div>
-            {suffix && (
-              <div className="flex justify-between px-4 py-3">
-                <span className="text-muted-foreground font-medium">Suffix</span>
-                <span className="font-semibold text-emerald-900">{suffix}</span>
-              </div>
-            )}
-            <div className="flex justify-between px-4 py-3">
-              <span className="text-muted-foreground font-medium">Year Level</span>
-              <span className="font-semibold text-emerald-900">{yearLevel}</span>
-            </div>
-            <div className="flex flex-col gap-0.5 px-4 py-3">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground font-medium">FEU Email</span>
-                <span className="font-semibold text-emerald-900 text-right break-all">{fullEmail}</span>
-              </div>
-              <p className="text-xs text-amber-600 font-medium mt-1">
-                ⚠ A verification link will be sent here. Double-check this is correct.
+        <DialogContent className="w-[calc(100%-2rem)] max-w-lg overflow-hidden p-0 sm:rounded-2xl">
+          <div className="max-h-[90vh] overflow-y-auto p-6">
+            <DialogHeader className="pr-8">
+              <DialogTitle className="text-lg font-bold text-emerald-900">
+                Review Your Information
+              </DialogTitle>
+              <p className="pt-1 text-sm leading-relaxed text-muted-foreground">
+                Please check everything carefully — especially your email.
+                A verification link will be sent there. If it's wrong, you
+                won't be able to complete registration.
               </p>
-            </div>
-          </div>
+            </DialogHeader>
 
-          <DialogFooter className="flex flex-col-reverse sm:flex-row gap-2 pt-1">
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full sm:flex-1 border-emerald-200 text-emerald-800 font-semibold"
-              onClick={() => setShowConfirm(false)}
-            >
-              Edit — Go Back
-            </Button>
-            <Button
-              type="button"
-              className="w-full sm:flex-[2] font-semibold bg-gradient-to-r from-primary to-secondary hover:opacity-90"
-              onClick={handleConfirm}
-            >
-              Confirm — Proceed to Identity Verification
-            </Button>
-          </DialogFooter>
+            <div className="my-4 overflow-hidden rounded-xl border border-emerald-100 bg-emerald-50/60 text-sm">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-emerald-100 px-4 py-3">
+                <span className="min-w-0 font-medium text-muted-foreground">Given Name</span>
+                <span className="min-w-0 break-words text-right font-semibold text-emerald-900">
+                  {firstName}
+                </span>
+              </div>
+
+              {middleName && (
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-emerald-100 px-4 py-3">
+                  <span className="min-w-0 font-medium text-muted-foreground">M.I.</span>
+                  <span className="min-w-0 break-words text-right font-semibold text-emerald-900">
+                    {middleName}.
+                  </span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-emerald-100 px-4 py-3">
+                <span className="min-w-0 font-medium text-muted-foreground">Last Name</span>
+                <span className="min-w-0 break-words text-right font-semibold text-emerald-900">
+                  {lastName}
+                </span>
+              </div>
+
+              {suffix && (
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-emerald-100 px-4 py-3">
+                  <span className="min-w-0 font-medium text-muted-foreground">Suffix</span>
+                  <span className="min-w-0 break-words text-right font-semibold text-emerald-900">
+                    {suffix}
+                  </span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-emerald-100 px-4 py-3">
+                <span className="min-w-0 font-medium text-muted-foreground">Year Level</span>
+                <span className="min-w-0 break-words text-right font-semibold text-emerald-900">
+                  {yearLevel}
+                </span>
+              </div>
+
+              <div className="px-4 py-3">
+                <div className="grid grid-cols-1 gap-1 sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-3">
+                  <span className="min-w-0 font-medium text-muted-foreground">FEU Email</span>
+                  <span className="min-w-0 break-all text-left font-semibold text-emerald-900 sm:text-right">
+                    {fullEmail}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs font-medium text-amber-600">
+                  ⚠ A verification link will be sent here. Double-check this is correct.
+                </p>
+              </div>
+            </div>
+
+            <DialogFooter className="flex flex-col-reverse gap-2 pt-1 sm:flex-row">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full border-emerald-200 font-semibold text-emerald-800 sm:flex-1"
+                onClick={() => setShowConfirm(false)}
+              >
+                Edit — Go Back
+              </Button>
+              <Button
+                type="button"
+                className="w-full font-semibold bg-gradient-to-r from-primary to-secondary hover:opacity-90 sm:flex-[2]"
+                onClick={handleConfirm}
+              >
+                Confirm — Proceed to Identity Verification
+              </Button>
+            </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
