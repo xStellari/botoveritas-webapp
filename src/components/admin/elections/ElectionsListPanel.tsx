@@ -197,11 +197,11 @@ export function ElectionsListPanel({
               onClick={onRefresh}
               disabled={loading || saving}
             >
-              <RefreshCcw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+              <RefreshCcw className={`h-4 w-4 mr-1 ${loading ? "animate-spin" : ""}`} />
               Refresh
             </Button>
             <Button size="sm" onClick={openCreateElection} disabled={saving}>
-              <Plus className="h-4 w-4 mr-2" />
+              <Plus className="h-3 w-3" />
               New
             </Button>
           </div>
