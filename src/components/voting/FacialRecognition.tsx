@@ -1,11 +1,25 @@
-// FacialRecognition.tsx — Lightweight kiosk build
-// Goal: minimize per-frame image processing for low-end CPUs (e.g., AMD Athlon 3000G).
-// Keeps only: TinyFaceDetector for presence + countdown, and full descriptor capture once.
+// FacialRecognition.tsx — Optimized for kiosk cold-start performance
+//
+// Key changes vs previous version:
+//
+// 1. CLAIM WARM STREAM: On mount, we first try claimWarmStream() from
+//    cameraWarmup.ts. If a pre-acquired stream is available, we attach it
+//    directly to the <video> element — no getUserMedia call, no OS delay.
+//    Only falls back to getUserMedia if warmup didn't run or stream expired.
+//
+// 2. MODELS FIRST, LOOP SECOND: The detection loop now only starts after
+//    modelsReady is true. Previously requestAnimationFrame was spinning
+//    immediately even before models were loaded, causing a jank burst.
+//
+// 3. SKIP REDUNDANT MODEL LOAD: We check the same window-level promise cache
+//    set by cameraWarmup so we never double-load. If warmup already finished
+//    loading, setModelsReady(true) fires synchronously — no await needed.
 
 // @ts-ignore
 import * as faceapi from "face-api.js/dist/face-api.js";
 
 import React, { useEffect, useRef, useState } from "react";
+import { claimWarmStream } from "@/utils/cameraWarmup";
 
 interface FacialRecognitionProps {
   onCapture: (descriptor: Float32Array) => void;
@@ -25,6 +39,7 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
   const [modelsReady, setModelsReady] = useState(false);
   const [recognitionReady, setRecognitionReady] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [faceDetected, setFaceDetected] = useState(false);
 
   // Avoid rerender storms from rapid status updates
   const statusRef = useRef<string>("Preparing camera…");
@@ -35,15 +50,10 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
     }
   };
 
-  const [faceDetected, setFaceDetected] = useState(false);
-
-
   // -------------------------------------------------------
   // Perf constants (tuneable)
   // -------------------------------------------------------
-  // Run detection at a modest rate to avoid pegging CPU.
-  const DETECT_INTERVAL_MS = 180; // ~5–6 fps
-  // Smaller input sizes are significantly faster on CPU.
+  const DETECT_INTERVAL_MS = 180; // ~5-6 fps
   const DETECTOR_INPUT_SIZE = 160;
 
   // -------------------------------------------------------
@@ -66,7 +76,7 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
   }, [countdown]);
 
   // -------------------------------------------------------
-  // Recognition net loader (lazy)
+  // Recognition net loader (lazy — called right before capture)
   // -------------------------------------------------------
   const ensureRecognitionNetLoaded = async (): Promise<void> => {
     if (recognitionReady || faceapi.nets.faceRecognitionNet.isLoaded) {
@@ -74,6 +84,7 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
       return;
     }
 
+    // Re-use the promise started by warmupCamera (may already be resolved).
     let p: Promise<void> | null = (window as any).__faceRecognitionLoadPromise ?? null;
     if (!p) {
       const MODEL_URL = `${window.location.origin}/models`;
@@ -85,32 +96,25 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
     setRecognitionReady(true);
   };
 
-// -------------------------------------------------------
+  // -------------------------------------------------------
   // Load Models
   // -------------------------------------------------------
   useEffect(() => {
-    // Cache model loading across mounts so we don't re-download/re-init.
-    // This materially improves "boot" time when navigating between screens.
-    let modelsLoadPromise: Promise<void> | null = (window as any).__faceModelsLoadPromise ?? null;
-
     const load = async () => {
       try {
         const MODEL_URL = `${window.location.origin}/models`;
+        const w = window as any;
 
-        if (!modelsLoadPromise) {
-          modelsLoadPromise = Promise.all([
+        // If warmupCamera already started (or finished) loading, reuse its promise.
+        // This avoids re-parsing model weights that are already in memory.
+        if (!w.__faceModelsLoadPromise) {
+          w.__faceModelsLoadPromise = Promise.all([
             faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
             faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
-          ]).then(() => {
-            console.log("TinyLandmark loaded:", faceapi.nets.faceLandmark68TinyNet.isLoaded);
-            console.log("FullLandmark loaded:", faceapi.nets.faceLandmark68Net.isLoaded);
-          });
-          // Don’t block boot on the heavy recognition net; load it lazily on first capture.
-
-          (window as any).__faceModelsLoadPromise = modelsLoadPromise;
+          ]).then(() => undefined);
         }
 
-        await modelsLoadPromise;
+        await w.__faceModelsLoadPromise;
 
         setModelsReady(true);
         setStatusIfChanged("Starting camera…");
@@ -125,7 +129,7 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
   }, [onError]);
 
   // -------------------------------------------------------
-  // Start webcam
+  // Start webcam — claim warm stream first, fall back to getUserMedia
   // -------------------------------------------------------
   useEffect(() => {
     if (cameraStartedRef.current) return;
@@ -133,32 +137,33 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
 
     const startCam = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: "user",
-            // Kiosk perf: keep the camera feed modest; face-api downsamples anyway.
-            width: { ideal: 640, max: 640 },
-            height: { ideal: 480, max: 480 },
-            frameRate: { ideal: 24, max: 24 },
-          },
-        });
+        // --- Fast path: reuse the stream held open by warmupCamera ---
+        let stream = claimWarmStream();
+
+        if (!stream) {
+          // Warm stream wasn't available — acquire fresh (slower path).
+          console.log("[FacialRecognition] No warm stream — calling getUserMedia.");
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: "user",
+              width: { ideal: 640, max: 640 },
+              height: { ideal: 480, max: 480 },
+              frameRate: { ideal: 24, max: 24 },
+            },
+          });
+        }
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          // Ensure playback starts ASAP.
           videoRef.current.onloadedmetadata = () => {
-            videoRef.current?.play().catch(() => {
-              /* ignored */
-            });
+            videoRef.current?.play().catch(() => { /* ignored */ });
           };
           videoRef.current.oncanplay = () => {
-            videoRef.current?.play().catch(() => {
-              /* ignored */
-            });
+            videoRef.current?.play().catch(() => { /* ignored */ });
           };
         }
-        setStatusIfChanged("Align your face inside the frame…");
 
+        setStatusIfChanged("Align your face inside the frame…");
       } catch (err) {
         onError?.("Unable to access webcam.");
         setStatusIfChanged("Unable to access webcam.");
@@ -168,6 +173,7 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
     startCam();
 
     return () => {
+      // Stop tracks on unmount so the camera indicator light turns off.
       if (videoRef.current?.srcObject instanceof MediaStream) {
         videoRef.current.srcObject.getTracks().forEach((t: MediaStreamTrack) => t.stop());
       }
@@ -175,9 +181,13 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
   }, [onError]);
 
   // -------------------------------------------------------
-  // Detection Loop (lightweight)
+  // Detection Loop — only starts after models are confirmed ready
   // -------------------------------------------------------
   useEffect(() => {
+    // Guard: don't spin the loop until models are loaded.
+    // Previously this was missing, causing rAF to churn before face-api was ready.
+    if (!modelsReady) return;
+
     stoppedRef.current = false;
     inFlightRef.current = false;
     lastDetectAtRef.current = 0;
@@ -241,7 +251,7 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
   }, [modelsReady, autoCapture]);
 
   // -------------------------------------------------------
-  // Countdown (unchanged)
+  // Countdown
   // -------------------------------------------------------
   useEffect(() => {
     if (countdown === null) return;
@@ -253,7 +263,6 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
       if (video) {
         (async () => {
           try {
-            // Lazy-load the heavy recognition net right before we need descriptors.
             await ensureRecognitionNetLoaded();
 
             const finalDet = await faceapi
@@ -286,7 +295,6 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
   // -------------------------------------------------------
   // Guidance
   // -------------------------------------------------------
-  // Minimal guidance for low-cost, low-latency kiosk UX.
   let guidance = "Center your face inside the frame";
 
   if (countdown !== null) {
@@ -321,7 +329,7 @@ const FacialRecognition: React.FC<FacialRecognitionProps> = ({
           "
         />
 
-        {/* GLOW FRAME (same Premium v2) */}
+        {/* GLOW FRAME */}
         <div className="absolute inset-0 flex justify-center items-center pointer-events-none">
           <div
             className={`

@@ -71,7 +71,12 @@ export default function KioskProvision() {
 
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // Warm up camera early so facial recognition starts faster later.
+  // Kick off model preloading + camera stream acquisition as early as possible.
+  // warmupCamera() is idempotent — safe to call multiple times; subsequent calls
+  // are instant no-ops. We intentionally do NOT call it a second time after
+  // navigation because claimWarmStream() in FacialRecognition will consume the
+  // held stream; calling warmupCamera() again would just open a second stream
+  // and immediately discard it.
   useEffect(() => {
     void warmupCamera();
   }, []);
@@ -86,8 +91,6 @@ export default function KioskProvision() {
     toast.success("Kiosk provisioned", {
       description: `Credentials saved (valid ${data.kiosk_secret_valid_days} days). Redirecting…`,
     });
-    // Fire-and-forget warmup; do not block navigation.
-    void warmupCamera();
     navigate(returnTo);
   };
 
