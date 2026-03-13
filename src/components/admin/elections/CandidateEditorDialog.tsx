@@ -236,24 +236,38 @@ export function CandidateEditorDialog(props: Props) {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="grid gap-2">
                     <Label>Position</Label>
-                    <Input
-                      className="w-full h-10"
-                      list="candidate-position-options"
-                      value={cForm.position}
-                      onChange={(e) =>
-                        setCForm((p) => ({ ...p, position: e.target.value }))
-                      }
-                      placeholder="e.g., President"
-                    />
-                    {positions.length > 0 ? (
-                      <datalist id="candidate-position-options">
-                        {positions.map((pos) => (
-                          <option key={pos} value={pos} />
-                        ))}
-                      </datalist>
-                    ) : null}
+                    <div className="grid gap-2">
+                      <Select
+                        value={positions.includes(cForm.position) ? cForm.position : "__custom__"}
+                        onValueChange={(value) => {
+                          if (value === "__custom__") return;
+                          setCForm((p) => ({ ...p, position: value }));
+                        }}
+                      >
+                        <SelectTrigger className="w-full h-10">
+                          <SelectValue placeholder="Select an existing position" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {positions.map((pos) => (
+                            <SelectItem key={pos} value={pos}>
+                              {pos}
+                            </SelectItem>
+                          ))}
+                          <SelectItem value="__custom__">Type a new position below</SelectItem>
+                        </SelectContent>
+                      </Select>
+
+                      <Input
+                        className="w-full h-10"
+                        value={cForm.position}
+                        onChange={(e) =>
+                          setCForm((p) => ({ ...p, position: e.target.value }))
+                        }
+                        placeholder="Type a new position or edit the selected one"
+                      />
+                    </div>
                     <div className="text-xs text-muted-foreground">
-                      Type a new position or pick an existing one from suggestions.
+                      Choose an existing position from the dropdown, or type a new one below.
                     </div>
                   </div>
 
