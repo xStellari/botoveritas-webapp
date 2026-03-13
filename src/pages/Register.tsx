@@ -4,6 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardDescription } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -53,6 +60,8 @@ export default function Register() {
   const [suffix, setSuffix] = useState("");
   const [yearLevel, setYearLevel] = useState("");
   const [signupEmail, setSignupEmail] = useState("");
+
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const fullEmail = `${signupEmail.trim()}@feualabang.edu.ph`;
 
@@ -147,6 +156,12 @@ export default function Register() {
       return;
     }
 
+    // Show review-and-confirm modal before proceeding to identity verification
+    setShowConfirm(true);
+  };
+
+  const handleConfirm = () => {
+    setShowConfirm(false);
     // ✅ org affiliations are now auto-assigned server-side (SCC always + roster match)
     navigate("/register/verify", {
       state: {
@@ -589,6 +604,76 @@ export default function Register() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ── Review & Confirm Modal ───────────────────────────────────────── */}
+      <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold text-emerald-900">
+              Review Your Information
+            </DialogTitle>
+            <p className="text-sm text-muted-foreground pt-1">
+              Please check everything carefully — especially your email.
+              A verification link will be sent there. If it's wrong, you
+              won't be able to complete registration.
+            </p>
+          </DialogHeader>
+
+          <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 divide-y divide-emerald-100 text-sm my-2">
+            <div className="flex justify-between px-4 py-3">
+              <span className="text-muted-foreground font-medium">Given Name</span>
+              <span className="font-semibold text-emerald-900">{firstName}</span>
+            </div>
+            {middleName && (
+              <div className="flex justify-between px-4 py-3">
+                <span className="text-muted-foreground font-medium">M.I.</span>
+                <span className="font-semibold text-emerald-900">{middleName}.</span>
+              </div>
+            )}
+            <div className="flex justify-between px-4 py-3">
+              <span className="text-muted-foreground font-medium">Last Name</span>
+              <span className="font-semibold text-emerald-900">{lastName}</span>
+            </div>
+            {suffix && (
+              <div className="flex justify-between px-4 py-3">
+                <span className="text-muted-foreground font-medium">Suffix</span>
+                <span className="font-semibold text-emerald-900">{suffix}</span>
+              </div>
+            )}
+            <div className="flex justify-between px-4 py-3">
+              <span className="text-muted-foreground font-medium">Year Level</span>
+              <span className="font-semibold text-emerald-900">{yearLevel}</span>
+            </div>
+            <div className="flex flex-col gap-0.5 px-4 py-3">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground font-medium">FEU Email</span>
+                <span className="font-semibold text-emerald-900 text-right break-all">{fullEmail}</span>
+              </div>
+              <p className="text-xs text-amber-600 font-medium mt-1">
+                ⚠ A verification link will be sent here. Double-check this is correct.
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter className="flex flex-col-reverse sm:flex-row gap-2 pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full sm:flex-1 border-emerald-200 text-emerald-800 font-semibold"
+              onClick={() => setShowConfirm(false)}
+            >
+              Edit — Go Back
+            </Button>
+            <Button
+              type="button"
+              className="w-full sm:flex-[2] font-semibold bg-gradient-to-r from-primary to-secondary hover:opacity-90"
+              onClick={handleConfirm}
+            >
+              Confirm — Proceed to Identity Verification
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
