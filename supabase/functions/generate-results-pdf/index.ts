@@ -2990,8 +2990,20 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
 
           intPage.drawText("Verify at:", { x: urlX, y: urlY, size: 9, font: fontBold, color: rgb(0.25, 0.25, 0.25) });
           urlY -= 16;
-          urlY = drawParagraph(intPage, fontMono, verifyUrl, urlX, urlY, urlMaxW, 9.5, 13, rgb(0.02, 0.18, 0.40));
-          urlY -= 14;
+          // Draw URL in fixed-width chunks so no PDF reader truncates the clickable
+          // region at a soft line-wrap boundary (the root cause of the short-URL bug).
+          {
+            const urlFontSize = 9;
+            const urlLineH = 13;
+            const charsPerLine = Math.floor(urlMaxW / (urlFontSize * 0.52));
+            for (let ci = 0; ci < verifyUrl.length; ci += charsPerLine) {
+              intPage.drawText(verifyUrl.slice(ci, ci + charsPerLine), {
+                x: urlX, y: urlY, size: urlFontSize, font: fontMono, color: rgb(0.02, 0.18, 0.40),
+              });
+              urlY -= urlLineH;
+            }
+            urlY -= 4;
+          }
 
           intPage.drawText("Election ID:", { x: urlX, y: urlY, size: 9, font: fontBold, color: rgb(0.25, 0.25, 0.25) });
           urlY -= 14;
