@@ -131,7 +131,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const metadata: ReceiptMetadata = {
     name: `BotoVeritas Participation Receipt #${tokenId}`,
     description:
-      "Proof-of-participation receipt NFT for BotoVeritas. This NFT confirms that a vote submission was recorded and a receipt token was minted on-chain. No ballot choices are stored in this metadata.",
+      "Proof-of-vote receipt NFT for BotoVeritas. This NFT confirms that a vote submission was recorded and a receipt token was minted on-chain. No ballot choices are stored in this metadata.",
     image: `${base}/nft/receipt.png`,
     external_url: `${base}/verify/nft/${tokenId}`,
     attributes: [

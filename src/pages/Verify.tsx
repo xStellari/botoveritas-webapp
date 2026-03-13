@@ -137,7 +137,7 @@ export default function Verify() {
             <Card className="p-6 rounded-2xl border border-emerald-200 bg-white">
               <h3 className="font-bold text-emerald-900 mb-2">What this proves</h3>
               <ul className="text-sm text-muted-foreground space-y-1">
-                <li>• You participated in the election (proof of participation).</li>
+                <li>• You participated in the election (proof of vote).</li>
                 <li>• The mint exists on-chain and can be independently checked.</li>
                 <li>• Your ballot choices are not stored in the NFT.</li>
               </ul>

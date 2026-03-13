@@ -326,11 +326,6 @@ export default function ElectionManagement() {
     return !editingElection || canEditElectionAudience(editingElection);
   }, [editingElection]);
 
-  // Finalize election (irreversible) dialog
-  const [finalizeDialogOpen, setFinalizeDialogOpen] = useState(false);
-  const [finalizeTarget, setFinalizeTarget] = useState<ElectionRow | null>(null);
-  const [finalizeConfirmText, setFinalizeConfirmText] = useState("");
-
   // Archive (hide from operational lists, keep history)
   const [showArchived, setShowArchived] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
@@ -513,56 +508,6 @@ export default function ElectionManagement() {
   };
 
 
-
-  const openFinalizeElection = (e: ElectionRow) => {
-    if (Boolean(e.is_final)) return;
-    setFinalizeTarget(e);
-    setFinalizeConfirmText("");
-    setFinalizeDialogOpen(true);
-  };
-
-  const confirmFinalizeElection = async () => {
-    if (!finalizeTarget) return;
-
-    if (finalizeConfirmText.trim().toUpperCase() !== "FINALIZE") {
-      toast.error('Type "FINALIZE" to confirm.');
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const { data, error } = await supabase.functions.invoke(
-        "admin-finalize-election",
-        {
-          body: { electionId: finalizeTarget.id },
-        }
-      );
-
-      if (error) throw error;
-
-      toast.success(
-        data?.manifestHash
-          ? `Election finalized. Manifest saved (${String(data.manifestHash).slice(0, 10)}…).`
-          : "Election finalized. Editing is now locked."
-      );
-      setFinalizeDialogOpen(false);
-      setFinalizeTarget(null);
-      setFinalizeConfirmText("");
-
-      await reloadElections();
-
-      if (selectedElectionId) {
-        await loadCandidates(selectedElectionId);
-      }
-
-      setElectionDialogOpen(false);
-      setCandidateDialogOpen(false);
-    } catch (err: any) {
-      toast.error(`Failed to finalize election: ${err.message ?? err}`);
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const openArchiveElection = (e: ElectionRow) => {
     if (!Boolean(e.is_final)) {
@@ -1209,8 +1154,12 @@ export default function ElectionManagement() {
   };
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[420px_1fr]">
-      {/* LEFT: Elections */}
+    <div
+      className="grid gap-6 lg:grid-cols-[380px_1fr]"
+      style={{ height: "calc(100vh - 8rem)", gridTemplateRows: "1fr" }}
+    >
+      {/* LEFT: Elections list — min-h-0 forces grid child to respect row height */}
+      <div className="min-h-0">
       <ElectionsListPanel
         loading={electionsLoading}
         saving={saving}
@@ -1230,12 +1179,13 @@ export default function ElectionManagement() {
         formatDateTimeShort={formatDateTimeShort}
         openEditElection={openEditElection}
         toggleElectionActive={toggleElectionActive}
-        openFinalizeElection={openFinalizeElection}
         openArchiveElection={openArchiveElection}
         deleteElection={deleteElection}
         openRestoreElection={openRestoreElection}
       />
-      {/* RIGHT: Candidates */}
+      </div>
+      {/* RIGHT: Candidates — min-h-0 forces grid child to respect row height */}
+      <div className="min-h-0">
       <CandidatesManager
         selectedElection={selectedElection}
         selectedElectionId={selectedElectionId}
@@ -1255,6 +1205,7 @@ export default function ElectionManagement() {
         getCandidateDisplayName={getCandidateDisplayName}
         positionOrder={positions}
       />
+      </div>
 
       {/* Election dialog */}
       <ElectionEditorDialog
@@ -1299,84 +1250,6 @@ export default function ElectionManagement() {
         onSave={saveCandidate}
         saving={saving}
       />
-
-      {/* Finalize election dialog */}
-      <Dialog
-        open={finalizeDialogOpen}
-        onOpenChange={(open) => {
-          setFinalizeDialogOpen(open);
-          if (!open) {
-            setFinalizeTarget(null);
-            setFinalizeConfirmText("");
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-[620px]">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Lock className="h-5 w-5" />
-              Finalize Election
-            </DialogTitle>
-            <DialogDescription>
-              Finalizing is <b>permanent</b>. This will lock the election
-              definition, candidates, and votes from any further modifications.
-              Reporting and exports remain available.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="grid gap-4">
-            <div className="rounded-xl border p-3 bg-muted/20">
-              <div className="font-semibold">{finalizeTarget?.title ?? "—"}</div>
-              {finalizeTarget ? (
-                <div className="text-xs text-muted-foreground mt-1">
-                  {formatDateTimeShort(finalizeTarget.start_date)} —{" "}
-                  {formatDateTimeShort(finalizeTarget.end_date)}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="rounded-xl border border-red-600/30 bg-red-600/5 p-3">
-              <div className="text-sm font-medium text-red-800">
-                This action cannot be undone.
-              </div>
-              <div className="text-xs text-muted-foreground mt-1">
-                Type <b>FINALIZE</b> below to confirm.
-              </div>
-            </div>
-
-            <div className="grid gap-2">
-              <Label>Confirmation</Label>
-              <Input
-                value={finalizeConfirmText}
-                onChange={(e) => setFinalizeConfirmText(e.target.value)}
-                placeholder='Type "FINALIZE"'
-                autoFocus
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <Button
-                variant="outline"
-                onClick={() => setFinalizeDialogOpen(false)}
-                disabled={saving}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={confirmFinalizeElection}
-                disabled={
-                  saving ||
-                  finalizeConfirmText.trim().toUpperCase() !== "FINALIZE"
-                }
-              >
-                <Lock className="h-4 w-4 mr-2" />
-                Finalize (Permanent)
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Archive election dialog */}
       <Dialog

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { CalendarDays, Flame, ShieldCheck, UserPlus, Vote } from "lucide-react";
+import { CalendarDays, Flame, UserPlus, Vote } from "lucide-react";
 import feuLogo from "@/assets/feu-logo.png";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -361,7 +361,7 @@ const Index = () => {
               </div>
             )}
 
-            <section className="grid md:grid-cols-2 gap-6">
+            <section className="grid md:grid-cols-2 gap-5">
               <Card
                 className={`p-8 border-2 rounded-xl transition ${
                   registrationEnabled
@@ -380,9 +380,9 @@ const Index = () => {
                   }
                 }}
               >
-                <div className="flex flex-col items-center text-center gap-4">
+                <div className="flex flex-col items-center text-center gap-3">
                   <div className="p-4 rounded-full bg-emerald-50 border border-emerald-200">
-                    <UserPlus className="h-10 w-10 text-emerald-700" />
+                    <UserPlus className="h-8 w-8 text-emerald-700" />
                   </div>
                   <h3 className="text-xl font-bold">Voter Registration</h3>
                   <p className="text-sm text-muted-foreground">
@@ -424,7 +424,7 @@ const Index = () => {
                   }
                 }}
               >
-                <div className="flex flex-col items-center text-center gap-4">
+                <div className="flex flex-col items-center text-center gap-3">
                   <div className="p-4 rounded-full bg-amber-50 border border-amber-200">
                     <Vote className="h-10 w-10 text-amber-700" />
                   </div>
@@ -443,48 +443,6 @@ const Index = () => {
               </Card>
             </section>
 
-            <section className="mt-6">
-              <Card
-                className="p-6 border-2 rounded-xl border-emerald-200 hover:border-emerald-500 hover:shadow-lg transition cursor-pointer"
-                onClick={() => navigate("/verify")}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e: KeyboardEvent<HTMLElement>) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    navigate("/verify");
-                  }
-                }}
-              >
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div className="flex items-start gap-4">
-                    <div className="p-3 rounded-full bg-emerald-50 border border-emerald-200">
-                      <ShieldCheck className="h-8 w-8 text-emerald-800" />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-bold">Public Verification</h3>
-                      <p className="text-sm text-muted-foreground">
-                        Verify vote inclusion, NFT receipts, and (after finalization) ZK tally proofs —
-                        no login required.
-                      </p>
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        <Badge variant="outline" className="border-emerald-500 text-emerald-700">
-                          Vote Inclusion
-                        </Badge>
-                        <Badge variant="outline" className="border-amber-500 text-amber-700">
-                          NFT Receipts
-                        </Badge>
-                        <Badge variant="outline" className="border-blue-500 text-blue-700">
-                          ZK Audit
-                        </Badge>
-                      </div>
-                    </div>
-                  </div>
-
-                  <Button className="bg-emerald-700 hover:bg-emerald-800 md:w-auto w-full">Verify</Button>
-                </div>
-              </Card>
-            </section>
           </div>
 
           <section className="flex-1 min-h-0 mt-8 space-y-6 kiosk-portrait-scroll no-scrollbar">

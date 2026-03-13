@@ -21,7 +21,7 @@ import {
   RefreshCw, FileText, Layers, ShieldCheck, Download,
   CheckCircle2, Circle, Play, FileJson, MoreHorizontal,
   Cpu, AlertCircle, Activity, Zap, ChevronDown, ChevronUp,
-  Search, X,
+  Search, X, Lock,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -29,6 +29,7 @@ import {
 type ElectionRow = {
   id: string;
   title: string;
+  end_date: string;
   is_final: boolean | null;
   is_archived: boolean | null;
   finalized_at: string | null;
@@ -562,6 +563,31 @@ export default function ZKTally() {
     );
   }, [finalized, search]);
 
+  // Elections that have ended but not yet been finalized — shown in the "Ready to Finalize" card
+  const readyToFinalize = useMemo(
+    () => elections.filter((e) => !e.is_final && !e.is_archived && new Date(e.end_date) < new Date()),
+    [elections],
+  );
+
+  const [finalizing, setFinalizing] = useState<string | null>(null);
+
+  const finalizeElection = async (electionId: string) => {
+    setFinalizing(electionId);
+    try {
+      const { error } = await supabase
+        .from("elections")
+        .update({ is_final: true, finalized_at: new Date().toISOString() })
+        .eq("id", electionId);
+      if (error) throw error;
+      toast.success("Election finalized and moved to ZK pipeline.");
+      await load();
+    } catch (e: any) {
+      toast.error(`Finalization failed: ${e?.message ?? String(e)}`);
+    } finally {
+      setFinalizing(null);
+    }
+  };
+
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
       const next = new Set(prev);
@@ -605,7 +631,7 @@ export default function ZKTally() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const { data: eData, error: eErr } = await supabase.from("elections").select("id,title,is_final,is_archived,finalized_at").order("created_at", { ascending: false });
+      const { data: eData, error: eErr } = await supabase.from("elections").select("id,title,end_date,is_final,is_archived,finalized_at").order("created_at", { ascending: false });
       if (eErr) throw eErr;
       setElections((eData ?? []) as ElectionRow[]);
 
@@ -862,6 +888,66 @@ export default function ZKTally() {
           </div>
         </CardContent>
       </Card>
+
+      {/* ── Ready to Finalize Card ── */}
+      {(readyToFinalize.length > 0 || loading) && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-3">
+              <Lock className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <CardTitle className="text-base leading-tight">Ready to Finalize</CardTitle>
+                <CardDescription className="mt-0.5 text-xs">
+                  These elections have ended and are awaiting finalization before entering the ZK pipeline.
+                </CardDescription>
+              </div>
+              {readyToFinalize.length > 0 && (
+                <Badge variant="destructive">{readyToFinalize.length} pending</Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0 space-y-2">
+            {loading ? (
+              <div className="space-y-2">
+                {[...Array(2)].map((_, i) => (
+                  <div key={i} className="h-14 rounded-lg border bg-muted/20 animate-pulse" />
+                ))}
+              </div>
+            ) : readyToFinalize.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No elections pending finalization.</p>
+            ) : (
+              readyToFinalize.map((e) => {
+                const isBusy = finalizing === e.id;
+                return (
+                  <div
+                    key={e.id}
+                    className="flex items-center justify-between gap-4 rounded-lg border bg-card px-4 py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold truncate">{e.title}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Ended {new Date(e.end_date).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      disabled={isBusy || !!finalizing}
+                      onClick={() => finalizeElection(e.id)}
+                    >
+                      {isBusy ? (
+                        <RefreshCw className="h-3.5 w-3.5 mr-2 animate-spin" />
+                      ) : (
+                        <Lock className="h-3.5 w-3.5 mr-2" />
+                      )}
+                      {isBusy ? "Finalizing…" : "Finalize Election"}
+                    </Button>
+                  </div>
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Pipeline Card ── */}
       <Card>
