@@ -121,7 +121,7 @@ export default function ResultsVerify() {
           supabase
             .from("elections")
             .select("id,title,start_date,end_date,eligible_orgs,is_final")
-            .eq("id", electionId)
+            .eq("id", electionId!)
             .maybeSingle(),
 
           supabase
@@ -129,12 +129,12 @@ export default function ResultsVerify() {
             .select(
               "position,candidate_name,slate,vote_count,abstain_count,total_ballots_for_position"
             )
-            .eq("election_id", electionId),
+            .eq("election_id", electionId!),
 
           supabase
             .from("election_result_pdf_hashes")
             .select("pdf_sha256,generated_at,mode")
-            .eq("election_id", electionId)
+            .eq("election_id", electionId!)
             .order("generated_at", { ascending: false })
             .limit(1)
             .maybeSingle(),
@@ -205,13 +205,43 @@ export default function ResultsVerify() {
   };
 
   // ── Derive positions ──────────────────────────────────────────────────────
-  const positionMap = new Map<string, TallyRow[]>();
+  // Canonical position order — matches the PDF report order.
+  const POSITION_ORDER = [
+    "President", "Vice President", "Secretary", "Treasurer",
+    "Auditor", "Public Information Officer", "P.I.O.",
+    "Business Manager", "Sergeant-at-Arms",
+  ];
+
+  function positionRank(p: string) {
+    const idx = POSITION_ORDER.findIndex((o) =>
+      p.toLowerCase().includes(o.toLowerCase())
+    );
+    return idx === -1 ? 999 : idx;
+  }
+
+  const positionMap = new Map<string, { candidates: TallyRow[]; abstainCount: number; total: number }>();
   for (const row of tallies) {
     const pos = row.position || "General";
-    if (!positionMap.has(pos)) positionMap.set(pos, []);
-    positionMap.get(pos)!.push(row);
+    if (!positionMap.has(pos)) {
+      positionMap.set(pos, { candidates: [], abstainCount: 0, total: row.total_ballots_for_position ?? 0 });
+    }
+    const entry = positionMap.get(pos)!;
+    // Rows with candidate_name = "ABSTAIN" (or blank) are abstain bookkeeping rows — don't show as candidates.
+    if (row.candidate_name && row.candidate_name.trim().toUpperCase() !== "ABSTAIN") {
+      entry.candidates.push(row);
+    }
+    // abstain_count is the same on every row for this position; just take the latest non-null value.
+    if (row.abstain_count != null) {
+      entry.abstainCount = row.abstain_count;
+    }
+    if (row.total_ballots_for_position != null) {
+      entry.total = row.total_ballots_for_position;
+    }
   }
-  const positions = Array.from(positionMap.entries());
+
+  const positions = Array.from(positionMap.entries()).sort(
+    ([a], [b]) => positionRank(a) - positionRank(b) || a.localeCompare(b)
+  );
   const visiblePositions = showAllPositions ? positions : positions.slice(0, 4);
 
   // ── Status badge ──────────────────────────────────────────────────────────
@@ -345,12 +375,9 @@ export default function ResultsVerify() {
               ) : (
                 <>
                   <div className="space-y-4">
-                    {visiblePositions.map(([position, rows]) => {
-                      const sorted = [...rows].sort(
-                        (a, b) => b.vote_count - a.vote_count
-                      );
+                    {visiblePositions.map(([position, { candidates, abstainCount, total }]) => {
+                      const sorted = [...candidates].sort((a, b) => b.vote_count - a.vote_count);
                       const topVotes = sorted[0]?.vote_count ?? 0;
-                      const total = sorted[0]?.total_ballots_for_position ?? 0;
 
                       return (
                         <Card key={position} className="overflow-hidden border border-emerald-100">
@@ -379,9 +406,7 @@ export default function ResultsVerify() {
                                       )}
                                       <span
                                         className={`text-sm font-medium truncate ${
-                                          isWinner && i === 0
-                                            ? "text-emerald-900"
-                                            : "text-slate-700"
+                                          isWinner && i === 0 ? "text-emerald-900" : "text-slate-700"
                                         }`}
                                       >
                                         {row.candidate_name}
@@ -403,7 +428,6 @@ export default function ResultsVerify() {
                                       )}
                                     </div>
                                   </div>
-                                  {/* Bar */}
                                   <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
                                     <div
                                       className={`h-full rounded-full transition-all ${
@@ -416,12 +440,12 @@ export default function ResultsVerify() {
                               );
                             })}
 
-                            {/* Abstain row */}
-                            {(sorted[0]?.abstain_count ?? 0) > 0 && (
+                            {/* Abstain row — uses the dedicated abstain_count column, not a candidate row */}
+                            {abstainCount > 0 && (
                               <div className="px-5 py-2 flex items-center justify-between bg-slate-50">
                                 <span className="text-xs text-muted-foreground italic">Abstain</span>
                                 <span className="text-xs text-muted-foreground tabular-nums">
-                                  {sorted[0].abstain_count}
+                                  {abstainCount}
                                 </span>
                               </div>
                             )}

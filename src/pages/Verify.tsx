@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { BadgeCheck, ChevronDown, ChevronUp, FileSearch, ShieldCheck } from "lucide-react";
+import { BadgeCheck, ChevronDown, ChevronUp, FileSearch, ShieldCheck, Trophy } from "lucide-react";
 
 import feuLogo from "@/assets/feu-logo.png";
 
@@ -101,6 +101,60 @@ export default function Verify() {
                 Verifiable, not trust-based
               </Badge>
             </div>
+          </section>
+
+          {/* Election Results & PDF Verification */}
+          <section className="grid lg:grid-cols-3 gap-6">
+            <Card className="p-6 rounded-2xl border-2 border-emerald-200 hover:border-emerald-400 transition lg:col-span-2">
+              <div className="flex items-start gap-3">
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                  <Trophy className="h-6 w-6 text-emerald-800" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <h2 className="font-bold text-lg">Election Results & PDF Verification</h2>
+                    <Badge className="bg-emerald-700 hover:bg-emerald-700 text-white text-xs">Public</Badge>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    View official live tallies for any election and verify that your PDF copy
+                    has not been altered. Enter the Election ID from your PDF's attestation page.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-5 space-y-2">
+                <label className="text-xs font-semibold text-emerald-900">Election ID</label>
+                <Input
+                  value={tallyElectionId}
+                  onChange={(e) => setTallyElectionId(e.target.value)}
+                  placeholder="e.g., 9b6e3529-b41e-410c-9d4e-693f23e82029"
+                />
+                <div className="flex gap-2 pt-2">
+                  <Button
+                    className="w-full bg-emerald-700 hover:bg-emerald-800"
+                    onClick={() => {
+                      const id = tallyElectionId.trim();
+                      if (!id) { toast.error("Enter an Election ID first"); return; }
+                      if (!looksLikeUuid(id)) { toast.error("That doesn't look like a valid Election ID (UUID format)"); return; }
+                      navigate(`/results/${id}`);
+                    }}
+                  >
+                    View Results & Verify PDF
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  The Election ID is printed on the attestation page of your PDF.
+                </p>
+              </div>
+            </Card>
+
+            <Card className="p-6 rounded-2xl border border-emerald-200 bg-white">
+              <h3 className="font-bold text-emerald-900 mb-2">What this proves</h3>
+              <ul className="text-sm text-muted-foreground space-y-1">
+                <li>• The live tallies come directly from the BotoVeritas database.</li>
+                <li>• If your PDF was altered after generation, the fingerprint check will catch it.</li>
+                <li>• Verification runs entirely in your browser — your PDF is never uploaded.</li>
+              </ul>
+            </Card>
           </section>
 
           {/* Voter-first: NFT receipt */}
