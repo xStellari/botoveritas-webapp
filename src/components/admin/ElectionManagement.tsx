@@ -353,6 +353,12 @@ export default function ElectionManagement() {
   // Photo upload state
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
+  // Ref mirrors state so resetPhotoState always revokes the CURRENT blob URL,
+  // not a stale closure capture.
+  const photoPreviewUrlRef = useRef<string | null>(null);
+  // Tracks whether the user explicitly clicked Clear so saveCandidate can
+  // write photo_url: "" to the DB even when no new file is chosen.
+  const photoClearedRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const canonicalPositions = useMemo(() => {
@@ -780,13 +786,23 @@ export default function ElectionManagement() {
   };
 
   const resetPhotoState = () => {
-    if (photoPreviewUrl) {
-      URL.revokeObjectURL(photoPreviewUrl);
+    // Use the ref (not the closed-over state) so we always revoke the
+    // current blob URL even if state hasn't propagated yet.
+    const currentUrl = photoPreviewUrlRef.current;
+    if (currentUrl && currentUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(currentUrl);
     }
+    photoPreviewUrlRef.current = null;
+    photoClearedRef.current = false;
     setPhotoPreviewUrl(null);
     setPhotoFile(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
+
+  // Keep ref in sync with state so resetPhotoState always sees the latest URL.
+  useEffect(() => {
+    photoPreviewUrlRef.current = photoPreviewUrl;
+  }, [photoPreviewUrl]);
 
   const openCreateCandidate = (prefillPosition?: string) => {
     if (!selectedElectionId) return toast.error("Select an election first.");
@@ -919,13 +935,16 @@ export default function ElectionManagement() {
       // Update
       let nextPhotoUrl: string | null | undefined = undefined;
 
-      // If a new file was chosen, upload & replace URL
+      // If a new file was chosen, upload & replace URL.
+      // If the user explicitly cleared the photo, write "" to the DB.
       if (photoFile && selectedElectionId) {
         nextPhotoUrl = await uploadCandidatePhoto({
           electionId: selectedElectionId,
           candidateId: editingCandidate.id,
           file: photoFile,
         });
+      } else if (photoClearedRef.current) {
+        nextPhotoUrl = "";
       }
 
       const { error } = await supabase
@@ -1245,7 +1264,8 @@ export default function ElectionManagement() {
         setCForm={setCForm}
         onClearPhoto={() => {
           resetPhotoState();
-          if (editingCandidate?.photo_url) setPhotoPreviewUrl(editingCandidate.photo_url);
+          photoClearedRef.current = true;
+          // Don't restore the saved URL — the user explicitly wants no photo.
         }}
         onSave={saveCandidate}
         saving={saving}

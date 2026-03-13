@@ -14,3 +14,6 @@ verify_jwt = false
 
 [functions.kiosk-heartbeat]
 verify_jwt = false
+
+[functions.kiosk-session-log]
+verify_jwt = false

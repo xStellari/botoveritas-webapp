@@ -18,6 +18,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   RefreshCw, FileText, Layers, ShieldCheck, Download,
   CheckCircle2, Circle, Play, FileJson, MoreHorizontal,
   Cpu, AlertCircle, Activity, Zap, ChevronDown, ChevronUp,
@@ -255,6 +265,7 @@ function PipelineRail(props: {
           </div>
         );
       })}
+
     </div>
   );
 }
@@ -518,6 +529,7 @@ function ElectionCard({
           )}
         </>
       )}
+
     </div>
   );
 }
@@ -570,6 +582,7 @@ export default function ZKTally() {
   );
 
   const [finalizing, setFinalizing] = useState<string | null>(null);
+  const [confirmTarget, setConfirmTarget] = useState<{ id: string; title: string } | null>(null);
 
   const finalizeElection = async (electionId: string) => {
     setFinalizing(electionId);
@@ -1032,7 +1045,7 @@ export default function ZKTally() {
                     <Button
                       size="sm"
                       disabled={isBusy || !!finalizing}
-                      onClick={() => finalizeElection(e.id)}
+                      onClick={() => setConfirmTarget({ id: e.id, title: e.title })}
                     >
                       {isBusy ? (
                         <RefreshCw className="h-3.5 w-3.5 mr-2 animate-spin" />
@@ -1168,6 +1181,32 @@ export default function ZKTally() {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Finalize Confirmation Dialog ── */}
+      <AlertDialog open={!!confirmTarget} onOpenChange={(open) => { if (!open) setConfirmTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Finalize this election?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{confirmTarget?.title}</strong> will be permanently locked and moved into the ZK proof pipeline.
+              This action <strong>cannot be undone</strong> — voting will be closed and results will be sealed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setConfirmTarget(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => {
+                const target = confirmTarget;
+                setConfirmTarget(null);
+                if (target) finalizeElection(target.id);
+              }}
+            >
+              Yes, finalize election
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
