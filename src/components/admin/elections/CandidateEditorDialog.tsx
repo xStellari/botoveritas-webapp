@@ -1,8 +1,16 @@
 import { useMemo, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { Image as ImageIcon, Save, Link as LinkIcon } from "lucide-react";
+import { Image as ImageIcon, Save, Link as LinkIcon, ChevronsUpDown, Check } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import {
   Dialog,
   DialogContent,
@@ -12,6 +20,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -19,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 
 type CandidateFormState = {
@@ -114,6 +128,105 @@ async function convertToSquareWebp512(file: File, quality = 0.82): Promise<File>
 
   const outName = `candidate-${Date.now()}.webp`;
   return new File([blob], outName, { type: "image/webp" });
+}
+
+
+// ---------------------------------------------------------------------------
+// PositionCombobox — single input that lets the user pick an existing position
+// or type a brand-new one. Replaces the old select + text-input pair.
+// ---------------------------------------------------------------------------
+type PositionComboboxProps = {
+  positions: string[];
+  value: string;
+  onChange: (value: string) => void;
+};
+
+function PositionCombobox({ positions, value, onChange }: PositionComboboxProps) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  // Filtered list: always show items whose label contains the query
+  const filtered = query
+    ? positions.filter((p) => p.toLowerCase().includes(query.toLowerCase()))
+    : positions;
+
+  // Whether the current typed query is a completely new position
+  const isNew =
+    query.trim() !== "" &&
+    !positions.some((p) => p.toLowerCase() === query.toLowerCase());
+
+  function select(pos: string) {
+    onChange(pos);
+    setQuery("");
+    setOpen(false);
+  }
+
+  return (
+    <div className="grid gap-2">
+      <Label>Position</Label>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="w-full h-10 justify-between font-normal"
+          >
+            <span className={cn("truncate", !value && "text-muted-foreground")}>
+              {value || "Select or type a position…"}
+            </span>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="p-0 w-[var(--radix-popover-trigger-width)]" align="start">
+          <Command shouldFilter={false}>
+            <CommandInput
+              placeholder="Search or type a new position…"
+              value={query}
+              onValueChange={setQuery}
+            />
+            <CommandList>
+              {/* Prompt to add a brand-new entry when query doesn't match anything */}
+              {isNew && (
+                <CommandGroup heading="New">
+                  <CommandItem
+                    value={query}
+                    onSelect={() => select(query.trim())}
+                    className="gap-2"
+                  >
+                    <span>Add &ldquo;{query.trim()}&rdquo;</span>
+                  </CommandItem>
+                </CommandGroup>
+              )}
+
+              {filtered.length > 0 ? (
+                <CommandGroup heading={positions.length > 0 ? "Existing" : undefined}>
+                  {filtered.map((pos) => (
+                    <CommandItem
+                      key={pos}
+                      value={pos}
+                      onSelect={() => select(pos)}
+                      className="gap-2"
+                    >
+                      <Check
+                        className={cn(
+                          "h-4 w-4 shrink-0",
+                          value === pos ? "opacity-100" : "opacity-0"
+                        )}
+                      />
+                      {pos}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              ) : (
+                !isNew && <CommandEmpty>No positions found.</CommandEmpty>
+              )}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
 }
 
 export function CandidateEditorDialog(props: Props) {
@@ -234,42 +347,11 @@ export function CandidateEditorDialog(props: Props) {
                 </div>
 
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="grid gap-2">
-                    <Label>Position</Label>
-                    <div className="grid gap-2">
-                      <Select
-                        value={positions.includes(cForm.position) ? cForm.position : "__custom__"}
-                        onValueChange={(value) => {
-                          if (value === "__custom__") return;
-                          setCForm((p) => ({ ...p, position: value }));
-                        }}
-                      >
-                        <SelectTrigger className="w-full h-10">
-                          <SelectValue placeholder="Select an existing position" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {positions.map((pos) => (
-                            <SelectItem key={pos} value={pos}>
-                              {pos}
-                            </SelectItem>
-                          ))}
-                          <SelectItem value="__custom__">Type a new position below</SelectItem>
-                        </SelectContent>
-                      </Select>
-
-                      <Input
-                        className="w-full h-10"
-                        value={cForm.position}
-                        onChange={(e) =>
-                          setCForm((p) => ({ ...p, position: e.target.value }))
-                        }
-                        placeholder="Type a new position or edit the selected one"
-                      />
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      Choose an existing position from the dropdown, or type a new one below.
-                    </div>
-                  </div>
+                  <PositionCombobox
+                    positions={positions}
+                    value={cForm.position}
+                    onChange={(v) => setCForm((p) => ({ ...p, position: v }))}
+                  />
 
                   <div className="grid gap-2">
                     <Label>Slate (optional)</Label>
