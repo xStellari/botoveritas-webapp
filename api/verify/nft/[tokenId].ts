@@ -538,15 +538,6 @@ function htmlPage(p: {
   <div class="page-shell">
     <div class="page-bg"></div>
     <div class="page-content">
-
-      <div class="topbar">
-        <div class="wordmark">
-          <div class="wordmark-shield">${ic.shield("ic")}</div>
-          <div class="wordmark-text">Boto<span>Veritas</span></div>
-        </div>
-        <div class="topbar-label">Secure Verification</div>
-      </div>
-
       <div class="hero">
         <div class="hero-eyebrow"><div class="hero-eyebrow-dot"></div><span>Blockchain Receipt</span></div>
         <h1 class="hero-title">${heroTitle}</h1>
