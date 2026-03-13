@@ -819,12 +819,104 @@ export default function ZKTally() {
       if (!token) throw new Error("Missing session token.");
       const baseUrl = (import.meta.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
       if (!baseUrl) throw new Error("Missing VITE_SUPABASE_URL");
+
+      toast.loading("Building charts...", { id: "pdf-charts" });
+
+      // ── 1. Helpers ────────────────────────────────────────────────────────
+      const blobToBase64 = (blob: Blob): Promise<string> =>
+        new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(new Error("Failed to read blob"));
+          reader.onload = () => {
+            const res = String(reader.result || "");
+            const comma = res.indexOf(",");
+            if (comma === -1) return reject(new Error("Invalid data URL"));
+            resolve(res.slice(comma + 1));
+          };
+          reader.readAsDataURL(blob);
+        });
+
+      const quickChartPngBase64 = async (chartConfig: any, width = 850, height = 420): Promise<string> => {
+        const res = await fetch(
+          `https://quickchart.io/chart?f=png&w=${width}&h=${height}&devicePixelRatio=1&bkg=white`,
+          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chart: chartConfig }) }
+        );
+        if (!res.ok) throw new Error(`QuickChart ${res.status}`);
+        return blobToBase64(await res.blob());
+      };
+
+      // ── 2. Fetch tally data + year-level turnout in parallel ──────────────
+      const [ylRes, tallyRes] = await Promise.all([
+        supabase.rpc("year_level_turnout_for_election", { p_election_id: electionId }),
+        supabase.from("vote_tally_view").select(
+          "position,candidate_name,vote_count,abstain_count"
+        ).eq("election_id", electionId),
+      ]);
+
+      const yearLevelRows = (ylRes.data || []) as Array<{ year_level: string; voter_count: number }>;
+      const tallyRows = (tallyRes.data || []) as Array<{ position: string; candidate_name: string; vote_count: number; abstain_count: number | null }>;
+
+      // ── 3. Build chart configs ────────────────────────────────────────────
+      const donutConfig = {
+        type: "doughnut",
+        data: {
+          labels: yearLevelRows.map((r) => r.year_level),
+          datasets: [{ data: yearLevelRows.map((r) => r.voter_count) }],
+        },
+        options: { plugins: { legend: { position: "right" }, title: { display: false } }, cutout: "55%" },
+      };
+
+      const byPosition = new Map<string, typeof tallyRows>();
+      for (const r of tallyRows) {
+        const list = byPosition.get(r.position) ?? [];
+        list.push(r);
+        byPosition.set(r.position, list);
+      }
+
+      const pieConfigs: Record<string, any> = {};
+      for (const [pos, rows] of byPosition.entries()) {
+        const abstain = rows[0]?.abstain_count ?? 0;
+        const labels: string[] = [];
+        const values: number[] = [];
+        for (const r of rows) {
+          if ((r.candidate_name || "").trim().toUpperCase() === "ABSTAIN") continue;
+          if ((r.vote_count ?? 0) > 0) { labels.push(r.candidate_name); values.push(r.vote_count); }
+        }
+        if (abstain > 0) { labels.push("ABSTAIN"); values.push(abstain); }
+        if (values.reduce((a, v) => a + v, 0) <= 0) continue;
+        pieConfigs[pos] = {
+          type: "pie",
+          data: { labels, datasets: [{ data: values }] },
+          options: { plugins: { legend: { position: "right", labels: { font: { size: 11 } } }, title: { display: false } } },
+        };
+      }
+
+      // ── 4. Fetch ALL charts in parallel from browser (avoids edge CPU limit) ──
+      const positionKeys = Object.keys(pieConfigs);
+      const [donutBase64, ...pieBase64s] = await Promise.all([
+        quickChartPngBase64(donutConfig),
+        ...positionKeys.map((pos) => quickChartPngBase64(pieConfigs[pos])),
+      ]);
+
+      const chart_images = {
+        turnout_donut: { mime: "image/png", data_base64: donutBase64 },
+        position_pies: Object.fromEntries(
+          positionKeys.map((pos, i) => [pos, { mime: "image/png", data_base64: pieBase64s[i] }])
+        ),
+      };
+
+      toast.loading("Generating PDF...", { id: "pdf-charts" });
+
+      // ── 5. Call edge function with pre-built chart images ─────────────────
       const res = await fetch(`${baseUrl}/functions/v1/generate-results-pdf`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ electionId, mode }),
+        body: JSON.stringify({ electionId, mode, chart_images }),
       });
+      toast.dismiss("pdf-charts");
       if (!res.ok) { const text = await res.text(); throw new Error(text || `HTTP ${res.status}`); }
+
+      // ── 6. Trigger download (same-tab anchor click) ───────────────────────
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -836,6 +928,7 @@ export default function ZKTally() {
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
       toast.success("PDF generated");
     } catch (e: any) {
+      toast.dismiss("pdf-charts");
       toast.error(`PDF failed: ${e?.message ?? String(e)}`);
     } finally {
       setWorking(null);

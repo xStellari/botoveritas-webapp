@@ -1496,7 +1496,16 @@ let tally_submitted_at = body?.tally_submitted_at || "";
                 // Continue with table rendering using ty
                 y = ty;
               } else {
-                // No chart image provided; skip chart rendering.
+                // No client-provided image — fetch from QuickChart
+                const pngBytes = await quickChartPng(donutConfig);
+                const img = await pdf.embedPng(pngBytes);
+                const imgW = pageW - margin * 2;
+                const imgH = (img.height / img.width) * imgW;
+                page.drawImage(img, { x: margin, y: y - imgH, width: imgW, height: imgH });
+                let ty = y - imgH - 18;
+                page.drawLine({ start: { x: margin, y: ty }, end: { x: pageW - margin, y: ty }, thickness: 1, color: rgb(0.9, 0.9, 0.92) });
+                ty -= 18;
+                y = ty;
               }
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err);
@@ -1638,7 +1647,13 @@ let tally_submitted_at = body?.tally_submitted_at || "";
                 height: imgH,
               });
             } else {
-              // No chart image provided; skip chart rendering.
+              // No client-provided image — fetch from QuickChart
+              const pngBytes = await quickChartPng(pieConfig);
+              const img = await pdf.embedPng(pngBytes);
+              const imgW = pageW - margin * 2;
+              const imgH = (img.height / img.width) * imgW;
+              imgHUsed = imgH;
+              page.drawImage(img, { x: margin, y: y - imgH, width: imgW, height: imgH });
             }
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -1751,6 +1766,234 @@ let tally_submitted_at = body?.tally_submitted_at || "";
           13,
           rgb(0.45, 0.45, 0.45),
         );
+      }
+
+      // -------------------------
+      // WINNERS SUMMARY
+      // -------------------------
+      {
+        // ── Collect one winner entry per winning candidate per position ──────
+        type WinnerEntry = {
+          position: string;
+          name: string;
+          slate: string;
+          votes: number;
+          total: number;
+          isTie: boolean;
+        };
+
+        const winnerRows: WinnerEntry[] = [];
+
+        for (const [position, rows] of positionEntries) {
+          // exclude the synthetic ABSTAIN row
+          const realCandidates = rows.filter(
+            (r) => (r.candidate_name || "").trim().toUpperCase() !== "ABSTAIN",
+          );
+          if (!realCandidates.length) continue;
+
+          const byVotes = realCandidates.slice().sort((a, b) => b.vote_count - a.vote_count);
+          const topVotes = byVotes[0]?.vote_count ?? 0;
+          if (topVotes <= 0) continue;
+
+          const topCandidates = byVotes.filter((r) => r.vote_count === topVotes);
+          const isTie = topCandidates.length > 1;
+
+          const totalBallotsPos =
+            rows[0]?.total_ballots_for_position ??
+            rows.reduce((a, r) => a + (r.vote_count || 0), 0);
+          const abstainCount = rows[0]?.abstain_count ?? 0;
+          const candidateBallotsPos = Math.max(0, totalBallotsPos - abstainCount);
+
+          for (const c of topCandidates) {
+            winnerRows.push({
+              position,
+              name: c.candidate_name || "—",
+              slate: c.slate || "",
+              votes: topVotes,
+              total: candidateBallotsPos,
+              isTie,
+            });
+          }
+        }
+
+        // ── Pagination: 10 data rows fit between stat cards + table header ──
+        const ROWS_PER_PAGE = 10;
+        const totalWinnerPages = Math.max(1, Math.ceil(winnerRows.length / ROWS_PER_PAGE));
+
+        for (let pageIdx = 0; pageIdx < totalWinnerPages; pageIdx++) {
+          const isFirstPage = pageIdx === 0;
+          const pageSlice = winnerRows.slice(
+            pageIdx * ROWS_PER_PAGE,
+            (pageIdx + 1) * ROWS_PER_PAGE,
+          );
+
+          const pg = pdf.addPage([pageW, pageH]);
+          const yStart = await drawHeader({
+            pdf,
+            page: pg,
+            fontBold,
+            font,
+            title: "Election Winners Summary",
+            subtitle: isFirstPage ? electionTitle : `${electionTitle} (cont.)`,
+            logoBytes,
+          });
+
+          let y = yStart - 6;
+
+          // ── Intro paragraph (first page only) ──
+          if (isFirstPage) {
+            drawParagraph(
+              pg,
+              font,
+              "This page summarizes the candidate elected to each position based on the highest vote count. " +
+              "Tied positions are clearly flagged. Percentages reflect each winner's share of total non-abstain ballots cast for that position.",
+              margin,
+              y,
+              pageW - margin * 2,
+              10.5,
+              15,
+            );
+            y -= 54;
+
+            // ── Three stat cards ──
+            const totalPositions = positionEntries.length;
+            const tiePositions = new Set(winnerRows.filter((w) => w.isTie).map((w) => w.position)).size;
+            const uncontested = positionEntries.filter(([, rows]) => {
+              const real = rows.filter((r) => (r.candidate_name || "").trim().toUpperCase() !== "ABSTAIN");
+              return real.length === 1;
+            }).length;
+
+            const cW = (pageW - margin * 2 - 20) / 3;
+            const cH = 62;
+
+            const drawStatCard = (cx: number, label: string, value: string, sub: string) => {
+              // card body
+              pg.drawRectangle({ x: cx, y: y - cH, width: cW, height: cH, color: rgb(0.97, 0.98, 0.975), borderColor: rgb(0.87, 0.88, 0.87), borderWidth: 1 });
+              // top gold accent bar
+              pg.drawRectangle({ x: cx, y: y - 4, width: cW, height: 4, color: rgb(0.78, 0.62, 0.20) });
+              // label
+              pg.drawText(label.toUpperCase(), { x: cx + 14, y: y - 18, size: 8.2, font, color: rgb(0.35, 0.35, 0.35) });
+              // big value
+              pg.drawText(value, { x: cx + 14, y: y - 40, size: 22, font: fontBold, color: rgb(0.02, 0.28, 0.16) });
+              // sub-label
+              drawParagraph(pg, font, sub, cx + 14, y - cH + 15, cW - 28, 8, 10, rgb(0.50, 0.50, 0.50));
+            };
+
+            drawStatCard(margin,               "Total Positions",  String(totalPositions), "Positions contested in this election");
+            drawStatCard(margin + cW + 10,     "Tied Positions",   String(tiePositions),   "Positions with two or more tied winners");
+            drawStatCard(margin + (cW + 10)*2, "Uncontested",      String(uncontested),     "Positions with a single candidate");
+
+            y -= cH + 22;
+          }
+
+          // ── Table columns ────────────────────────────────────────────────
+          // # | Position | Winner | Slate | Votes | Share
+          const tableX = margin;
+          const tableW = pageW - margin * 2;
+          const cNum = tableX + 10;
+          const cPos = tableX + 34;
+          const cWinner = tableX + 214;
+          const cSlate = tableX + 352;
+          const cVotesRight = tableX + tableW - 60;
+          const cPctRight = tableX + tableW - 10;
+          const rowH = 30;
+
+          // ── Table header strip ──
+          pg.drawRectangle({
+            x: tableX, y: y - 26, width: tableW, height: 26,
+            color: rgb(0.02, 0.28, 0.16),
+          });
+          pg.drawRectangle({
+            x: tableX, y: y - 27, width: tableW, height: 1,
+            color: rgb(0.78, 0.62, 0.20),
+          });
+
+          const hdrY = y - 17;
+          pg.drawText("#",        { x: cNum,    y: hdrY, size: 8.5, font: fontBold, color: rgb(1,1,1) });
+          pg.drawText("Position", { x: cPos,    y: hdrY, size: 8.5, font: fontBold, color: rgb(1,1,1) });
+          pg.drawText("Winner",   { x: cWinner, y: hdrY, size: 8.5, font: fontBold, color: rgb(1,1,1) });
+          pg.drawText("Slate",    { x: cSlate,  y: hdrY, size: 8.5, font: fontBold, color: rgb(1,1,1) });
+          const votesHdrW = fontBold.widthOfTextAtSize("Votes", 8.5);
+          const pctHdrW = fontBold.widthOfTextAtSize("Share", 8.5);
+          pg.drawText("Votes", { x: cVotesRight - votesHdrW, y: hdrY, size: 8.5, font: fontBold, color: rgb(1,1,1) });
+          pg.drawText("Share", { x: cPctRight - pctHdrW, y: hdrY, size: 8.5, font: fontBold, color: rgb(1,1,1) });
+
+          y -= 32;
+
+          // ── Data rows ──
+          const globalStart = pageIdx * ROWS_PER_PAGE;
+
+          for (let i = 0; i < pageSlice.length; i++) {
+            const w = pageSlice[i];
+            const rowNum = globalStart + i + 1;
+            const isEven = i % 2 === 1;
+            const accentColor = w.isTie ? rgb(0.78, 0.62, 0.20) : rgb(0.02, 0.28, 0.16);
+
+            pg.drawRectangle({
+              x: tableX, y: y - rowH, width: tableW, height: rowH,
+              color: isEven ? rgb(0.958, 0.970, 0.963) : rgb(1, 1, 1),
+              borderColor: rgb(0.90, 0.91, 0.91),
+              borderWidth: 0.3,
+            });
+
+            pg.drawRectangle({
+              x: tableX, y: y - rowH, width: 4, height: rowH,
+              color: accentColor,
+            });
+
+            const textY = y - rowH / 2 - 4;
+            const numStr = String(rowNum);
+            pg.drawText(numStr, { x: cNum, y: textY, size: 9, font: fontBold, color: rgb(0.18, 0.18, 0.18) });
+
+            const posStr = w.position.length > 30 ? w.position.slice(0, 28) + "…" : w.position;
+            pg.drawText(posStr, { x: cPos, y: textY, size: 9, font, color: rgb(0.18, 0.18, 0.18) });
+
+            const nameColor = w.isTie ? rgb(0.55, 0.36, 0.0) : rgb(0.02, 0.28, 0.16);
+            const nameStr = w.name.length > 19 ? w.name.slice(0, 17) + "…" : w.name;
+            pg.drawText(nameStr, { x: cWinner, y: textY, size: 9.5, font: fontBold, color: nameColor });
+
+            if (w.isTie) {
+              const pillLabel = "TIE";
+              const pillFontSize = 6.8;
+              const pillPadX = 4;
+              const pillTextW = fontBold.widthOfTextAtSize(pillLabel, pillFontSize);
+              const pillW = pillTextW + pillPadX * 2;
+              const pillH = 12;
+              const pillX = Math.min(cSlate - pillW - 8, cWinner + fontBold.widthOfTextAtSize(nameStr, 9.5) + 6);
+              const pillY = textY + 2;
+              pg.drawRectangle({ x: pillX, y: pillY - pillH + 2, width: pillW, height: pillH, color: rgb(1.0, 0.93, 0.72), borderColor: rgb(0.80, 0.60, 0.10), borderWidth: 0.8 });
+              pg.drawText(pillLabel, { x: pillX + pillPadX, y: pillY - pillH + 6, size: pillFontSize, font: fontBold, color: rgb(0.55, 0.36, 0.0) });
+            }
+
+            const slateStr = (w.slate || "—").length > 14 ? (w.slate || "—").slice(0, 12) + "…" : (w.slate || "—");
+            pg.drawText(slateStr, { x: cSlate, y: textY, size: 8.8, font, color: rgb(0.40, 0.40, 0.40) });
+
+            const vStr = String(w.votes);
+            const vW = fontBold.widthOfTextAtSize(vStr, 9.5);
+            pg.drawText(vStr, { x: cVotesRight - vW, y: textY, size: 9.5, font: fontBold, color: rgb(0.12, 0.12, 0.12) });
+
+            const pStr = w.total > 0 ? `${((w.votes / w.total) * 100).toFixed(1)}%` : "—";
+            const pW = font.widthOfTextAtSize(pStr, 8.8);
+            pg.drawText(pStr, { x: cPctRight - pW, y: textY, size: 8.8, font, color: rgb(0.38, 0.38, 0.38) });
+
+            pg.drawLine({
+              start: { x: tableX + 4, y: y - rowH },
+              end: { x: tableX + tableW, y: y - rowH },
+              thickness: 0.4,
+              color: rgb(0.88, 0.88, 0.90),
+            });
+
+            y -= rowH;
+          }
+
+          // ── Footer note ──
+          drawParagraph(
+            pg, font,
+            "Winner determination: highest vote count per position, excluding abstentions. " +
+            "Percentage = winner votes ÷ total non-abstain ballots for that position.",
+            margin, 76, pageW - margin * 2, 8.6, 12, rgb(0.48, 0.48, 0.48),
+          );
+        }
       }
 
       // -------------------------
