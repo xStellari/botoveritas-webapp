@@ -236,35 +236,25 @@ export function CandidateEditorDialog(props: Props) {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="grid gap-2">
                     <Label>Position</Label>
-
+                    <Input
+                      className="w-full h-10"
+                      list="candidate-position-options"
+                      value={cForm.position}
+                      onChange={(e) =>
+                        setCForm((p) => ({ ...p, position: e.target.value }))
+                      }
+                      placeholder="e.g., President"
+                    />
                     {positions.length > 0 ? (
-                      <Select
-                        value={cForm.position}
-                        onValueChange={(value) =>
-                          setCForm((p) => ({ ...p, position: value }))
-                        }
-                      >
-                        <SelectTrigger className="w-full h-10">
-                          <SelectValue placeholder="Select a position" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-64 overflow-y-auto">
-                          {positions.map((pos) => (
-                            <SelectItem key={pos} value={pos}>
-                              {pos}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Input
-                        className="w-full h-10"
-                        value={cForm.position}
-                        onChange={(e) =>
-                          setCForm((p) => ({ ...p, position: e.target.value }))
-                        }
-                        placeholder="e.g., President"
-                      />
-                    )}
+                      <datalist id="candidate-position-options">
+                        {positions.map((pos) => (
+                          <option key={pos} value={pos} />
+                        ))}
+                      </datalist>
+                    ) : null}
+                    <div className="text-xs text-muted-foreground">
+                      Type a new position or pick an existing one from suggestions.
+                    </div>
                   </div>
 
                   <div className="grid gap-2">
