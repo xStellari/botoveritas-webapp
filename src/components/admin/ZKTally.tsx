@@ -826,7 +826,14 @@ export default function ZKTally() {
       });
       if (!res.ok) { const text = await res.text(); throw new Error(text || `HTTP ${res.status}`); }
       const blob = await res.blob();
-      window.open(URL.createObjectURL(blob), "_blank", "noopener,noreferrer");
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `BotoVeritas_${electionId}_${mode}_Results.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
       toast.success("PDF generated");
     } catch (e: any) {
       toast.error(`PDF failed: ${e?.message ?? String(e)}`);
