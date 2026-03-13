@@ -10,6 +10,7 @@ import KioskProvision from "./pages/KioskProvision";
 import NotFound from "./pages/NotFound";
 import Admin from "./pages/Admin";
 import Results from "./pages/Results";
+import ResultsVerify from "./pages/ResultsVerify";
 import Verify from "./pages/Verify";
 import RegistrationConfirmation from "./pages/RegistrationConfirmation";
 import Register from "./pages/Register";
@@ -99,6 +100,7 @@ const App = () => (
           <Route path="/kiosk/setup" element={<KioskSetup />} />
           <Route path="/kiosk/provision" element={<KioskProvision />} />
           <Route path="/results" element={<Results />} />
+          <Route path="/results/:electionId" element={<ResultsVerify />} />
           <Route path="/verify" element={<Verify />} />
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/verify/tally/:electionId" element={<VerifyTally />} />

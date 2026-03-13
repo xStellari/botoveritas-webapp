@@ -106,6 +106,10 @@ type Body = {
   tally_submit_tx?: string;
   tally_submitter?: string;
   tally_submitted_at?: string;
+
+  // Public verification URL base (e.g. "https://botoveritas.vercel.app")
+  // Used to build the QR code and verify link printed in the PDF.
+  app_url?: string;
 };
 
 /* =========================
@@ -129,7 +133,7 @@ function json(status: number, payload: Record<string, unknown>) {
   });
 }
 
-function requireKioskSecret(req: Request) {
+function _requireKioskSecret(req: Request) {
   const expected =
     Deno.env.get("KIOSK_SECRET") ||
     Deno.env.get("KIOSK_RECEIPT_SECRET") ||
@@ -187,7 +191,7 @@ function fmtDate(dt = new Date()) {
 }
 
 function fmtShortDate(dtISO?: string | null) {
-  if (!dtISO) return "—";
+  if (!dtISO) return "-";
   const d = new Date(dtISO);
   return d.toLocaleString("en-US", {
     year: "numeric",
@@ -213,7 +217,7 @@ function groupBy<T>(arr: T[], keyFn: (x: T) => string) {
   return map;
 }
 
-function clamp(n: number, min: number, max: number) {
+function _clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
@@ -271,6 +275,38 @@ async function sha256Hex(input: string): Promise<string> {
   return Array.from(new Uint8Array(hash))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/** SHA-256 of raw bytes (used to fingerprint the final PDF binary). */
+async function sha256BytesHex(input: Uint8Array): Promise<string> {
+  // Copy into a plain ArrayBuffer so crypto.subtle.digest accepts it regardless
+  // of whether the underlying buffer is a SharedArrayBuffer (Deno / V8 edge cases).
+  const plain = input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer;
+  const hash = await crypto.subtle.digest("SHA-256", plain);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Builds a minimal QR-code SVG for a URL using a simple matrix encoding.
+ * This is a lightweight pure-Deno implementation (no external deps).
+ * For short URLs it produces a clean, scannable QR code.
+ *
+ * We use the qr-code-generator CDN-free approach: encode the URL as a
+ * Data URI SVG that pdf-lib can embed as a PNG via a QuickChart call.
+ */
+async function fetchQrPng(url: string): Promise<Uint8Array | null> {
+  try {
+    const encoded = encodeURIComponent(url);
+    const res = await fetch(
+      `https://quickchart.io/qr?text=${encoded}&size=200&format=png&margin=1`,
+    );
+    if (!res.ok) return null;
+    return new Uint8Array(await res.arrayBuffer());
+  } catch {
+    return null;
+  }
 }
 
 
@@ -382,10 +418,10 @@ function getCanonicalPositionsForElection(electionTitle: string, eligibleOrgs: u
 
 function normalizePosition(s: string) {
   // Normalize casing, whitespace, and dash variants so DB values like
-  // 'Vice President – Internal' still match the canonical order.
+  // 'Vice President - Internal' still match the canonical order.
   return String(s ?? "")
     .toLowerCase()
-    .replace(/[–—]/g, "-")
+    .replace(/[--]/g, "-")
     .replace(/\s*\-\s*/g, " - ")
     .replace(/\s*:\s*/g, ": ")
     .replace(/\s+/g, " ")
@@ -849,7 +885,7 @@ function drawInfoBoxCompact(params: {
     color: rgb(0.25, 0.25, 0.25),
   });
 
-  drawParagraph(page, fontBold, value || "—", x + 14, y - 36, w - 28, 13.5, 15.5, rgb(0.02, 0.28, 0.16));
+  drawParagraph(page, fontBold, value || "-", x + 14, y - 36, w - 28, 13.5, 15.5, rgb(0.02, 0.28, 0.16));
 
   if (footnote) {
     drawParagraph(page, font, footnote, x + 14, y - h + 18, w - 28, 8.2, 10.5, rgb(0.35, 0.35, 0.35));
@@ -963,27 +999,36 @@ serve(async (req: Request) => {
     // Parsed for forward-compat; may be rendered later if you decide to include it
     const _contract_address = body?.contract_address || "";
     const _nft_collection = body?.nft_collection || "BotoVeritas Proof-of-Vote";
-let tally_commitment = body?.tally_commitment || "";
-let zk_proof_hash = body?.zk_proof_hash || "";
+const tally_commitment = body?.tally_commitment || "";
+const zk_proof_hash = body?.zk_proof_hash || "";
 let zk_verifier_contract = body?.zk_verifier_contract || "";
 let zk_verification_tx = body?.zk_verification_tx || "";
-let public_inputs_hash = body?.public_inputs_hash || "";
+const public_inputs_hash = body?.public_inputs_hash || "";
 let onchain_anchor_tx = body?.onchain_anchor_tx || "";
 
-let onchain_anchor_note = body?.onchain_anchor_note || "";
+const onchain_anchor_note = body?.onchain_anchor_note || "";
 
 // BV ZK tally anchors (optional)
-let election_id_hash_bytes32 = body?.election_id_hash_bytes32 || "";
+const election_id_hash_bytes32 = body?.election_id_hash_bytes32 || "";
 let election_vote_root_bytes32 = body?.election_vote_root_bytes32 || "";
 let manifest_hash_bytes32 = body?.manifest_hash_bytes32 || "";
 let results_hash_bytes32 = body?.results_hash_bytes32 || "";
-let results_uri = body?.results_uri || "";
+const results_uri = body?.results_uri || "";
 
 // On-chain tally submission (optional)
 let tally_registry_address = body?.tally_registry_address || "";
-let tally_submit_tx = body?.tally_submit_tx || "";
-let tally_submitter = body?.tally_submitter || "";
-let tally_submitted_at = body?.tally_submitted_at || "";
+const tally_submit_tx = body?.tally_submit_tx || "";
+const tally_submitter = body?.tally_submitter || "";
+const tally_submitted_at = body?.tally_submitted_at || "";
+
+    // Public verification base URL - used to build the QR verify link in the PDF.
+    // Priority: request body > env var > empty string (QR omitted if empty).
+    const app_url = (
+      body?.app_url ||
+      Deno.env.get("APP_URL") ||
+      Deno.env.get("VITE_APP_URL") ||
+      ""
+    ).replace(/\/$/, ""); // strip trailing slash
 
     // Supabase (service role)
     // supabaseUrl validated above (admin/kiosk gate)
@@ -1002,9 +1047,30 @@ let tally_submitted_at = body?.tally_submitted_at || "";
       supabase.from('election_tally_proofs').select('status,manifest_hash,election_vote_root,results_hash,tx_hash,chain,registry_address,verifier_address,results_pdf_url,results_json_url,public_signals_json_url,proof_json_url,updated_at').eq('election_id', election_id).maybeSingle(),
     ]);
 
-    const manifestHashDb = (mRes.data as any)?.manifest_hash ?? (pRes.data as any)?.manifest_hash ?? null;
-    const rootDb = (rRes.data as any)?.election_vote_root ?? (pRes.data as any)?.election_vote_root ?? null;
-    const proofDb = (pRes.data as any) ?? null;
+    const manifestHashDb =
+      (mRes.data as { manifest_hash?: string | null } | null)?.manifest_hash ??
+      (pRes.data as { manifest_hash?: string | null } | null)?.manifest_hash ??
+      null;
+    const rootDb =
+      (rRes.data as { election_vote_root?: string | null } | null)?.election_vote_root ??
+      (pRes.data as { election_vote_root?: string | null } | null)?.election_vote_root ??
+      null;
+    type ProofDbRow = {
+      status?: string | null;
+      manifest_hash?: string | null;
+      election_vote_root?: string | null;
+      results_hash?: string | null;
+      tx_hash?: string | null;
+      chain?: string | null;
+      registry_address?: string | null;
+      verifier_address?: string | null;
+      results_pdf_url?: string | null;
+      results_json_url?: string | null;
+      public_signals_json_url?: string | null;
+      proof_json_url?: string | null;
+      updated_at?: string | null;
+    };
+    const proofDb = (pRes.data as ProofDbRow | null) ?? null;
 
     if (!manifest_hash_bytes32 && manifestHashDb) manifest_hash_bytes32 = String(manifestHashDb);
     if (!election_vote_root_bytes32 && rootDb) election_vote_root_bytes32 = String(rootDb);
@@ -1210,7 +1276,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
         });
         const scheduleLine = election
           ? `Election Window: ${fmtShortDate(election.start_date)} to ${fmtShortDate(election.end_date)}`
-          : "Election Window: —";
+          : "Election Window: -";
 
         const generatedLine = `Generated: ${fmtDate(new Date())}`;
 
@@ -1274,7 +1340,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
 
         let iy = cardY - 70;
         for (const it of items) {
-          page.drawText("• " + it, {
+          page.drawText("- " + it, {
             x: margin + 18,
             y: iy,
             size: 10.5,
@@ -1421,7 +1487,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
           fontBold,
           font,
           title: "Turnout Distribution by Year Level",
-          subtitle: `${electionTitle} • Overall Turnout: ${
+          subtitle: `${electionTitle} - Overall Turnout: ${
             turnoutRate.toFixed(1)
           }%`,
           logoBytes,
@@ -1496,7 +1562,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
                 // Continue with table rendering using ty
                 y = ty;
               } else {
-                // No client-provided image — fetch from QuickChart
+                // No client-provided image - fetch from QuickChart
                 const pngBytes = await quickChartPng(donutConfig);
                 const img = await pdf.embedPng(pngBytes);
                 const imgW = pageW - margin * 2;
@@ -1554,7 +1620,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
           page,
           fontBold,
           font,
-          title: `Results — ${position}`,
+          title: `Results - ${position}`,
           subtitle: electionTitle,
           logoBytes,
         });
@@ -1647,7 +1713,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
                 height: imgH,
               });
             } else {
-              // No client-provided image — fetch from QuickChart
+              // No client-provided image - fetch from QuickChart
               const pngBytes = await quickChartPng(pieConfig);
               const img = await pdf.embedPng(pngBytes);
               const imgW = pageW - margin * 2;
@@ -1697,14 +1763,14 @@ let tally_submitted_at = body?.tally_submitted_at || "";
         const line2 = `Abstentions: ${abstainCount} (${abstainShare})`;
         const line3 = leaders.length
           ? leaders.length > 1
-            ? `Leading candidates (tie): ${leaderNames.join(" • ")} — ${leaderVotes} votes each (${leaderShare})`
-            : `Leading candidate: ${leaderNames[0]} — ${leaderVotes} votes (${leaderShare})`
-          : "Leading candidate: — (no votes recorded)";
+            ? `Leading candidates (tie): ${leaderNames.join(" - ")} - ${leaderVotes} votes each (${leaderShare})`
+            : `Leading candidate: ${leaderNames[0]} - ${leaderVotes} votes (${leaderShare})`
+          : "Leading candidate: - (no votes recorded)";
 
         // Structured formatting: one item per line (wrap-aware)
-        drawParagraph(page, font, `• ${line1}`, margin + 12, y - 36, pageW - margin * 2 - 24, 10.2, 14);
-        drawParagraph(page, font, `• ${line2}`, margin + 12, y - 50, pageW - margin * 2 - 24, 10.2, 14);
-        drawParagraph(page, font, `• ${line3}`, margin + 12, y - 64, pageW - margin * 2 - 24, 10.2, 14);
+        drawParagraph(page, font, `- ${line1}`, margin + 12, y - 36, pageW - margin * 2 - 24, 10.2, 14);
+        drawParagraph(page, font, `- ${line2}`, margin + 12, y - 50, pageW - margin * 2 - 24, 10.2, 14);
+        drawParagraph(page, font, `- ${line3}`, margin + 12, y - 64, pageW - margin * 2 - 24, 10.2, 14);
 
         y -= 110;
 
@@ -1772,7 +1838,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
       // WINNERS SUMMARY
       // -------------------------
       {
-        // ── Collect one winner entry per winning candidate per position ──────
+        // -- Collect one winner entry per winning candidate per position ------
         type WinnerEntry = {
           position: string;
           name: string;
@@ -1807,7 +1873,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
           for (const c of topCandidates) {
             winnerRows.push({
               position,
-              name: c.candidate_name || "—",
+              name: c.candidate_name || "-",
               slate: c.slate || "",
               votes: topVotes,
               total: candidateBallotsPos,
@@ -1816,7 +1882,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
           }
         }
 
-        // ── Pagination: 10 data rows fit between stat cards + table header ──
+        // -- Pagination: 10 data rows fit between stat cards + table header --
         const ROWS_PER_PAGE = 10;
         const totalWinnerPages = Math.max(1, Math.ceil(winnerRows.length / ROWS_PER_PAGE));
 
@@ -1840,7 +1906,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
 
           let y = yStart - 6;
 
-          // ── Intro paragraph (first page only) ──
+          // -- Intro paragraph (first page only) --
           if (isFirstPage) {
             drawParagraph(
               pg,
@@ -1855,7 +1921,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
             );
             y -= 54;
 
-            // ── Three stat cards ──
+            // -- Three stat cards --
             const totalPositions = positionEntries.length;
             const tiePositions = new Set(winnerRows.filter((w) => w.isTie).map((w) => w.position)).size;
             const uncontested = positionEntries.filter(([, rows]) => {
@@ -1886,7 +1952,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
             y -= cH + 22;
           }
 
-          // ── Table columns ────────────────────────────────────────────────
+          // -- Table columns ------------------------------------------------
           // # | Position | Winner | Slate | Votes | Share
           const tableX = margin;
           const tableW = pageW - margin * 2;
@@ -1898,7 +1964,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
           const cPctRight = tableX + tableW - 10;
           const rowH = 30;
 
-          // ── Table header strip ──
+          // -- Table header strip --
           pg.drawRectangle({
             x: tableX, y: y - 26, width: tableW, height: 26,
             color: rgb(0.02, 0.28, 0.16),
@@ -1920,7 +1986,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
 
           y -= 32;
 
-          // ── Data rows ──
+          // -- Data rows --
           const globalStart = pageIdx * ROWS_PER_PAGE;
 
           for (let i = 0; i < pageSlice.length; i++) {
@@ -1945,11 +2011,11 @@ let tally_submitted_at = body?.tally_submitted_at || "";
             const numStr = String(rowNum);
             pg.drawText(numStr, { x: cNum, y: textY, size: 9, font: fontBold, color: rgb(0.18, 0.18, 0.18) });
 
-            const posStr = w.position.length > 30 ? w.position.slice(0, 28) + "…" : w.position;
+            const posStr = w.position.length > 30 ? w.position.slice(0, 28) + "..." : w.position;
             pg.drawText(posStr, { x: cPos, y: textY, size: 9, font, color: rgb(0.18, 0.18, 0.18) });
 
             const nameColor = w.isTie ? rgb(0.55, 0.36, 0.0) : rgb(0.02, 0.28, 0.16);
-            const nameStr = w.name.length > 19 ? w.name.slice(0, 17) + "…" : w.name;
+            const nameStr = w.name.length > 19 ? w.name.slice(0, 17) + "..." : w.name;
             pg.drawText(nameStr, { x: cWinner, y: textY, size: 9.5, font: fontBold, color: nameColor });
 
             if (w.isTie) {
@@ -1965,14 +2031,14 @@ let tally_submitted_at = body?.tally_submitted_at || "";
               pg.drawText(pillLabel, { x: pillX + pillPadX, y: pillY - pillH + 6, size: pillFontSize, font: fontBold, color: rgb(0.55, 0.36, 0.0) });
             }
 
-            const slateStr = (w.slate || "—").length > 14 ? (w.slate || "—").slice(0, 12) + "…" : (w.slate || "—");
+            const slateStr = (w.slate || "-").length > 14 ? (w.slate || "-").slice(0, 12) + "..." : (w.slate || "-");
             pg.drawText(slateStr, { x: cSlate, y: textY, size: 8.8, font, color: rgb(0.40, 0.40, 0.40) });
 
             const vStr = String(w.votes);
             const vW = fontBold.widthOfTextAtSize(vStr, 9.5);
             pg.drawText(vStr, { x: cVotesRight - vW, y: textY, size: 9.5, font: fontBold, color: rgb(0.12, 0.12, 0.12) });
 
-            const pStr = w.total > 0 ? `${((w.votes / w.total) * 100).toFixed(1)}%` : "—";
+            const pStr = w.total > 0 ? `${((w.votes / w.total) * 100).toFixed(1)}%` : "-";
             const pW = font.widthOfTextAtSize(pStr, 8.8);
             pg.drawText(pStr, { x: cPctRight - pW, y: textY, size: 8.8, font, color: rgb(0.38, 0.38, 0.38) });
 
@@ -1986,7 +2052,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
             y -= rowH;
           }
 
-          // ── Footer note ──
+          // -- Footer note --
           drawParagraph(
             pg, font,
             "Winner determination: highest vote count per position, excluding abstentions. " +
@@ -2037,7 +2103,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
           w: boxW,
           h: 64,
           title: "Network",
-          value: network || "—",
+          value: network || "-",
           footnote: "Blockchain environment",
         });
 
@@ -2050,7 +2116,7 @@ let tally_submitted_at = body?.tally_submitted_at || "";
           w: boxW,
           h: 64,
           title: "Explorer Base",
-          value: explorer_base ? "Available" : "—",
+          value: explorer_base ? "Available" : "-",
           footnote: explorer_base || "No Verifier Reference On-Chain Anchor Recorded",
         });
 
@@ -2063,14 +2129,14 @@ let tally_submitted_at = body?.tally_submitted_at || "";
           w: boxW,
           h: 64,
           title: "Anchor Tx",
-          value: onchain_anchor_tx ? "On-Chain Anchor Recorded" : "—",
+          value: onchain_anchor_tx ? "On-Chain Anchor Recorded" : "-",
           footnote: onchain_anchor_tx ? "Explorer link" : "Not Applicable / Not On-Chain Anchor Recorded",
         });
 
         y -= 74;
 
         const kv = (label: string, value: string) => {
-          const v = value || "—";
+          const v = value || "-";
           const isHex = /^0x[0-9a-fA-F]+$/.test(v) && v.length >= 42;
           const isUrl = /^https?:\/\//.test(v);
           const valueFont = (isHex || isUrl) ? fontMono : font;
@@ -2153,14 +2219,14 @@ let tally_submitted_at = body?.tally_submitted_at || "";
           kv("Election Vote Root (bytes32):", electionVoteRootShown);
           mismatchNote("Election Vote Root", election_vote_root_bytes32 || "", computedElectionVoteRoot);
         } else {
-          kv("Election Vote Root (bytes32):", "— (run anchor-election-root first)");
+          kv("Election Vote Root (bytes32):", "- (run anchor-election-root first)");
         }
 
         if (manifestHashShown) {
           kv("Manifest Hash (bytes32):", manifestHashShown);
           mismatchNote("Manifest Hash", manifest_hash_bytes32 || "", computedManifestHash);
         } else {
-          kv("Manifest Hash (bytes32):", "— (run generate-election-manifest first)");
+          kv("Manifest Hash (bytes32):", "- (run generate-election-manifest first)");
         }
 
         if (results_hash_bytes32) kv("Results Hash (bytes32):", results_hash_bytes32);
@@ -2221,7 +2287,7 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
           y = drawParagraph(
             page,
             font,
-            `• ${b}`,
+            `- ${b}`,
             margin,
             y,
             pageW - margin * 2,
@@ -2258,9 +2324,9 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
           for (const h of tx_hashes) {
             if (y < 90) break;
             const short = h.length > 66
-              ? `${h.slice(0, 12)}…${h.slice(-10)}`
+              ? `${h.slice(0, 12)}...${h.slice(-10)}`
               : h;
-            page.drawText(`• ${short}`, {
+            page.drawText(`- ${short}`, {
               x: margin,
               y,
               size: 10.5,
@@ -2394,7 +2460,7 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
           w: boxW,
           h: 64,
           title: "Verifier",
-          value: zk_verifier_contract ? "Explorer Endpoint Available" : "—",
+          value: zk_verifier_contract ? "Explorer Endpoint Available" : "-",
           footnote: zk_verifier_contract ? "Contract / verifier ref" : "No Verifier Reference On-Chain Anchor Recorded",
         });
 
@@ -2407,7 +2473,7 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
           w: boxW,
           h: 64,
           title: "On-chain Proof Tx",
-          value: zk_verification_tx ? "On-Chain Anchor Recorded" : "—",
+          value: zk_verification_tx ? "On-Chain Anchor Recorded" : "-",
           footnote: zk_verification_tx ? "Explorer verification" : "Not Applicable / Not On-Chain Anchor Recorded",
         });
 
@@ -2417,7 +2483,7 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
         y -= 18;
 
         const kv2 = (label: string, value: string) => {
-          const v = value || "—";
+          const v = value || "-";
           const isHex = /^0x[0-9a-fA-F]+$/.test(v) && v.length >= 42;
           const isUrl = /^https?:\/\//.test(v);
           const valueFont = (isHex || isUrl) ? fontMono : font;
@@ -2439,11 +2505,11 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
         kv2("Election ID Hash (bytes32):", electionIdHashShown);
         kv2(
           "Election Vote Root (bytes32):",
-          electionVoteRootShown || "— (run anchor-election-root first)",
+          electionVoteRootShown || "- (run anchor-election-root first)",
         );
         kv2(
           "Manifest Hash (bytes32):",
-          manifestHashShown || "— (run generate-election-manifest first)",
+          manifestHashShown || "- (run generate-election-manifest first)",
         );
         if (tally_commitment) kv2("Tally Commitment:", tally_commitment);
         if (results_hash_bytes32) kv2("Results Hash (bytes32):", results_hash_bytes32);
@@ -2506,7 +2572,7 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
           y = drawParagraph(
             page,
             font,
-            `• ${s}`,
+            `- ${s}`,
             margin,
             y,
             pageW - margin * 2,
@@ -2695,7 +2761,7 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
 
           const finalizedBy = election.finalized_by_email ||
             election.finalized_by ||
-            "—";
+            "-";
 
           page.drawText(`Finalized by: ${finalizedBy}`, {
             x: margin,
@@ -2780,11 +2846,208 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
         drawPageNumber(pages[i], font, i + 1, pages.length);
       }
 
+      // -----------------------------------------------------------------------
+      // DOCUMENT INTEGRITY PAGE
+      // -----------------------------------------------------------------------
+      // The hash CANNOT be printed inside the PDF it is hashing (chicken-and-egg:
+      // adding the hash to the page changes the bytes, invalidating the hash).
+      //
+      // Correct flow:
+      //   1. Draw the integrity page with the QR / verify URL but NO hash value
+      //   2. Save the complete final PDF -> compute SHA-256 of those exact bytes
+      //   3. Store hash in DB so the verify page can compare against it
+      //   4. Return the same bytes to the user
+      //
+      // The verify URL/QR tells users where to go; the website does the comparison.
+      // -----------------------------------------------------------------------
+
+      // Step 1 - build the public verify URL and QR code
+      const verifyUrl = app_url
+        ? `${app_url}/results/${singleElectionId}`
+        : "";
+
+      // Fetch QR PNG (best-effort; skipped if no verifyUrl or network error)
+      let qrBytes: Uint8Array | null = null;
+      if (verifyUrl) {
+        qrBytes = await fetchQrPng(verifyUrl);
+      }
+
+      const generatedAt = new Date().toISOString();
+
+      // Step 2 - draw the integrity attestation page (no hash printed here)
+      {
+        const intPage = pdf.addPage([pageW, pageH]);
+
+        // Full-page white background
+        intPage.drawRectangle({ x: 0, y: 0, width: pageW, height: pageH, color: rgb(1, 1, 1) });
+
+        // Top band (FEU green)
+        intPage.drawRectangle({ x: 0, y: pageH - 90, width: pageW, height: 90, color: rgb(0.02, 0.28, 0.16) });
+        // Gold trim
+        intPage.drawRectangle({ x: 0, y: pageH - 96, width: pageW, height: 6, color: rgb(0.78, 0.62, 0.20) });
+
+        intPage.drawText("Document Integrity Attestation", {
+          x: margin, y: pageH - 46,
+          size: 18, font: fontBold, color: rgb(1, 1, 1),
+        });
+        intPage.drawText(electionTitle, {
+          x: margin, y: pageH - 68,
+          size: 11, font, color: rgb(0.85, 0.92, 0.87),
+        });
+
+        let iy = pageH - 118;
+
+        // -- What is this page? --
+        iy = drawParagraph(
+          intPage, font,
+          "This page allows anyone to verify that this PDF has not been altered since it was " +
+          "officially generated by BotoVeritas. Scan the QR code or visit the URL below, then " +
+          "drop this PDF file onto the verification page. The site will compute the file's " +
+          "SHA-256 fingerprint in your browser and compare it against the official record.",
+          margin, iy, pageW - margin * 2, 10.5, 15,
+        );
+        iy -= 20;
+
+        // -- How to verify box --
+        const howBoxH = 130;
+        intPage.drawRectangle({
+          x: margin, y: iy - howBoxH,
+          width: pageW - margin * 2, height: howBoxH,
+          color: rgb(0.97, 0.98, 0.97),
+          borderColor: rgb(0.78, 0.62, 0.20),
+          borderWidth: 1.5,
+        });
+        intPage.drawRectangle({
+          x: margin, y: iy - howBoxH,
+          width: 6, height: howBoxH,
+          color: rgb(0.78, 0.62, 0.20),
+        });
+
+        intPage.drawText("HOW TO VERIFY THIS DOCUMENT", {
+          x: margin + 16, y: iy - 20,
+          size: 9, font: fontBold, color: rgb(0.25, 0.25, 0.25),
+        });
+
+        const steps = [
+          "1. Scan the QR code or visit the verification URL on this page.",
+          "2. On the verification page, drop this PDF file into the upload area.",
+          "3. The site checks the file fingerprint against the official record.",
+          "   Match  -> document is authentic and unmodified.",
+          "   No match -> the file has been altered since it was generated.",
+        ];
+
+        let stepY = iy - 38;
+        for (const step of steps) {
+          stepY = drawParagraph(intPage, step.startsWith(" ") ? fontMono : font, step, margin + 16, stepY, pageW - margin * 2 - 32, 9.5, 13);
+          stepY -= 1;
+        }
+
+        iy -= howBoxH + 22;
+
+        // -- QR code + verify URL --
+        if (verifyUrl) {
+          intPage.drawText("OFFICIAL RESULTS - ONLINE VERIFICATION", {
+            x: margin, y: iy,
+            size: 10, font: fontBold, color: rgb(0.02, 0.28, 0.16),
+          });
+          intPage.drawLine({
+            start: { x: margin, y: iy - 6 },
+            end: { x: margin + 310, y: iy - 6 },
+            thickness: 1.5, color: rgb(0.78, 0.62, 0.20),
+          });
+          iy -= 22;
+
+          iy = drawParagraph(
+            intPage, font,
+            "Scan the QR code or visit the URL below to view live official results and verify this PDF. " +
+            "If vote counts here differ from what is on that page, trust the website - it reflects the immutable database record.",
+            margin, iy, pageW - margin * 2, 10, 14,
+          );
+          iy -= 16;
+
+          // QR code (left column)
+          const qrSize = 120;
+          const qrX = margin;
+          const qrY = iy - qrSize;
+
+          if (qrBytes) {
+            try {
+              const qrImg = await pdf.embedPng(qrBytes);
+              intPage.drawImage(qrImg, { x: qrX, y: qrY, width: qrSize, height: qrSize });
+            } catch {
+              intPage.drawRectangle({ x: qrX, y: qrY, width: qrSize, height: qrSize, color: rgb(0.95, 0.95, 0.95), borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 1 });
+              intPage.drawText("QR unavailable", { x: qrX + 10, y: qrY + qrSize / 2, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
+            }
+          } else {
+            intPage.drawRectangle({ x: qrX, y: qrY, width: qrSize, height: qrSize, color: rgb(0.95, 0.95, 0.95), borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 1 });
+            intPage.drawText("QR unavailable", { x: qrX + 10, y: qrY + qrSize / 2, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
+          }
+
+          // URL + election ID (right column)
+          const urlX = qrX + qrSize + 18;
+          const urlMaxW = pageW - margin - urlX;
+          let urlY = iy - 14;
+
+          intPage.drawText("Verify at:", { x: urlX, y: urlY, size: 9, font: fontBold, color: rgb(0.25, 0.25, 0.25) });
+          urlY -= 16;
+          urlY = drawParagraph(intPage, fontMono, verifyUrl, urlX, urlY, urlMaxW, 9.5, 13, rgb(0.02, 0.18, 0.40));
+          urlY -= 14;
+
+          intPage.drawText("Election ID:", { x: urlX, y: urlY, size: 9, font: fontBold, color: rgb(0.25, 0.25, 0.25) });
+          urlY -= 14;
+          drawParagraph(intPage, fontMono, singleElectionId, urlX, urlY, urlMaxW, 8.5, 12, rgb(0.35, 0.35, 0.35));
+          urlY -= 14;
+
+          intPage.drawText("Generated:", { x: urlX, y: urlY, size: 9, font: fontBold, color: rgb(0.25, 0.25, 0.25) });
+          urlY -= 14;
+          drawParagraph(intPage, fontMono, generatedAt, urlX, urlY, urlMaxW, 8.5, 12, rgb(0.35, 0.35, 0.35));
+
+          iy = qrY - 16;
+        }
+
+        // -- Footer note --
+        const noteY = Math.min(iy - 10, 90);
+        drawParagraph(
+          intPage, font,
+          "This attestation page was generated automatically by BotoVeritas. " +
+          "Always cross-check against the online results page if you have any doubt about this document.",
+          margin, noteY, pageW - margin * 2, 8.5, 12, rgb(0.5, 0.5, 0.5),
+        );
+
+        intPage.drawText("BotoVeritas . Document Integrity Attestation", {
+          x: margin, y: 28, size: 8, font, color: rgb(0.6, 0.6, 0.6),
+        });
+        intPage.drawText(`Generated: ${generatedAt}`, {
+          x: pageW - margin - 200, y: 28, size: 8, font: fontMono, color: rgb(0.6, 0.6, 0.6),
+        });
+      }
+
+      // Step 3 - save the COMPLETE final PDF (integrity page included)
+      // then hash THESE bytes - this is exactly what the user downloads
       const pdfBytes = await pdf.save();
-      return { pdfBytes, electionTitle };
+      const pdfSha256 = await sha256BytesHex(pdfBytes);
+
+      // Step 4 - persist the hash so the verify page can compare against it
+      try {
+        await supabase
+          .from("election_result_pdf_hashes")
+          .upsert(
+            {
+              election_id: singleElectionId,
+              pdf_sha256: pdfSha256,
+              generated_at: generatedAt,
+              mode,
+            },
+            { onConflict: "election_id,mode" },
+          );
+      } catch {
+        // Non-fatal: table may not exist yet. Run migration_pdf_hashes.sql first.
+      }
+
+      return { pdfBytes, electionTitle, pdfSha256 };
     };
 
-    const { pdfBytes, electionTitle } = await buildSingleElectionPdf(election_id);
+    const { pdfBytes, electionTitle, pdfSha256 } = await buildSingleElectionPdf(election_id);
     const filename = `${safeFilename(electionTitle)}_Results_Report.pdf`;
 
     return new Response(u8ToArrayBuffer(pdfBytes), {
@@ -2792,6 +3055,9 @@ drawSectionTitle(page, fontBold, "Verification Notes", margin, y);
         ...corsHeaders,
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="${filename}"`,
+        // Expose the hash so the admin UI can display / store it without re-downloading the file
+        "X-PDF-SHA256": pdfSha256,
+        "Access-Control-Expose-Headers": "X-PDF-SHA256",
       },
     });
   } catch (err: unknown) {

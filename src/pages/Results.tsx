@@ -364,6 +364,9 @@ export default function Results() {
           election_id: selectedElection.id,
           include_charts: true,
           chart_images,
+          // Tells the edge function the base URL to use for the QR code + verify link
+          // printed on the integrity attestation page inside the PDF.
+          app_url: window.location.origin,
           signatories: [
             { label: "Prepared by", name: "Isaac Caubat", role: "Group Member" },
             { label: "Prepared by", name: "Lance Owen Miguel Cervantes", role: "Group Member" },
