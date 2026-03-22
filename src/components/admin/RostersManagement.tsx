@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { SuperAdminOtpGate } from "@/components/admin/SuperAdminOtpGate";
 
 type OrgRow = {
   code: string;
@@ -28,6 +29,17 @@ type AssociateRow = {
   email: string;
   email_norm: string | null;
   full_name: string | null;
+  source: string | null;
+  created_at: string;
+};
+
+type EnrolledRow = {
+  id: string;
+  email: string;
+  email_norm: string | null;
+  full_name: string | null;
+  year_level: string | null;
+  is_enrolled: boolean;
   source: string | null;
   created_at: string;
 };
@@ -232,7 +244,7 @@ export default function RostersManagement() {
   const [orgsLoading, setOrgsLoading] = useState(true);
   const [orgs, setOrgs] = useState<OrgRow[]>([]);
   const [selectedOrg, setSelectedOrg] = useState<string>("");
-  const [activePanel, setActivePanel] = useState<"org" | "associates">("org");
+  const [activePanel, setActivePanel] = useState<"org" | "associates" | "enrolled">("org");
 
   // ----------------------------
   // Org member roster UI
@@ -264,6 +276,16 @@ const [orgMemberSource, setOrgMemberSource] = useState("Admin import");
   // Associate registry (email) UI
   // ----------------------------
   const [associateLoading, setAssociateLoading] = useState(false);
+
+  // ── Enrolled students ──────────────────────────────────────────────
+  const [enrolledRows, setEnrolledRows] = useState<EnrolledRow[]>([]);
+  const [enrolledLoading, setEnrolledLoading] = useState(false);
+  const [enrolledCsvFile, setEnrolledCsvFile] = useState<File | null>(null);
+  const [enrolledCsvPreview, setEnrolledCsvPreview] = useState<string[]>([]);
+  const [enrolledQuickEmail, setEnrolledQuickEmail] = useState("");
+  const [enrolledQuickName, setEnrolledQuickName] = useState("");
+  const [enrolledQuickYear, setEnrolledQuickYear] = useState("");
+  const [enrolledSource, setEnrolledSource] = useState("");
   const [associateRows, setAssociateRows] = useState<AssociateRow[]>([]);
   const [associateSearch, setAssociateSearch] = useState("");
 const [associateBusy, setAssociateBusy] = useState(false);
@@ -1054,7 +1076,189 @@ const [associateBusy, setAssociateBusy] = useState(false);
     </Card>
   );
 
-  const renderAssociatePanel = () => (
+  // ── Enrolled students: load, add, CSV import, delete, toggle ─────────
+
+  const loadEnrolled = async () => {
+    setEnrolledLoading(true);
+    try {
+      const { data, error } = await (supabase as any)
+        .from("enrolled_students")
+        .select("id,email,email_norm,full_name,year_level,is_enrolled,source,created_at")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setEnrolledRows(data ?? []);
+    } catch (e: any) {
+      toast.error("Failed to load enrolled students: " + (e?.message || String(e)));
+    } finally {
+      setEnrolledLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activePanel === "enrolled") void loadEnrolled();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePanel]);
+
+  const handleEnrolledQuickAdd = async () => {
+    const email = enrolledQuickEmail.trim().toLowerCase();
+    if (!isValidEmail(email)) { toast.error("Enter a valid email."); return; }
+    const { error } = await (supabase as any).from("enrolled_students").upsert(
+      [{ email, full_name: enrolledQuickName.trim() || null, year_level: enrolledQuickYear.trim() || null, source: enrolledSource.trim() || null, is_enrolled: true }],
+      { onConflict: "email_norm" }
+    );
+    if (error) { toast.error("Failed to add: " + error.message); return; }
+    toast.success("Added to enrolled students.");
+    setEnrolledQuickEmail(""); setEnrolledQuickName(""); setEnrolledQuickYear("");
+    void loadEnrolled();
+  };
+
+  const readEnrolledCsv = async (file: File) => {
+    const text = await file.text();
+    const items = parseCsvFirstColumn(text);
+    const valid = items.filter(isValidEmail);
+    setEnrolledCsvPreview(dedupeEmails(valid));
+  };
+
+  const handleEnrolledCsvImport = async () => {
+    if (!enrolledCsvPreview.length) { toast.error("No valid emails to import."); return; }
+    const payload = enrolledCsvPreview.map((email) => ({
+      email: email.toLowerCase(),
+      source: enrolledSource.trim() || null,
+      is_enrolled: true,
+    }));
+    const { error } = await (supabase as any).from("enrolled_students")
+      .upsert(payload, { onConflict: "email_norm" });
+    if (error) { toast.error("Import failed: " + error.message); return; }
+    toast.success(`Imported ${payload.length} enrolled student(s).`);
+    setEnrolledCsvFile(null); setEnrolledCsvPreview([]);
+    void loadEnrolled();
+  };
+
+  const handleEnrolledToggle = async (row: EnrolledRow) => {
+    const { error } = await (supabase as any).from("enrolled_students")
+      .update({ is_enrolled: !row.is_enrolled })
+      .eq("id", row.id);
+    if (error) { toast.error("Failed to update: " + error.message); return; }
+    toast.success(row.is_enrolled ? "Marked as not enrolled." : "Marked as enrolled.");
+    void loadEnrolled();
+  };
+
+  const handleEnrolledDelete = async (id: string) => {
+    if (!confirm("Remove this student from the enrolled list?")) return;
+    const { error } = await (supabase as any).from("enrolled_students").delete().eq("id", id);
+    if (error) { toast.error("Delete failed: " + error.message); return; }
+    toast.success("Removed.");
+    void loadEnrolled();
+  };
+
+  const handleEnrolledClearAll = async () => {
+    if (!confirm("Delete ALL enrolled students? This will block ALL registrations until you re-import.")) return;
+    const { error } = await (supabase as any).from("enrolled_students").delete().not("id", "is", null);
+    if (error) { toast.error("Clear failed: " + error.message); return; }
+    toast.success("Cleared all enrolled students.");
+    void loadEnrolled();
+  };
+
+  const renderEnrolledPanel = () => (
+    <div className="space-y-5">
+      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900 space-y-1">
+        <p className="font-semibold">What this list does</p>
+        <p className="text-emerald-800">
+          When a student tries to register, their FEU email is checked against this list
+          before RFID and Face ID capture. If the email is not here or is marked{" "}
+          <strong>Blocked</strong>, they are stopped immediately with a clear message.
+          Import the official enrolled student list (CSV, email as first column).
+        </p>
+      </div>
+
+      <div className="rounded-2xl border bg-white p-5 space-y-3">
+        <p className="font-semibold text-sm">Add single student</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Input placeholder="student@feualabang.edu.ph" value={enrolledQuickEmail} onChange={(e) => setEnrolledQuickEmail(e.target.value)} />
+          <Input placeholder="Full name (optional)" value={enrolledQuickName} onChange={(e) => setEnrolledQuickName(e.target.value)} />
+          <Input placeholder="Year level (optional)" value={enrolledQuickYear} onChange={(e) => setEnrolledQuickYear(e.target.value)} />
+          <Input placeholder="Source label (optional)" value={enrolledSource} onChange={(e) => setEnrolledSource(e.target.value)} />
+        </div>
+        <Button className="w-full bg-emerald-700 hover:bg-emerald-800" onClick={handleEnrolledQuickAdd}>Add Student</Button>
+      </div>
+
+      <div className="rounded-2xl border bg-white p-5 space-y-3">
+        <p className="font-semibold text-sm">CSV import (email as first column)</p>
+        <Input placeholder="Source label e.g. AY 2025-2026 official list" value={enrolledSource} onChange={(e) => setEnrolledSource(e.target.value)} />
+        <input
+          type="file"
+          accept=".csv,.txt"
+          className="block text-sm"
+          onChange={async (e) => {
+            const f = e.target.files?.[0] ?? null;
+            setEnrolledCsvFile(f);
+            if (f) await readEnrolledCsv(f);
+          }}
+        />
+        {enrolledCsvPreview.length > 0 && (
+          <div className="rounded-xl border bg-muted/20 p-3 space-y-1">
+            <p className="text-xs font-semibold text-muted-foreground">{enrolledCsvPreview.length} valid email(s) - preview (first 5):</p>
+            {enrolledCsvPreview.slice(0, 5).map((e) => (
+              <p key={e} className="text-xs font-mono text-slate-700">{e}</p>
+            ))}
+            {enrolledCsvPreview.length > 5 && (
+              <p className="text-xs text-muted-foreground">and {enrolledCsvPreview.length - 5} more</p>
+            )}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <SuperAdminOtpGate action="enrolled_import" onVerified={handleEnrolledCsvImport}>
+            <Button className="flex-1 bg-emerald-700 hover:bg-emerald-800" disabled={!enrolledCsvPreview.length}>
+              Import {enrolledCsvPreview.length > 0 ? `${enrolledCsvPreview.length} students` : ""}
+            </Button>
+          </SuperAdminOtpGate>
+          <SuperAdminOtpGate action="enrolled_import" onVerified={handleEnrolledClearAll}>
+            <Button variant="outline" className="text-destructive border-destructive/30 hover:bg-destructive/5">
+              Clear all
+            </Button>
+          </SuperAdminOtpGate>
+        </div>
+        <p className="text-xs text-muted-foreground">Duplicate emails are upserted - no duplicates created.</p>
+      </div>
+
+      <div className="rounded-2xl border bg-white overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3 border-b">
+          <p className="font-semibold text-sm">Enrolled students ({enrolledRows.length})</p>
+          <Button variant="outline" size="sm" onClick={loadEnrolled} disabled={enrolledLoading}>Refresh</Button>
+        </div>
+        {enrolledLoading ? (
+          <div className="p-4 text-sm text-muted-foreground">Loading...</div>
+        ) : enrolledRows.length === 0 ? (
+          <div className="p-4 text-sm text-muted-foreground">No enrolled students imported yet. Import a CSV above to enable enrollment blocking.</div>
+        ) : (
+          <div className="divide-y">
+            {enrolledRows.map((row) => (
+              <div key={row.id} className="flex items-center justify-between gap-3 px-5 py-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">{row.email}</p>
+                  {row.full_name && <p className="text-xs text-muted-foreground">{row.full_name}{row.year_level ? ` - ${row.year_level}` : ""}</p>}
+                  {row.source && <p className="text-xs text-muted-foreground italic">{row.source}</p>}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Badge className={row.is_enrolled ? "bg-emerald-100 text-emerald-800 border-emerald-200" : "bg-red-100 text-red-800 border-red-200"}>
+                    {row.is_enrolled ? "Enrolled" : "Blocked"}
+                  </Badge>
+                  <Button variant="outline" size="sm" onClick={() => handleEnrolledToggle(row)}>
+                    {row.is_enrolled ? "Block" : "Unblock"}
+                  </Button>
+                  <Button variant="outline" size="sm" className="text-destructive border-destructive/30" onClick={() => handleEnrolledDelete(row.id)}>
+                    Remove
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+    const renderAssociatePanel = () => (
     <Card className="p-5 md:p-6 space-y-4">
       <div className="space-y-1">
         <div className="flex items-center gap-2">
@@ -1273,6 +1477,9 @@ const [associateBusy, setAssociateBusy] = useState(false);
             <SegButton active={activePanel === "associates"} onClick={() => setActivePanel("associates")}>
               Associate registry
             </SegButton>
+            <SegButton active={activePanel === "enrolled"} onClick={() => setActivePanel("enrolled")}>
+              Enrolled students
+            </SegButton>
           </div>
 
           {/* Quick stats */}
@@ -1289,11 +1496,15 @@ const [associateBusy, setAssociateBusy] = useState(false);
               <span className="text-muted-foreground">Associates:</span>{" "}
               <span className="font-medium">{associateRows.length}</span>
             </div>
+            <div className="rounded-full border bg-muted/20 px-3 py-1">
+              <span className="text-muted-foreground">Enrolled:</span>{" "}
+              <span className="font-medium">{enrolledRows.length}</span>
+            </div>
           </div>
         </div>
       </Card>
 
-      {activePanel === "org" ? renderOrgPanel() : renderAssociatePanel()}
+      {activePanel === "org" ? renderOrgPanel() : activePanel === "associates" ? renderAssociatePanel() : renderEnrolledPanel()}
     </div>
   );
 }
