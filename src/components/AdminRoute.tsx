@@ -26,12 +26,12 @@ export function AdminRoute({ children }: { children: JSX.Element }) {
           return;
         }
 
-        // ✅ Whitelist-only: must have explicit admin row
+        // ✅ Whitelist-only: must have explicit admin or super_admin row
         const { data: roles, error: rolesErr } = await supabase
           .from("user_roles")
           .select("role")
           .eq("user_id", user.id)
-          .eq("role", "admin")
+          .in("role", ["admin", "super_admin"])
           .limit(1);
 
         if (rolesErr) {

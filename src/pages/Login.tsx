@@ -56,7 +56,7 @@ export default function Login() {
         return;
       }
 
-      if (roleRow?.role === "admin") {
+      if (roleRow?.role === "admin" || roleRow?.role === "super_admin") {
         navigate("/admin");
       } else {
         toast.error("Access denied.");
