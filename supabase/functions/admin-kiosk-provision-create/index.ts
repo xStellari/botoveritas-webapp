@@ -81,7 +81,7 @@ serve(async (req) => {
     .maybeSingle();
 
   if (roleErr) return json(origin, 500, { ok: false, error: roleErr.message });
-  if (!roleRow || roleRow.role !== "admin") return json(origin, 403, { ok: false, error: "Not authorized" });
+  if (!roleRow || !["admin", "super_admin"].includes(roleRow.role)) return json(origin, 403, { ok: false, error: "Not authorized" });
 
   const service = createClient<Database>(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
