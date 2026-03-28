@@ -39,6 +39,19 @@ const formatName = (str: string) => {
     .join(" ");
 };
 
+const normalizeCheckValue = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[.,]/g, "")
+    .replace(/\s+/g, " ");
+
+const buildInputFullName = (firstName: string, middleName: string, lastName: string, suffix: string) =>
+  [firstName, middleName, lastName, suffix]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" ");
+
 export default function Register() {
   const navigate = useNavigate();
 
@@ -172,13 +185,13 @@ export default function Register() {
       const emailNorm = fullEmail.trim().toLowerCase();
       const { data: enrolledRaw, error } = await supabase
         .from("enrolled_students" as any)
-        .select("is_enrolled, full_name")
+        .select("is_enrolled, full_name, year_level")
         .eq("email_norm", emailNorm)
         .maybeSingle();
 
       // Cast to any so TS doesn't complain about unknown table shape
       // until supabase types are regenerated after migration
-      const enrolled = enrolledRaw as { is_enrolled: boolean; full_name: string | null } | null;
+      const enrolled = enrolledRaw as { is_enrolled: boolean; full_name: string | null; year_level: string | null } | null;
 
       if (error) {
         // If the table doesn't exist yet (migration not run), fail open with a warning

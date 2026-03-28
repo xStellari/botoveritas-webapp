@@ -44,6 +44,14 @@ type EnrolledRow = {
   created_at: string;
 };
 
+
+type ParsedCsvRecord = {
+  email: string;
+  full_name: string | null;
+  year_level: string | null;
+  source_row: number;
+};
+
 type VoterLookupRow = {
   id: string;
   email: string;
@@ -51,6 +59,7 @@ type VoterLookupRow = {
   middle_name: string | null;
   last_name: string;
   suffix: string | null;
+  year_level?: string | null;
   created_at?: string | null;
 };
 
@@ -111,15 +120,15 @@ function dedupeEmails(emails: string[]) {
 }
 
 
-type ParsedEmailCsv = {
-  emails: string[];
-  detectedHeader: string | null;
-  usedSingleColumnFallback: boolean;
-};
+function normalizeCsvHeader(value: string) {
+  return normalizeLine(value)
+    .toLowerCase()
+    .replace(/[._-]+/g, " ");
+}
 
-function parseCsvRow(line: string) {
-  const out: string[] = [];
-  let cell = "";
+function splitCsvRow(line: string) {
+  const cells: string[] = [];
+  let current = "";
   let inQuotes = false;
 
   for (let i = 0; i < line.length; i++) {
@@ -127,7 +136,7 @@ function parseCsvRow(line: string) {
 
     if (ch === '"') {
       if (inQuotes && line[i + 1] === '"') {
-        cell += '"';
+        current += '"';
         i++;
       } else {
         inQuotes = !inQuotes;
@@ -135,84 +144,120 @@ function parseCsvRow(line: string) {
       continue;
     }
 
-    if (ch === "," && !inQuotes) {
-      out.push(normalizeLine(cell));
-      cell = "";
+    if (ch === ',' && !inQuotes) {
+      cells.push(current);
+      current = "";
       continue;
     }
 
-    cell += ch;
+    current += ch;
   }
 
-  out.push(normalizeLine(cell));
-  return out;
+  cells.push(current);
+  return cells.map((cell) => normalizeLine(cell));
 }
 
-function normalizeHeader(s: string) {
-  return normalizeLine(s)
-    .toLowerCase()
-    .replace(/[_-]+/g, " ");
+function detectHeaderIndex(headers: string[], aliases: string[]) {
+  const normalizedAliases = aliases.map((alias) => normalizeCsvHeader(alias));
+  return headers.findIndex((header) => normalizedAliases.includes(header));
 }
 
-function looksLikeEmailHeader(header: string) {
-  const h = normalizeHeader(header);
-  return [
-    "email",
-    "email address",
-    "e mail",
-    "student email",
-    "school email",
-    "feu email",
-    "institutional email",
-  ].includes(h) || (h.includes("email") && !h.includes("guardian"));
+function buildCsvFullName(parts: Array<string | null | undefined>) {
+  const joined = parts
+    .map((part) => normalizeLine(String(part || "")))
+    .filter(Boolean)
+    .join(" ");
+  return joined || null;
 }
 
-function parseCsvEmails(raw: string): ParsedEmailCsv {
+function parseFlexibleCsv(raw: string): ParsedCsvRecord[] {
   const lines = raw
     .split(/\r?\n/)
-    .map((line) => line.replace(/^﻿/, ""))
-    .filter((line) => line.trim().length > 0);
+    .map((line) => line.trim())
+    .filter(Boolean);
 
-  if (lines.length === 0) {
-    return { emails: [], detectedHeader: null, usedSingleColumnFallback: false };
+  if (lines.length === 0) return [];
+
+  const rows = lines.map(splitCsvRow);
+  const headerRow = rows[0].map((cell) => normalizeCsvHeader(cell));
+
+  const emailIndex = detectHeaderIndex(headerRow, [
+    "email",
+    "email address",
+    "e-mail",
+    "student email",
+    "school email",
+    "institutional email",
+  ]);
+
+  const fullNameIndex = detectHeaderIndex(headerRow, [
+    "full name",
+    "fullname",
+    "student name",
+    "name",
+  ]);
+  const firstNameIndex = detectHeaderIndex(headerRow, ["first name", "firstname", "given name"]);
+  const middleNameIndex = detectHeaderIndex(headerRow, ["middle name", "middlename", "middle initial", "mi"]);
+  const lastNameIndex = detectHeaderIndex(headerRow, ["last name", "lastname", "surname", "family name"]);
+  const suffixIndex = detectHeaderIndex(headerRow, ["suffix"]);
+  const yearLevelIndex = detectHeaderIndex(headerRow, ["year level", "year", "yearlevel"]);
+
+  const hasStructuredHeaders =
+    emailIndex >= 0 ||
+    fullNameIndex >= 0 ||
+    firstNameIndex >= 0 ||
+    lastNameIndex >= 0 ||
+    yearLevelIndex >= 0;
+
+  const startRow = hasStructuredHeaders ? 1 : 0;
+  const parsed: ParsedCsvRecord[] = [];
+
+  for (let i = startRow; i < rows.length; i++) {
+    const row = rows[i];
+    const emailRaw = emailIndex >= 0 ? row[emailIndex] ?? "" : row[0] ?? "";
+    const email = normEmailClient(emailRaw || "");
+    if (!email || !isValidEmail(email)) continue;
+
+    const fullName = fullNameIndex >= 0
+      ? buildCsvFullName([row[fullNameIndex]])
+      : buildCsvFullName([
+          firstNameIndex >= 0 ? row[firstNameIndex] : null,
+          middleNameIndex >= 0 ? row[middleNameIndex] : null,
+          lastNameIndex >= 0 ? row[lastNameIndex] : null,
+          suffixIndex >= 0 ? row[suffixIndex] : null,
+        ]);
+
+    const yearLevel = yearLevelIndex >= 0 ? normalizeLine(row[yearLevelIndex] ?? "") || null : null;
+
+    parsed.push({
+      email,
+      full_name: fullName,
+      year_level: yearLevel,
+      source_row: i + 1,
+    });
   }
 
-  const rows = lines.map(parseCsvRow).filter((row) => row.some(Boolean));
-  if (rows.length === 0) {
-    return { emails: [], detectedHeader: null, usedSingleColumnFallback: false };
+  const deduped = new Map<string, ParsedCsvRecord>();
+  for (const row of parsed) {
+    if (!deduped.has(row.email)) deduped.set(row.email, row);
   }
+  return Array.from(deduped.values());
+}
 
-  const headerRow = rows[0] ?? [];
-  const emailIndex = headerRow.findIndex((cell) => looksLikeEmailHeader(cell));
+function namesMatch(a: string | null | undefined, b: string | null | undefined) {
+  const left = normalizeLine(String(a || ""))
+    .toLowerCase()
+    .replace(/[.,]/g, "");
+  const right = normalizeLine(String(b || ""))
+    .toLowerCase()
+    .replace(/[.,]/g, "");
+  return !!left && !!right && left === right;
+}
 
-  if (emailIndex >= 0) {
-    const emails = rows
-      .slice(1)
-      .map((row) => row[emailIndex] ?? "")
-      .map((value) => normalizeLine(value))
-      .filter(isValidEmail);
-
-    return {
-      emails: dedupeEmails(emails),
-      detectedHeader: headerRow[emailIndex] ?? null,
-      usedSingleColumnFallback: false,
-    };
-  }
-
-  const singleColumnEmails = rows
-    .map((row) => normalizeLine(row[0] ?? ""))
-    .filter(isValidEmail);
-
-  const allSingleColumn = rows.every((row) => row.length <= 1);
-  if (allSingleColumn && singleColumnEmails.length > 0) {
-    return {
-      emails: dedupeEmails(singleColumnEmails),
-      detectedHeader: null,
-      usedSingleColumnFallback: true,
-    };
-  }
-
-  return { emails: [], detectedHeader: null, usedSingleColumnFallback: false };
+function yearLevelsMatch(a: string | null | undefined, b: string | null | undefined) {
+  const left = normalizeLine(String(a || "")).toLowerCase();
+  const right = normalizeLine(String(b || "")).toLowerCase();
+  return !!left && !!right && left === right;
 }
 
 function dedupeNames(names: string[]) {
@@ -261,17 +306,24 @@ function SegButton({
   );
 }
 
-function CsvPreview({ items }: { items: string[] }) {
+function CsvPreview({ items }: { items: Array<string | ParsedCsvRecord> }) {
   if (items.length === 0) return null;
   return (
     <div className="rounded-xl border bg-muted/30 p-3 text-xs">
       <div className="font-medium">Preview ({items.length})</div>
       <div className="mt-2 max-h-[140px] overflow-auto space-y-1">
-        {items.slice(0, 12).map((n, idx) => (
-          <div key={idx} className="truncate">
-            {n}
-          </div>
-        ))}
+        {items.slice(0, 12).map((item, idx) => {
+          const label = typeof item === "string"
+            ? item
+            : item.full_name
+              ? `${item.email} - ${item.full_name}${item.year_level ? ` - ${item.year_level}` : ""}`
+              : `${item.email}${item.year_level ? ` - ${item.year_level}` : ""}`;
+          return (
+            <div key={idx} className="truncate">
+              {label}
+            </div>
+          );
+        })}
         {items.length > 12 ? (
           <div className="text-muted-foreground">
             +{items.length - 12} more…
@@ -301,7 +353,7 @@ const [orgMemberSource, setOrgMemberSource] = useState("Admin import");
   const [orgMemberBusy, setOrgMemberBusy] = useState(false);
 
   const [orgMemberCsvFile, setOrgMemberCsvFile] = useState<File | null>(null);
-  const [orgMemberCsvPreview, setOrgMemberCsvPreview] = useState<string[]>([]);
+  const [orgMemberCsvPreview, setOrgMemberCsvPreview] = useState<ParsedCsvRecord[]>([]);
 
   // Quick-add: pull exact full_name from registered voters to avoid
   // "same person, different spelling" eligibility mismatches.
@@ -326,7 +378,7 @@ const [orgMemberSource, setOrgMemberSource] = useState("Admin import");
   const [enrolledRows, setEnrolledRows] = useState<EnrolledRow[]>([]);
   const [enrolledLoading, setEnrolledLoading] = useState(false);
   const [enrolledCsvFile, setEnrolledCsvFile] = useState<File | null>(null);
-  const [enrolledCsvPreview, setEnrolledCsvPreview] = useState<string[]>([]);
+  const [enrolledCsvPreview, setEnrolledCsvPreview] = useState<ParsedCsvRecord[]>([]);
   const [enrolledQuickEmail, setEnrolledQuickEmail] = useState("");
   const [enrolledQuickName, setEnrolledQuickName] = useState("");
   const [enrolledQuickYear, setEnrolledQuickYear] = useState("");
@@ -470,16 +522,17 @@ const [associateBusy, setAssociateBusy] = useState(false);
   // ----------------------------
   const readOrgMemberCsv = async (file: File) => {
     const text = await file.text();
-    const parsed = parseCsvEmails(text);
-    setOrgMemberCsvPreview(parsed.emails);
+    const rows = parseFlexibleCsv(text);
+    setOrgMemberCsvPreview(rows);
 
-    if (parsed.detectedHeader) {
-      toast.success(`Detected email column: ${parsed.detectedHeader}`);
-    } else if (parsed.usedSingleColumnFallback) {
-      toast.success("Detected a single-column email list.");
-    } else {
-      toast.error("No email column detected. Add a column named Email or Email Address.");
+    if (rows.length === 0) {
+      toast.error("No valid email column detected in the CSV.");
+      return;
     }
+
+    const withNames = rows.filter((row) => !!row.full_name).length;
+    const withYear = rows.filter((row) => !!row.year_level).length;
+    toast.success(`Loaded ${rows.length} row(s) from CSV.${withNames ? ` Name checks: ${withNames}.` : ""}${withYear ? ` Year-level checks: ${withYear}.` : ""}`);
   };
 
   // ----------------------------
@@ -504,7 +557,7 @@ const [associateBusy, setAssociateBusy] = useState(false);
       // isn't present in your generated Supabase types.
       const qb = supabase
         .from("voters" as any)
-        .select("id, email, first_name, middle_name, last_name, suffix, created_at")
+        .select("id, email, first_name, middle_name, last_name, suffix, year_level, created_at")
         .limit(15) as any;
 
       // Heuristics:
@@ -605,7 +658,7 @@ const [associateBusy, setAssociateBusy] = useState(false);
     try {
       const qb = (supabase
         .from("voters" as any)
-        .select("id, email, first_name, middle_name, last_name, suffix, created_at")
+        .select("id, email, first_name, middle_name, last_name, suffix, year_level, created_at")
         .limit(15) as any);
 
       const looksLikeEmail = q.includes("@");
@@ -681,20 +734,14 @@ const [associateBusy, setAssociateBusy] = useState(false);
       return;
     }
 
-    // Org roster import expects emails (first column).
-    // Names-only imports are intentionally not supported because we need a stable key (email -> voter_id)
-    // to refresh voter org affiliations.
-    const fromCsv = orgMemberCsvPreview.length > 0 ? orgMemberCsvPreview : [];
-    const combined = fromCsv;
+    const combined = orgMemberCsvPreview;
 
     if (combined.length === 0) {
       toast.error("Import at least one member email (CSV).");
       return;
     }
 
-    const cleaned = combined.map((x) => normalizeLine(x));
-    const valid = cleaned.filter(isValidEmail);
-    const unique = dedupeEmails(valid);
+    const unique = dedupeEmails(combined.map((row) => row.email));
 
     if (unique.length === 0) {
       toast.error("No valid member emails found.");
@@ -706,7 +753,7 @@ const [associateBusy, setAssociateBusy] = useState(false);
       // Resolve emails -> voters to produce an exact name string and a voter_id list for refresh.
       const { data: voterData, error: voterErr } = await (supabase
         .from("voters" as any)
-        .select("id, email, first_name, middle_name, last_name, suffix")
+        .select("id, email, first_name, middle_name, last_name, suffix, year_level")
         .in("email", unique)
         .limit(unique.length) as any);
 
@@ -723,16 +770,39 @@ const [associateBusy, setAssociateBusy] = useState(false);
       });
 
 
+      const csvByEmail = new Map(orgMemberCsvPreview.map((row) => [normEmailClient(row.email), row]));
       const matched: { voter: VoterLookupRow; email: string }[] = [];
       const unmatched: string[] = [];
+      const conflicts: string[] = [];
+
       for (const email of unique) {
-        const v = voterByEmail.get(normEmailClient(email));
-        if (v) matched.push({ voter: v, email });
-        else unmatched.push(email);
+        const key = normEmailClient(email);
+        const v = voterByEmail.get(key);
+        const csvRow = csvByEmail.get(key) || null;
+        if (!v) {
+          unmatched.push(email);
+          continue;
+        }
+
+        if (csvRow?.full_name) {
+          const rosterName = buildVoterRosterName(v);
+          const fullName = buildVoterFullName(v);
+          if (!namesMatch(csvRow.full_name, rosterName) && !namesMatch(csvRow.full_name, fullName)) {
+            conflicts.push(`${email} (name mismatch)`);
+            continue;
+          }
+        }
+
+        if (csvRow?.year_level && v.year_level && !yearLevelsMatch(csvRow.year_level, v.year_level)) {
+          conflicts.push(`${email} (year level mismatch)`);
+          continue;
+        }
+
+        matched.push({ voter: v, email });
       }
 
       if (matched.length === 0) {
-        toast.error("None of the imported emails match a registered voter.");
+        toast.error("No CSV rows passed the voter cross-check.");
         return;
       }
 
@@ -766,8 +836,8 @@ const [associateBusy, setAssociateBusy] = useState(false);
         toast.message(`Imported roster, but ${refreshFailures} voter affiliation refresh(es) failed.`);
       }
 
-      if (unmatched.length > 0) {
-        toast.message(`Imported ${matched.length} member(s). Skipped ${unmatched.length} unmatched email(s).`);
+      if (unmatched.length > 0 || conflicts.length > 0) {
+        toast.message(`Imported ${matched.length} member(s). Skipped ${unmatched.length} unmatched and ${conflicts.length} conflicting row(s).`);
       } else {
         toast.success(`Imported ${matched.length} member(s) to ${selectedOrg}.`);
       }
@@ -939,8 +1009,8 @@ const [associateBusy, setAssociateBusy] = useState(false);
           </div>
 
           <div className="text-xs text-muted-foreground">
-            Add from registered voters or import a CSV (first column = email).
-            Duplicates are removed client-side.
+            Add from registered voters or import a CSV with an email column anywhere in the file.
+            Full name and year level are used for cross-checking when present.
           </div>
 
           <div className="rounded-2xl border bg-muted/20 p-3 space-y-2">
@@ -1163,22 +1233,25 @@ const [associateBusy, setAssociateBusy] = useState(false);
 
   const readEnrolledCsv = async (file: File) => {
     const text = await file.text();
-    const parsed = parseCsvEmails(text);
-    setEnrolledCsvPreview(parsed.emails);
+    const rows = parseFlexibleCsv(text);
+    setEnrolledCsvPreview(rows);
 
-    if (parsed.detectedHeader) {
-      toast.success(`Detected email column: ${parsed.detectedHeader}`);
-    } else if (parsed.usedSingleColumnFallback) {
-      toast.success("Detected a single-column email list.");
-    } else {
-      toast.error("No email column detected. Add a column named Email or Email Address.");
+    if (rows.length === 0) {
+      toast.error("No valid email column detected in the CSV.");
+      return;
     }
+
+    const withNames = rows.filter((row) => !!row.full_name).length;
+    const withYear = rows.filter((row) => !!row.year_level).length;
+    toast.success(`Loaded ${rows.length} enrolled row(s).${withNames ? ` Name checks: ${withNames}.` : ""}${withYear ? ` Year-level checks: ${withYear}.` : ""}`);
   };
 
   const handleEnrolledCsvImport = async () => {
-    if (!enrolledCsvPreview.length) { toast.error("No valid emails to import."); return; }
-    const payload = enrolledCsvPreview.map((email) => ({
-      email: email.toLowerCase(),
+    if (!enrolledCsvPreview.length) { toast.error("No valid rows to import."); return; }
+    const payload = enrolledCsvPreview.map((row) => ({
+      email: row.email.toLowerCase(),
+      full_name: row.full_name,
+      year_level: row.year_level,
       source: enrolledSource.trim() || null,
       is_enrolled: true,
     }));
@@ -1188,24 +1261,6 @@ const [associateBusy, setAssociateBusy] = useState(false);
     toast.success(`Imported ${payload.length} enrolled student(s).`);
     setEnrolledCsvFile(null); setEnrolledCsvPreview([]);
     void loadEnrolled();
-  };
-
-  const downloadCsvTemplate = (filename: string) => {
-    const csv = [
-      "email,full_name,year_level,program,section",
-      "juan.delacruz@feualabang.edu.ph,Juan Dela Cruz,3,BSIT,301",
-      "maria.santos@feualabang.edu.ph,Maria Santos,2,BSCS,201",
-    ].join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", filename);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   };
 
   const handleEnrolledToggle = async (row: EnrolledRow) => {
@@ -1241,7 +1296,7 @@ const [associateBusy, setAssociateBusy] = useState(false);
           When a student tries to register, their FEU email is checked against this list
           before RFID and Face ID capture. If the email is not here or is marked{" "}
           <strong>Blocked</strong>, they are stopped immediately with a clear message.
-          Import the official enrolled student list (CSV, email as first column).
+          Import the official enrolled student list (CSV with an email column). If full name and year level are present, they are stored and checked during registration.
         </p>
       </div>
 
@@ -1257,17 +1312,7 @@ const [associateBusy, setAssociateBusy] = useState(false);
       </div>
 
       <div className="rounded-2xl border bg-white p-5 space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <p className="font-semibold text-sm">CSV import (email column auto-detected)</p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => downloadCsvTemplate("enrolled-students-template.csv")}
-          >
-            Download CSV Template
-          </Button>
-        </div>
+        <p className="font-semibold text-sm">CSV import (email column auto-detected)</p>
         <Input placeholder="Source label e.g. AY 2025-2026 official list" value={enrolledSource} onChange={(e) => setEnrolledSource(e.target.value)} />
         <input
           type="file"
@@ -1281,9 +1326,9 @@ const [associateBusy, setAssociateBusy] = useState(false);
         />
         {enrolledCsvPreview.length > 0 && (
           <div className="rounded-xl border bg-muted/20 p-3 space-y-1">
-            <p className="text-xs font-semibold text-muted-foreground">{enrolledCsvPreview.length} valid email(s) - preview (first 5):</p>
-            {enrolledCsvPreview.slice(0, 5).map((e) => (
-              <p key={e} className="text-xs font-mono text-slate-700">{e}</p>
+            <p className="text-xs font-semibold text-muted-foreground">{enrolledCsvPreview.length} valid row(s) - preview (first 5):</p>
+            {enrolledCsvPreview.slice(0, 5).map((row) => (
+              <p key={row.email} className="text-xs font-mono text-slate-700">{row.email}{row.full_name ? ` - ${row.full_name}` : ""}{row.year_level ? ` - ${row.year_level}` : ""}</p>
             ))}
             {enrolledCsvPreview.length > 5 && (
               <p className="text-xs text-muted-foreground">and {enrolledCsvPreview.length - 5} more</p>
@@ -1302,7 +1347,7 @@ const [associateBusy, setAssociateBusy] = useState(false);
             </Button>
           </SuperAdminOtpGate>
         </div>
-        <p className="text-xs text-muted-foreground">The importer looks for an email column such as Email or Email Address. Duplicate emails are upserted - no duplicates created.</p>
+        <p className="text-xs text-muted-foreground">Duplicate emails are upserted. When CSV includes full name and year level, those values are stored for later registration checks.</p>
       </div>
 
       <div className="rounded-2xl border bg-white overflow-hidden">
